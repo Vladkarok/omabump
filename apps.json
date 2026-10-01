@@ -41,15 +41,5 @@
     "aur": "t3code-bin",
     "icon": "assets/t3code.svg",
     "iconLight": "assets/t3code-light.svg"
-  },
-  {
-    "pkg": "herdr",
-    "label": "herdr",
-    "feed": {
-      "type": "github-release",
-      "repo": "herdrdev/herdr"
-    },
-    "aur": "herdr-bin",
-    "mise": "herdr"
   }
 ]

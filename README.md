@@ -35,7 +35,6 @@ Keys: `j`/`k` or arrows select a row, `Enter` updates it, `r` checks now,
 | `chatgpt-desktop` | Codex (ChatGPT app) | OpenAI apt index |
 | `z-code-bin` | ZCode | ZCode's own updater manifest, stable channel |
 | `t3code-bin` | T3 Code | GitHub releases of `pingdotgg/t3code` |
-| `herdr` | herdr | GitHub releases of `herdrdev/herdr`; updated through mise when mise manages it, otherwise built from AUR `herdr-bin` |
 
 ## Settings
 
