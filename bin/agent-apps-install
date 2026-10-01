@@ -10,17 +10,19 @@
 #               app's feed advertises, installed with pacman -U.
 #   mise        mise up <tool>.
 #
-#   agent-apps-install [--dry-run] <pkg>
+#   agent-apps-install [--prepare] <pkg>
 #
-# --dry-run stops before anything is built, downloaded or installed and prints
-# what would run.
+# --prepare fetches, syncs and prepares the recipe (this runs omarchy-pkgs'
+# sync tool and the recipe's hook, and makepkg reads the PKGBUILD), and stops
+# before makepkg builds. On the vendor path it downloads and checks the
+# package and stops before pacman -U. Nothing is installed.
 set -euo pipefail
 here=$(dirname "$(readlink -f "$0")")
 source "$here/agent-apps-common"
 
-dry_run=0
-[[ ${1:-} == --dry-run ]] && { dry_run=1; shift; }
-pkg=${1:?usage: agent-apps-install [--dry-run] <pkg>}
+prepare=0
+[[ ${1:-} == --prepare ]] && { prepare=1; shift; }
+pkg=${1:?usage: agent-apps-install [--prepare] <pkg>}
 
 die() { echo "agent-apps: $*" >&2; exit 1; }
 command -v jq >/dev/null || die "jq is missing; install it with: sudo pacman -S --needed jq"
@@ -65,7 +67,7 @@ check_target() {
   [[ $name == "$want" ]] || die "recipe builds '$name', expected '$want'"
   echo "Recipe builds $name $target_version"
   if ! msg=$(guard_version "$target_version"); then
-    (( dry_run )) && { echo "Would refuse: $msg"; return 0; }
+    (( prepare )) && { echo "Would refuse: $msg"; return 0; }
     die "$msg; nothing to do"
   fi
 }
@@ -80,8 +82,8 @@ build_and_install() {
   done
   [[ -n $match ]] || die "makepkg would not produce $want $target_version: ${files[*]}"
   echo "Package file: $match"
-  if (( dry_run )); then
-    echo "Dry run: stopping before makepkg."
+  if (( prepare )); then
+    echo "Prepared: stopping before makepkg builds."
     return 0
   fi
 
@@ -154,7 +156,7 @@ install_vendor_pkg() {
   echo "Vendor package: $url"
   if [[ -n $installed ]] && ! newer "$latest" "$(upstream_part "$installed")"; then
     msg="$latest is not newer than the installed $installed_name $installed"
-    (( dry_run )) && { echo "Would refuse: $msg"; return 0; }
+    (( prepare )) && { echo "Would refuse: $msg"; return 0; }
     die "$msg; nothing to do"
   fi
   # Replacing a differently named package (z-code-bin by zcode) is a conflict
@@ -164,14 +166,12 @@ install_vendor_pkg() {
     echo "pacman will ask to replace $installed_name with $pkg; answer y to switch."
   fi
   file=$PKGDEST/${url##*/}
-  if (( dry_run )); then
-    echo "Would download it to $file, check it with pacman -Qp, then run:"
-    echo "  sudo pacman -U ${confirm[*]:+${confirm[*]} }-- $file"
-    return 0
+  if [[ -f $file ]]; then
+    echo "Using the download from an earlier run: $file"
+  else
+    max_time=1800 fetch -fL --retry 2 -o "$file.part" "$url" || die "could not download $url"
+    mv -f "$file.part" "$file"
   fi
-
-  max_time=1800 fetch -fL --retry 2 -o "$file.part" "$url" || die "could not download $url"
-  mv -f "$file.part" "$file"
   line=$(pacman -Qp -- "$file") || die "cannot read $file"
   name=${line%% *} ver=${line#* }
   [[ $name == "$pkg" ]] || die "the vendor package is '$name', expected '$pkg'"
@@ -179,6 +179,11 @@ install_vendor_pkg() {
   # The feed knows no epoch or pkgrel; the file does. Compare its full
   # version with what is installed right now.
   msg=$(guard_version "$ver") || die "vendor package: $msg; not installing"
+  echo "Package file: $file ($line)"
+  if (( prepare )); then
+    echo "Prepared: stopping before sudo pacman -U ${confirm[*]:+${confirm[*]} }-- $file"
+    return 0
+  fi
   sudo pacman -U "${confirm[@]}" -- "$file"
   now_line=$(installed_package "$pkg") || die "pacman -Q $pkg finds nothing after the install"
   [[ $now_line == "$pkg $ver" ]] || die "pacman -Q says '$now_line', expected '$pkg $ver'"
@@ -203,7 +208,7 @@ install_mise() {
     exit 0
   fi
   echo "mise up $tool would install $target"
-  if (( dry_run )); then
+  if (( prepare )); then
     echo "Would run: mise up $tool (in $HOME)"
     return 0
   fi
@@ -227,6 +232,6 @@ case $source in
   *) die "unknown source '$source'" ;;
 esac
 
-(( dry_run )) && exit 0
+(( prepare )) && exit 0
 refresh_panel
 [[ $source == mise ]] || echo "Restart $label to use $target_version."
