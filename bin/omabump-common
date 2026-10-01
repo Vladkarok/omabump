@@ -165,6 +165,45 @@ vendor_pkg_url() {
   echo "${url//\{version\}/$2}"
 }
 
+# Prints "<algorithm> <hex digest>" for the vendor package at URL $2,
+# version $3, from the source the app's "checksum" names, or fails with the
+# reason. $4 is the feed document feed_version saved.
+#   "feed"                      files[].sha512 (base64) next to the file's url
+#                               in the feed, as electron-updater's latest.yml
+#                               and Z.ai's manifest list them
+#   {"url": ..., "algo": ...}   a sha256sum/sha512sum style list at that HTTPS
+#                               URL ({version} and per-arch keys allowed)
+# Without a "checksum" the package is not installed.
+vendor_checksum() {
+  local app=$1 url=$2 version=$3 feed_file=$4 name kind b64 hex algo sums_url body
+  name=${url##*/}
+  kind=$(jq -r '.checksum | if type == "string" then . elif type == "object" then "@list" else "" end' <<<"$app")
+  case $kind in
+    feed)
+      algo=sha512
+      b64=$(awk -v url="$url" -v name="$name" '
+        /^[[:space:]]*-[[:space:]]+url:/ { u = $NF; next }
+        /^[[:space:]]+sha512:/ && u != "" { if (u == url || u == name) { print $2; exit } u = "" }' "$feed_file")
+      [[ $b64 =~ ^[A-Za-z0-9+/]+=*$ ]] || { echo "the feed lists no sha512 for $name" >&2; return 1; }
+      hex=$(base64 -d <<<"$b64" 2>/dev/null | od -An -v -tx1 | tr -d ' \n') ;;
+    @list)
+      algo=$(jq -r '.checksum.algo // "sha256"' <<<"$app")
+      [[ $algo == sha256 || $algo == sha512 ]] || { echo "checksum algo '$algo' is not sha256 or sha512" >&2; return 1; }
+      sums_url=$(per_arch .checksum.url "$app")
+      sums_url=${sums_url//\{version\}/$version}
+      [[ $sums_url == https://* ]] || { echo "no https checksum url for $(uname -m)" >&2; return 1; }
+      body=$(fetch -fsSL "$sums_url" 2>/dev/null) || { echo "could not fetch $sums_url (curl exit $?)" >&2; return 1; }
+      hex=$(awk -v name="$name" '{ f = $2; sub(/^\*/, "", f) } f == name { print tolower($1); exit }' <<<"$body") ;;
+    "")
+      echo "apps.json names no checksum source for the vendor package" >&2; return 1 ;;
+    *)
+      echo "unknown checksum source '$kind'" >&2; return 1 ;;
+  esac
+  [[ $algo == sha256 && $hex =~ ^[0-9a-f]{64}$ || $algo == sha512 && $hex =~ ^[0-9a-f]{128}$ ]] \
+    || { echo "no well-formed $algo for $name" >&2; return 1; }
+  echo "$algo $hex"
+}
+
 # Newest version in a Debian Packages index for one exact package name.
 apt_newest() {
   local index=$1 want=$2 v best=""
@@ -195,7 +234,8 @@ for text in (body, body.replace("\\\"", "\"")):
 
 # Prints the newest version the app's own feed advertises. Feeds are data:
 # nothing fetched is ever run. Every fetch is checked on its own: a failed or
-# cut-off download is an error, never a version.
+# cut-off download is an error, never a version. With $feed_save set, the
+# fetched document is also written to that file (vendor_checksum reads it).
 feed_version() {
   local app=$1 type url body v repo cmd want
   type=$(jq -r '.feed.type // ""' <<<"$app")
@@ -203,7 +243,8 @@ feed_version() {
   case $type in
     apt-index|zcode-manifest|latest-yml|regex|json)
       [[ $url == https://* ]] || { echo "no https feed url for $(uname -m)" >&2; return 1; }
-      body=$(fetch -fsSL "$url" 2>/dev/null) || { echo "could not fetch $url (curl exit $?)" >&2; return 1; } ;;
+      body=$(fetch -fsSL "$url" 2>/dev/null) || { echo "could not fetch $url (curl exit $?)" >&2; return 1; }
+      [[ -z ${feed_save:-} ]] || printf '%s\n' "$body" >"$feed_save" ;;
   esac
   case $type in
     apt-index)

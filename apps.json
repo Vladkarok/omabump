@@ -111,6 +111,7 @@
       "x86_64": "https://cdn-zcode.z.ai/zcode/electron/releases/{version}/linux-x64/ZCode-{version}-linux-x64.pkg.tar.zst",
       "aarch64": "https://cdn-zcode.z.ai/zcode/electron/releases/{version}/linux-arm64/ZCode-{version}-linux-arm64.pkg.tar.zst"
     },
+    "checksum": "feed",
     "feed": {
       "type": "zcode-manifest",
       "url": {

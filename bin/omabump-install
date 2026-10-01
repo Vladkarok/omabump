@@ -301,15 +301,21 @@ install_omarchy() {
 
 # pacman would download a URL itself, but it checks remote files against
 # RemoteFileSigLevel, which defaults to SigLevel (Required) and vendors do not
-# sign these packages. So curl fetches the file over HTTPS, pacman -Qp reads
-# its name and version (metadata only, not an authentication), and pacman -U
-# installs the local file under LocalFileSigLevel.
+# sign these packages. So curl fetches the file over HTTPS, its digest must
+# match the one the vendor publishes (vendor_checksum), pacman -Qp reads its
+# name and version, and pacman -U installs the local file under
+# LocalFileSigLevel. A package without a published digest is not installed.
 install_vendor_pkg() {
-  local latest url file line name ver now_line msg have confirm=(--noconfirm)
-  latest=$(feed_version "$app") || die "the feed has no version"
+  local latest url file line name ver now_line msg have sum algo want got feed_file confirm=(--noconfirm)
+  feed_file=$(mktemp "$cache_dir/.feed.XXXXXX")
+  latest=$(feed_save=$feed_file feed_version "$app") || { rm -f "$feed_file"; die "the feed has no version"; }
   echo "Feed: $latest"
-  url=$(vendor_pkg_url "$app" "$latest") || die "the vendor publishes no https $pkg package for $(uname -m)"
+  url=$(vendor_pkg_url "$app" "$latest") || { rm -f "$feed_file"; die "the vendor publishes no https $pkg package for $(uname -m)"; }
   echo "Vendor package: $url"
+  sum=$(vendor_checksum "$app" "$url" "$latest" "$feed_file") || { rm -f "$feed_file"; die "no published checksum for ${url##*/}; not downloading"; }
+  rm -f "$feed_file"
+  read -r algo want <<<"$sum"
+  echo "Published $algo: $want"
   msg=""
   if [[ -n $installed ]]; then
     have=$(upstream_part "$installed")
@@ -334,6 +340,12 @@ install_vendor_pkg() {
     max_time=1800 fetch -fL --retry 2 -o "$file.part" "$url" || die "could not download $url"
     mv -f "$file.part" "$file"
   fi
+  got=$("${algo}sum" -- "$file" | cut -d' ' -f1)
+  if [[ $got != "$want" ]]; then
+    rm -f -- "$file"
+    die "$algo of the download is $got, the vendor publishes $want; removed the file, not installing"
+  fi
+  echo "$algo matches."
   line=$(pacman -Qp -- "$file") || die "cannot read $file"
   name=${line%% *} ver=${line#* }
   [[ $name == "$pkg" ]] || die "the vendor package is '$name', expected '$pkg'"
