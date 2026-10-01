@@ -1,6 +1,7 @@
 #!/bin/bash
 # Install the newest release of one agent app. Meant to run in a visible
-# terminal: makepkg and pacman talk to the user and sudo may ask for a password.
+# terminal: makepkg and pacman talk to the user, sudo may ask for a password,
+# and pacman always asks before it installs.
 # Every path runs install knowledge someone else maintains:
 #
 #   omarchy     Omarchy's own recipe from omarchy-pkgs at the commit pinned
@@ -22,7 +23,8 @@
 # --prepare fetches, syncs and prepares the recipe (this runs omarchy-pkgs'
 # sync tool and the recipe's hook, and makepkg reads the PKGBUILD), and stops
 # before makepkg builds. On the vendor path it downloads and checks the
-# package and stops before pacman -U. Nothing is installed.
+# package and stops before pacman -U. Nothing is installed and sudo is never
+# called; the staging and install commands are printed instead.
 set -euo pipefail
 here=$(dirname "$(readlink -f "$0")")
 # shellcheck source=omabump-common
@@ -188,6 +190,40 @@ check_target() {
   fi
 }
 
+# pacman -U reads the package from a root-owned copy: the verified file in
+# the user's cache could otherwise be swapped by any process running as the
+# user between the last check and the moment pacman opens it. The copy is
+# checked again (digest when $3/$4 give one, name and full version always),
+# pacman asks before it installs, and the copy goes after a successful
+# install. On failure it stays, and the message says where. $1 is the
+# verified file, $2 the expected "<name> <full version>". With --prepare it
+# prints the commands and calls no sudo.
+staging_dir=/var/cache/omabump
+stage_and_install() {
+  local file=$1 expect=$2 algo=${3:-} want=${4:-} staged got line
+  staged=$staging_dir/${file##*/}
+  if (( prepare )); then
+    echo "Would run: sudo install -o root -g root -m 0644 -D -- $file $staged"
+    [[ -z $algo ]] || echo "Would check: ${algo}sum of $staged is $want"
+    echo "Would check: pacman -Qp $staged is $expect"
+    echo "Would run: sudo pacman -U -- $staged (pacman asks before it installs)"
+    echo "Would run: sudo rm -f -- $staged"
+    return 0
+  fi
+  sudo install -o root -g root -m 0644 -D -- "$file" "$staged" || die "could not copy $file to $staged"
+  if [[ -n $algo ]]; then
+    got=$("${algo}sum" -- "$staged" | cut -d' ' -f1)
+    [[ $got == "$want" ]] || die "$algo of the staged copy is $got, expected $want; not installing (the copy stays in $staged)"
+  fi
+  line=$(pacman -Qp -- "$staged") || die "cannot read $staged"
+  [[ $line == "$expect" ]] || die "the staged copy is '$line', expected '$expect'; not installing (the copy stays in $staged)"
+  echo "Staged copy checked: $staged"
+  # pacman asks "Proceed with installation?": that prompt is where you can
+  # still stop. sudo need not ask for a password, makepkg -s may have used it.
+  sudo pacman -U -- "$staged" || die "pacman -U failed; the staged copy stays in $staged"
+  sudo rm -f -- "$staged"
+}
+
 # Builds the recipe in the current directory, checks the result and installs it.
 build_and_install() {
   local want=$1 list files f line msg match=""
@@ -200,6 +236,8 @@ build_and_install() {
   echo "Package file: $match"
   if (( prepare )); then
     show_switch "$PWD/$(pkgbuild_field install <PKGBUILD)" "$PWD"
+    echo "After the build:"
+    stage_and_install "$match" "$want $target_version"
     echo "Prepared: stopping before makepkg builds."
     return 0
   fi
@@ -211,13 +249,7 @@ build_and_install() {
   [[ $line == "$want $target_version" ]] || die "built package is '$line', expected '$want $target_version'"
   msg=$(guard_version "$target_version") || die "$msg; not installing"
   show_switch "$match"
-
-  # Replacing a differently named package (chatgpt-desktop by
-  # openai-codex-desktop) is a conflict prompt whose default answer is No, so
-  # --noconfirm would abort. Let the user answer it in this terminal instead.
-  local confirm=(--noconfirm)
-  [[ -n $installed_name && $installed_name != "$want" ]] && confirm=()
-  sudo pacman -U "${confirm[@]}" -- "$match"
+  stage_and_install "$match" "$want $target_version"
   clean_after_install "${files[@]}"
   clean_build_tree
   clean_old_sources
@@ -311,7 +343,7 @@ install_omarchy() {
 # name and version, and pacman -U installs the local file under
 # LocalFileSigLevel. A package without a published digest is not installed.
 install_vendor_pkg() {
-  local latest url file line name ver now_line msg have sum algo want got feed_file confirm=(--noconfirm)
+  local latest url file line name ver now_line msg have sum algo want got feed_file
   feed_file=$(mktemp "$cache_dir/.feed.XXXXXX")
   latest=$(feed_save=$feed_file feed_version "$app") || { rm -f "$feed_file"; die "the feed has no version"; }
   echo "Feed: $latest"
@@ -334,9 +366,6 @@ install_vendor_pkg() {
     (( prepare )) && { echo "Would refuse: $msg"; return 0; }
     die "$msg; nothing to do"
   fi
-  # Replacing a differently named package (z-code-bin by zcode) is a conflict
-  # prompt whose default answer is No, so --noconfirm would abort.
-  [[ -n $installed_name && $installed_name != "$pkg" ]] && confirm=()
   file=$PKGDEST/${url##*/}
   started=1
   if [[ -f $file ]]; then
@@ -360,11 +389,11 @@ install_vendor_pkg() {
   msg=$(guard_version "$ver") || die "vendor package: $msg; not installing"
   echo "Package file: $file ($line)"
   show_switch "$file"
+  stage_and_install "$file" "$line" "$algo" "$want"
   if (( prepare )); then
-    echo "Prepared: stopping before sudo pacman -U ${confirm[*]:+${confirm[*]} }-- $file"
+    echo "Prepared: stopping before sudo."
     return 0
   fi
-  sudo pacman -U "${confirm[@]}" -- "$file"
   now_line=$(installed_package "$pkg") || die "pacman -Q $pkg finds nothing after the install"
   [[ $now_line == "$pkg $ver" ]] || die "pacman -Q says '$now_line', expected '$pkg $ver'"
   echo "Installed $now_line."

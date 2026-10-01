@@ -128,7 +128,8 @@ the recipe diff (normally `pkgver` and checksums), checks that the recipe
 builds the expected package at a full version newer than the installed one,
 builds it with `makepkg` and installs it with `sudo pacman -U`. The sync tool
 and the recipe's hook have run by the time the diff shows, so read the diff as
-a record and stop at the sudo prompt if it looks wrong.
+a record. pacman asks before it installs; that prompt is the point where you
+can still stop.
 
 **vendor.** The vendor publishes a ready Arch package (ZCode does).
 `apps.json` gives its URL and a feed for the newest version. Update refuses
@@ -137,7 +138,7 @@ over HTTPS, and verifies it against the sha512 the vendor lists for that exact
 file in its update manifest. It refuses if the manifest has no checksum for
 the file, and deletes a file that does not match. Then `pacman -Qp` checks the
 package name and full version, the installed version is read again, and only
-then does `sudo pacman -U` run. pacman does not fetch the URL itself because
+then does `sudo pacman -U` run, after pacman asks. pacman does not fetch the URL itself because
 it would check a remote file against `SigLevel = Required`, and the vendor
 does not sign the package.
 
@@ -183,14 +184,26 @@ limits. git fetches, `bin/sync-upstream` and mise calls run under
 `timeout -k`. Locks and temporary files live under `~/.cache/omabump` and
 `~/.local/state`, never in `/tmp`.
 
+Before `pacman -U`, the verified package (the vendor download or the
+makepkg output) is copied with `sudo install` into the root-owned
+`/var/cache/omabump`, checked again there (digest on the vendor route, name
+and full version always), and pacman installs that copy. The copy in the
+user-writable cache can no longer be swapped between verification and
+install. The staged copy is removed after a successful install and kept,
+with its path printed, after a failure.
+
 A local build says `Packager: Unknown Packager` in `pacman -Qi`. pacman
 replaces it with the repo package once the repo's full version is higher, and
 `sudo pacman -S <pkg>` puts the repo package back at any time.
 
 ## Permissions and capabilities
 
-Omabump uses sudo for one thing: `sudo pacman -U <file>` after you pressed
-Update or Switch, in a visible terminal where sudo asks for your password.
+Omabump uses sudo for one thing: installing a package after you pressed
+Update or Switch, in a visible terminal. It copies the verified file into
+`/var/cache/omabump` (`sudo install`), runs `sudo pacman -U` on that copy and
+removes it (`sudo rm`). sudo may not ask for a password (a cached
+credential, or makepkg's own `sudo pacman -S` a moment earlier), but pacman
+always asks before it installs.
 makepkg also calls `sudo pacman -S --asdeps` when a recipe's build
 dependencies are missing. What runs as root is pacman, the package's install
 script and pacman's hooks. Omabump never edits sudoers, never installs from
