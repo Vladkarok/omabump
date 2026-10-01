@@ -145,7 +145,7 @@ while IFS= read -r app; do
         note="Missing: sudo or curl; sudo pacman -S --needed base-devel curl"
       elif ! vendor_pkg_url "$app" x >/dev/null; then
         note="No vendor package for $(uname -m)"
-      elif [[ -z $(jq -r '.checksum // "" | tostring' <<<"$app") ]]; then
+      elif ! vendor_checksum_declared "$app"; then
         note="No published checksum for the vendor package"
       else
         installable=true

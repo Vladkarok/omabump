@@ -175,6 +175,11 @@ vendor_pkg_url() {
 #   {"url": ..., "algo": ...}   a sha256sum/sha512sum style list at that HTTPS
 #                               URL ({version} and per-arch keys allowed)
 # Without a "checksum" the package is not installed.
+# True when apps.json names a checksum source the installer understands.
+vendor_checksum_declared() {
+  jq -e '.checksum | (type == "string" and . == "feed") or (type == "object" and has("url"))' <<<"$1" >/dev/null 2>&1
+}
+
 vendor_checksum() {
   local app=$1 url=$2 version=$3 feed_file=$4 name kind b64 hex algo sums_url body
   name=${url##*/}
@@ -182,9 +187,12 @@ vendor_checksum() {
   case $kind in
     feed)
       algo=sha512
+      # The exact url wins; a basename match is the fallback for feeds that
+      # list the file under a mirror host.
       b64=$(awk -v url="$url" -v name="$name" '
         /^[[:space:]]*-[[:space:]]+url:/ { u = $NF; next }
-        /^[[:space:]]+sha512:/ && u != "" { if (u == url || u == name) { print $2; exit } u = "" }' "$feed_file")
+        /^[[:space:]]+sha512:/ && u != "" { if (u == url) { print $2; exit } if (u == name && byname == "") byname = $2; u = "" }
+        END { if (byname != "") print byname }' "$feed_file")
       [[ $b64 =~ ^[A-Za-z0-9+/]+=*$ ]] || { echo "the feed lists no sha512 for $name" >&2; return 1; }
       hex=$(base64 -d <<<"$b64" 2>/dev/null | od -An -v -tx1 | tr -d ' \n') ;;
     @list)
@@ -342,9 +350,10 @@ pkgs_take_lock() {
   flock -w "${1:-0}" 8
 }
 
-# git for the clone: HTTPS only, never a credential prompt. Network calls go
-# through pgit_net, which also bounds them and kills what they leave behind.
-pgit() { GIT_ALLOW_PROTOCOL=https GIT_TERMINAL_PROMPT=0 git -C "$pkgs_dir" "$@" </dev/null; }
+# git for the clone: HTTPS only, never a credential prompt, and always bounded:
+# the clone is blob-less, so even show, checkout and archive can fetch from
+# GitHub on demand. Explicit network calls go through pgit_net.
+pgit() { timeout -k 10 300 env GIT_ALLOW_PROTOCOL=https GIT_TERMINAL_PROMPT=0 git -C "$pkgs_dir" "$@" </dev/null; }
 pgit_net() { timeout -k 10 300 env GIT_ALLOW_PROTOCOL=https GIT_TERMINAL_PROMPT=0 git "$@" </dev/null; }
 
 # Makes the pinned commit (or, when following, origin/master's) present in
@@ -363,24 +372,23 @@ pkgs_fetch() {
   fi
   [[ -n $pkgs_base ]] || { echo "$pkgs_pin_error" >&2; return 1; }
   if ! pgit cat-file -e "$pkgs_base^{commit}" 2>/dev/null; then
-    pgit_net -C "$pkgs_dir" fetch -q origin "$pkgs_base" 2>/dev/null \
-      || pgit_net -C "$pkgs_dir" fetch -q origin "$pkgs_pin_ref" >&2 || true
+    local why
+    why=$(pgit_net -C "$pkgs_dir" fetch -q origin "$pkgs_base" 2>&1) \
+      || why=$(pgit_net -C "$pkgs_dir" fetch -q origin "$pkgs_pin_ref" 2>&1) || true
     pgit cat-file -e "$pkgs_base^{commit}" 2>/dev/null \
-      || { echo "pinned omarchy-pkgs commit ${pkgs_base:0:12} is unreachable" >&2; return 1; }
+      || { echo "pinned omarchy-pkgs commit ${pkgs_base:0:12} is unreachable${why:+: $(tail -1 <<<"$why")}" >&2; return 1; }
   fi
   echo "$pkgs_base"
 }
 
-# Puts the work tree, detached, at pkgs_base for a build. Needs the lock.
-pkgs_checkout() {
-  pgit checkout -q -f --detach "$pkgs_base" >&2 && pgit clean -qfdx >&2
+# Puts the work tree, detached, at pkgs_base and cleans $1 (the whole tree
+# by default). Needs the lock.
+pkgs_detach() {
+  pgit checkout -q -f --detach "$pkgs_base" >&2 && pgit clean -qfdx -- "${1:-.}" >&2
 }
-
-# Puts Omarchy's recipe back the way pkgs_base has it.
-pkgs_restore() {
-  pgit checkout -q -f --detach "$pkgs_base" 2>/dev/null || true
-  pgit clean -qfdx -- "pkgbuilds/${1:?}" 2>/dev/null || true
-}
+pkgs_checkout() { pkgs_detach; }
+# Puts Omarchy's recipe back the way pkgs_base has it; never fails.
+pkgs_restore() { pkgs_detach "pkgbuilds/${1:?}" 2>/dev/null || true; }
 
 # A file of a recipe at a commit, read from git without a checkout.
 recipe_file() { pgit show "$1:pkgbuilds/$2/$3" 2>/dev/null; }
