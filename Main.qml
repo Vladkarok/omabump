@@ -19,6 +19,7 @@ Item {
     .replace(/^file:\/\//, "").replace(/[?#].*$/, ""))
   readonly property string checkScript: binDir + "/agent-apps-check"
   readonly property string installScript: binDir + "/agent-apps-install"
+  readonly property string promptScript: binDir + "/agent-apps-prompt"
 
   readonly property int refreshIntervalSec: Math.max(60, Number(setting("refreshIntervalSec", 900)) || 900)
   readonly property bool notify: setting("notify", true) !== false

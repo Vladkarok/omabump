@@ -3,6 +3,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import Quickshell.Io
 import qs.Commons
 import qs.Ui
 
@@ -26,6 +27,9 @@ Panel {
 
   property int rowIndex: 0
   property bool cursorActive: false
+  // What the last Ask agent or Copy prompt did, by pkg, shown as the row's
+  // status line until the panel closes.
+  property var actionNotes: ({})
 
   // The settings view swaps in for the app list. Its rows are the toggles in
   // settingRows, then the check interval dropdown.
@@ -124,6 +128,52 @@ Panel {
     root.close()
   }
 
+  // An update exists but the plugin cannot install it: an indicator row, a
+  // recipe without a watch, or a feed that failed with a newer version known.
+  function askable(app) {
+    return !!app && app.updateAvailable === true && app.installable !== true
+  }
+
+  function setActionNote(pkg, text) {
+    var notes = {}
+    for (var key in actionNotes) notes[key] = actionNotes[key]
+    notes[pkg] = text
+    actionNotes = notes
+  }
+
+  // Enter: Update when the plugin can install the row, else Ask agent.
+  function primaryAction(app) {
+    if (askable(app)) promptFor(app, "ask")
+    else updateApp(app)
+  }
+
+  // mode "ask" opens the default agent with the prompt (or copies it when no
+  // default agent is set), "copy" only copies it.
+  function promptFor(app, mode) {
+    if (!askable(app) || promptProcess.running) return
+    promptProcess.pkg = app.pkg
+    promptProcess.command = ["bash", "-c", promptProcess.script, "agent-apps-prompt", checker.promptScript, app.pkg, mode]
+    promptProcess.running = true
+  }
+
+  function promptDone(pkg, output) {
+    var newline = output.indexOf("\n")
+    var kind = newline < 0 ? output.trim() : output.substring(0, newline)
+    var rest = newline < 0 ? "" : output.substring(newline + 1)
+    if (kind === "agent" && root.bar) {
+      root.bar.run("omarchy-agent --prompt " + Util.shellQuote(rest))
+      root.close()
+    } else if (kind === "copied") setActionNote(pkg, "Prompt copied")
+    else if (kind === "noagent") setActionNote(pkg, "No default agent set, prompt copied")
+    else setActionNote(pkg, "Prompt failed: " + (rest.trim() || kind || "no output"))
+  }
+
+  function hintText() {
+    if (root.settingsOpen) return "Space change · Esc back"
+    if (root.cursorActive && root.askable(root.selectedApp())) return "Enter ask agent · c copy prompt · Esc close"
+    return "Enter update · s settings · Esc close"
+  }
+
   function checkedText() {
     if (checker.checking) return "checking"
     if (checker.checkedAt === "") return "not checked yet"
@@ -176,6 +226,13 @@ Panel {
   function statusText(app) {
     if (!app) return ""
     if (app.checking === true) return "Checking…"
+    var action = actionNotes[app.pkg]
+    if (action) return action
+    var text = statusLine(app)
+    return askable(app) ? versionText(app) + " · " + text : text
+  }
+
+  function statusLine(app) {
     var note = String(app.note || "")
     if (String(app.error || "") !== "") return "Check failed: " + app.error
     if (app.updateAvailable === true && app.installable !== true) return note !== "" ? note : "No update path"
@@ -214,6 +271,7 @@ Panel {
 
   onOpenedChanged: if (opened) {
     cursorActive = false
+    actionNotes = {}
     settingsOpen = false
     rowIndex = 0
     nowMs = Date.now()
@@ -225,6 +283,24 @@ Panel {
   Main {
     id: checker
     settings: root.settings
+  }
+
+  Process {
+    id: promptProcess
+    property string pkg: ""
+    // The first output line says what happened: agent (the prompt follows),
+    // copied, noagent (copied instead) or error (the message follows).
+    // wl-copy stays behind to serve the clipboard, so its output goes to
+    // /dev/null or the collector would never see the end of the stream.
+    readonly property string script: 'out=$("$1" "$2" 2>&1) || { printf "error\\n%s" "$out"; exit 0; }\n'
+      + 'if [[ $3 == ask && -n $(omarchy-default-agent 2>/dev/null) ]]; then printf "agent\\n%s" "$out"; exit 0; fi\n'
+      + 'printf %s "$out" | wl-copy >/dev/null 2>&1 || { echo error; echo "wl-copy failed"; exit 0; }\n'
+      + '[[ $3 == ask ]] && echo noagent || echo copied\n'
+    running: false
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.promptDone(promptProcess.pkg, text)
+    }
   }
 
   Timer {
@@ -283,7 +359,7 @@ Panel {
       onActivateRequested: {
         if (!root.cursorActive) return
         if (root.settingsOpen) root.activateSetting()
-        else root.updateApp(root.selectedApp())
+        else root.primaryAction(root.selectedApp())
       }
       onCloseRequested: root.settingsOpen ? root.showSettings(false, false) : root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
@@ -291,6 +367,7 @@ Panel {
         if (t === "s" || t === "S") root.showSettings(!root.settingsOpen, true)
         else if (t === "\b" && root.settingsOpen) root.showSettings(false, false)
         else if ((t === "r" || t === "R") && !root.settingsOpen) root.refreshNow()
+        else if ((t === "c" || t === "C") && !root.settingsOpen && root.cursorActive) root.promptFor(root.selectedApp(), "copy")
       }
 
       // The hero and the footer stay put; only the rows scroll, so the
@@ -517,7 +594,7 @@ Panel {
             Text {
               textFormat: Text.PlainText
               Layout.fillWidth: true
-              text: root.settingsOpen ? "Space change · Esc back" : "Enter update · s settings · Esc close"
+              text: root.hintText()
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -547,6 +624,7 @@ Panel {
     readonly property bool hasUpdate: !!app && app.updateAvailable === true
     readonly property bool updatable: hasUpdate && app.installable === true
     readonly property bool failed: !!app && String(app.error || "") !== ""
+    readonly property bool askable: root.askable(app)
 
     hasCursor: root.cursorActive && root.rowIndex === rowIndex
     foreground: root.foreground
@@ -634,8 +712,11 @@ Panel {
             }
           }
 
+          // Rows with Ask agent and Copy prompt have no room for it here,
+          // so their status line carries it.
           Text {
             textFormat: Text.PlainText
+            visible: !appRow.askable
             text: root.versionText(appRow.app)
             color: appRow.hasUpdate ? root.urgent : root.dim
             font.family: root.fontFamily
@@ -669,6 +750,28 @@ Panel {
           : appRow.app.source === "omarchy" ? "Build " + appRow.app.latest + " from the Omarchy recipe in a terminal"
           : "Install the vendor's " + appRow.app.latest + " package in a terminal"
         onClicked: root.updateApp(appRow.app)
+      }
+
+      Button {
+        visible: appRow.askable
+        Layout.alignment: Qt.AlignVCenter
+        text: "Ask agent"
+        bordered: true
+        foreground: root.urgent
+        fontFamily: root.fontFamily
+        fontSize: Style.font.bodySmall
+        tooltipText: "Open your default coding agent with a prompt to update " + (appRow.app ? appRow.app.label : "") + "  Enter"
+        onClicked: root.promptFor(appRow.app, "ask")
+      }
+
+      PanelActionButton {
+        visible: appRow.askable
+        Layout.alignment: Qt.AlignVCenter
+        iconText: "󰆏"
+        tooltipText: "Copy prompt  c"
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        onClicked: root.promptFor(appRow.app, "copy")
       }
     }
   }

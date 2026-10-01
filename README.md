@@ -64,6 +64,19 @@ in a way the plugin could install without keeping its own recipe for them, and
 a recipe of ours would need fixing every time the vendor changes something.
 Update them the way you installed them.
 
+### Ask agent
+
+A row with a newer version but no Update button (an indicator row, a recipe
+without an upstream watch, or a row whose last check failed after it had seen
+a newer version) has **Ask agent** and a copy button instead. Ask agent opens
+your default coding agent (`omarchy default agent <name>`) in a terminal with
+a prompt to update that app: what is installed, what the vendor published and
+where, which install routes to prefer, to show the plan before any sudo
+command and to leave `/usr/share/omarchy` and `~/.config` alone. With no
+default agent set it copies the prompt instead and the row says so. The copy
+button (`c`) only copies it. `bin/agent-apps-prompt <pkg>` prints the same
+prompt from the last check's results.
+
 ### Omarchy builds and the repo
 
 A locally built package says `Packager: Unknown Packager` in `pacman -Qi`.
@@ -119,8 +132,9 @@ newest version when it is newer, a status line, and an Update button when the
 plugin can install it. Desktop apps come first, mise tools after them. The
 footer shows the omarchy-pkgs commit used and when the last check ran.
 
-Keys: `j`/`k` or arrows select a row, `Enter` updates it, `r` checks now,
-`s` opens the settings, `Esc` closes. IPC: `qs ipc call
+Keys: `j`/`k` or arrows select a row, `Enter` updates it (or asks the agent
+on a row without Update), `c` copies the agent prompt, `r` checks now, `s`
+opens the settings, `Esc` closes. IPC: `qs ipc call
 io.github.vladkarok.agent-apps open` (also `close`, `toggle`, `refresh`,
 `status`, `settings`).
 

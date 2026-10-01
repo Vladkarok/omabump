@@ -1,0 +1,36 @@
+#!/bin/bash
+# Print a prompt asking a coding agent to update one app the plugin cannot
+# update itself (indicator rows, recipes without an upstream watch, rows whose
+# feed failed). The panel's "Ask agent" passes it to omarchy-agent --prompt,
+# "Copy prompt" puts it on the clipboard. Reads the last check's status.json.
+#
+#   agent-apps-prompt <pkg>
+set -euo pipefail
+here=$(dirname "$(readlink -f "$0")")
+source "$here/agent-apps-common"
+
+name=${1:?usage: agent-apps-prompt <pkg>}
+die() { echo "agent-apps-prompt: $*" >&2; exit 1; }
+
+app=$(app_json "$name") || die "$name is not in the app table"
+pkg=$(jq -r .pkg <<<"$app")
+[[ -s $status_file ]] || die "no check has run yet; run $here/agent-apps-check"
+row=$(jq -ce --arg pkg "$pkg" '[.apps[] | select(.pkg == $pkg)][0]' "$status_file" 2>/dev/null) \
+  || die "$pkg is not in the last check (not installed?)"
+IFS=$'\x1f' read -r label installed_name installed latest from update < <(jq -r \
+  '[.label // .pkg, .installedName // .pkg, .installed, .latest // "", .versionFrom // "", .updateAvailable == true] | map(tostring) | join("\u001f")' <<<"$row")
+[[ -n $latest && $update == true ]] || die "the last check found no newer version of $label"
+# A recipe version carries Omarchy's pkgrel; the vendor only published the rest.
+[[ $from == recipe ]] && latest=$(upstream_part "$latest")
+
+url=$(jq -r '.feed.url // ""' <<<"$app")
+case $from:$(jq -r '.feed.type // ""' <<<"$app") in
+  recipe:*) where="found by omarchy-pkgs' bin/sync-upstream for its $pkg recipe" ;;
+  *:apt-index) where="in the vendor's apt repository, $url" ;;
+  *:zcode-manifest|*:latest-yml) where="according to the vendor's update feed, $url" ;;
+  *:github-release) where="https://github.com/$(jq -r .feed.repo <<<"$app")/releases/latest" ;;
+  *:aur-rpc) where="version taken from the AUR package https://aur.archlinux.org/packages/$(jq -r '.feed.name // .pkg' <<<"$app")" ;;
+  *) where="according to the feed in the Agent Apps app table" ;;
+esac
+
+echo "On this Omarchy (Arch Linux, Hyprland) machine, $label is installed as pacman package $installed_name $installed, and the vendor has published $latest ($where). Find the vendor's official Linux build and update the app to $latest in a way pacman can manage (prefer: the Omarchy recipe in omarchy-pkgs, https://github.com/omacom/omarchy-pkgs, if one exists, else the vendor's own Arch package, else the AUR package re-targeted to that version). Show me the plan before running anything with sudo, never edit /usr/share/omarchy, and keep user data under ~/.config untouched. When done, run \`$here/agent-apps-check --no-notify\` so the Agent Apps panel refreshes."
