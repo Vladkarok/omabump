@@ -44,6 +44,9 @@ notified='{}'
 [[ -s $notified_file ]] && jq -e 'type == "object"' "$notified_file" >/dev/null 2>&1 && notified=$(<"$notified_file")
 
 tmp=$(mktemp -d "$state_dir/.check.XXXXXX")
+# write_status reads the previous run from a file (--slurpfile), so a large
+# status.json never becomes a command-line argument.
+printf '%s\n' "$previous" >"$tmp/previous.json"
 pkgs_state=""
 pkgs_commit=$(jq -r '.omarchyPkgs.commit // ""' <<<"$previous")
 pkgs_error="" pkgs_note=""
@@ -96,11 +99,12 @@ write_status() {
   (( final == 1 )) && at=$(date -Iseconds)
   out=$(mktemp "$state_dir/.status.XXXXXX")
   # Desktop apps first, mise tools after them, each in table order.
-  printf '%s\n' "${rows[@]}" | jq -s --argjson prev "$previous" --argjson order "$order" \
+  printf '%s\n' "${rows[@]}" | jq -s --slurpfile prevs "$tmp/previous.json" --argjson order "$order" \
     --argjson final "$final" --arg at "$at" --arg started "$started" \
     --arg commit "$pkgs_commit" --arg perr "$(clean_text "$pkgs_error")" --arg pnote "$(clean_text "$pkgs_note")" \
     --argjson following "$pkgs_follow" '
-    (map(.pkg)) as $done
+    $prevs[0] as $prev
+    | (map(.pkg)) as $done
     | (if $final == 1 then .
        else . + [$prev.apps[] | select(.pkg as $p | $done | index($p) | not) | .checking = ($final == 0)] end)
     | sort_by([.source == "mise", (.pkg as $p | $order | index($p) // 1e9)])
@@ -185,7 +189,7 @@ while IFS= read -r app; do
         fi
       fi
       if [[ $pkgs_state == busy ]] || (( recipe_rc == 75 )); then
-        installable=$(jq -r '.installable // false' <<<"$prev")
+        installable=$(jq '.installable == true' <<<"$prev")
         note=$pkgs_busy_note
       elif [[ $pkgs_state != ready ]]; then
         route_error=$pkgs_error

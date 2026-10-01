@@ -57,12 +57,16 @@ jq_name_rules='
 # pkgs_pin_ref; pkgs_pin_error says why a pin is unusable.
 pkgs_base="" pkgs_follow=0 pkgs_pin_ref="" pkgs_pin_error=""
 pkgs_pin() {
-  local user='{}' pins follow
+  local user=/dev/null pins follow
   if [[ -f $user_pins ]]; then
-    user=$(jq -ce 'if type == "object" then . else error("not an object") end' "$user_pins" 2>/dev/null) \
-      || { echo "ignoring $user_pins: not a JSON object" >&2; user='{}'; }
+    if jq -se 'length == 1 and (.[0] | type == "object")' "$user_pins" >/dev/null 2>&1; then
+      user=$user_pins
+    else
+      echo "ignoring $user_pins: not a JSON object" >&2
+    fi
   fi
-  pins=$(jq -c --argjson user "$user" '. * $user | .omarchyPkgs // {}' "$shipped_pins" 2>/dev/null) || pins='{}'
+  # The user's file goes in with --slurpfile, never as an argv string.
+  pins=$(jq -c --slurpfile user "$user" '. * ($user[0] // {}) | .omarchyPkgs // {}' "$shipped_pins" 2>/dev/null) || pins='{}'
   follow=$(jq -r '.follow // ""' <<<"$pins")
   if [[ $follow == master ]]; then
     pkgs_follow=1 pkgs_pin_ref=refs/heads/master
@@ -91,14 +95,18 @@ pkgs_pin
 # whose pkg, installed names or tool names break the rules above is dropped
 # with a line on stderr.
 apps_table() {
-  local user='[]' merged
+  local user=/dev/null merged
   if [[ -f $user_apps ]]; then
-    user=$(jq -ce 'if type == "array" then . else error("not an array") end' "$user_apps" 2>/dev/null) \
-      || { echo "ignoring $user_apps: not a JSON array" >&2; user='[]'; }
+    if jq -se 'length == 1 and (.[0] | type == "array")' "$user_apps" >/dev/null 2>&1; then
+      user=$user_apps
+    else
+      echo "ignoring $user_apps: not a JSON array" >&2
+    fi
   fi
-  merged=$(jq -c --argjson user "$user" '
+  # The user's file goes in with --slurpfile, never as an argv string.
+  merged=$(jq -c --slurpfile user "$user" '
     map(select(type == "object") | del(._userFeed))
-    + ($user | map(select(type == "object") | del(._userFeed) | if has("feed") then ._userFeed = true else . end))
+    + (($user[0] // []) | map(select(type == "object") | del(._userFeed) | if has("feed") then ._userFeed = true else . end))
     | map(select(.pkg | type == "string"))
     | reduce .[] as $a ({order: [], by: {}};
       if .by[$a.pkg] then .by[$a.pkg] += $a
@@ -118,8 +126,9 @@ app_json() {
 }
 
 # Text bound for status.json and notifications, made inert: control
-# characters dropped and < > replaced, since a tooltip may render rich text.
-clean_text() { printf '%s' "$1" | tr -d '\000-\037\177' | sed 's/</‹/g; s/>/›/g'; }
+# characters dropped and < > & replaced, since a tooltip may render rich text
+# and notify-send bodies are markup.
+clean_text() { printf '%s' "$1" | tr -d '\000-\037\177' | sed 's/</‹/g; s/>/›/g; s/&/＆/g'; }
 
 # Text printed in the terminal for the user to read before pacman (install
 # scripts, the recipe diff), made unable to drive the terminal: ESC shown as
@@ -272,8 +281,8 @@ vendor_checksum() {
   case $kind in
     feed)
       algo=sha512
-      # The exact url wins; a basename match is the fallback for feeds that
-      # list the file under a mirror host.
+      # The exact url wins; the fallback is an entry whose url is the bare
+      # file name, as electron-updater's latest.yml lists files.
       b64=$(awk -v url="$url" -v name="$name" '
         /^[[:space:]]*-[[:space:]]+url:/ { u = $NF; next }
         /^[[:space:]]+sha512:/ && u != "" { if (u == url) { exact = $2; exit } if (u == name && byname == "") byname = $2; u = "" }

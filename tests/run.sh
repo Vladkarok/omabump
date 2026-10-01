@@ -42,6 +42,7 @@ b64sum() { printf '%s' "$1" | python3 -c 'import base64, hashlib, sys; print(bas
 
 same "clean_text drops control characters and replaces angle brackets" \
   'a‹b›cdé' "$(clean_text $'a<b>\x01\nc\x7fd\té')"
+same "clean_text replaces & for notify-send markup" 'a ＆amp; b' "$(clean_text 'a &amp; b')"
 x=$(clean_text 'ééé'); same "the locale counts characters, not bytes" 'éé' "${x:0:2}"
 
 same "term_safe: ESC shown, C0 and C1 controls neutralised, UTF-8 kept" \
