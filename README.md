@@ -288,7 +288,9 @@ Fields:
   - `regex` with `url` and `pattern`: a Python regex with one capture group.
   - `aur-rpc` with `name`: the AUR's version, pkgrel stripped.
   - `command` with `command`: a local shell command that prints the version.
-    It runs during the check, so use it only in your own file.
+    It runs during the background check, so it is accepted only when your
+    own `~/.config/omarchy/omabump/apps.json` sets the entry's `feed`; a
+    command feed from the shipped `apps.json` is refused.
 - `icon` and `iconLight` (optional): SVG marks for dark and light themes.
 
 pacman versions are compared with `vercmp`; mise versions are left to mise.

@@ -46,7 +46,9 @@ pkgs_pin
 
 # The app table: the shipped one, with the user's file merged over it by pkg.
 # A user entry adds an app or overrides fields of a shipped one; "disabled":
-# true hides it. Shipped order comes first, user additions after.
+# true hides it. Shipped order comes first, user additions after. An entry
+# whose feed the user's file set carries "_userFeed": true (never taken from
+# either file), which feed_version requires for a command feed.
 apps_table() {
   local user='[]'
   if [[ -f $user_apps ]]; then
@@ -54,7 +56,9 @@ apps_table() {
       || { echo "ignoring $user_apps: not a JSON array" >&2; user='[]'; }
   fi
   jq -c --argjson user "$user" '
-    reduce (. + $user)[] as $a ({order: [], by: {}};
+    map(del(._userFeed))
+    + ($user | map(del(._userFeed) | if has("feed") then ._userFeed = true else . end))
+    | reduce .[] as $a ({order: [], by: {}};
       if .by[$a.pkg] then .by[$a.pkg] += $a
       else .order += [$a.pkg] | .by[$a.pkg] = $a end)
     | [.order[] as $p | .by[$p] | select(.disabled != true)]' "$shipped_apps"
@@ -284,7 +288,10 @@ feed_version() {
       v=${body##*/releases/tag/}
       v=${v#v} ;;
     command)
-      # Only from apps.json, which is local config: the command is not data.
+      # Only from the user's own apps.json: the command is local config, not
+      # data, and the shipped table must never run one in the background.
+      jq -e '._userFeed == true' >/dev/null 2>&1 <<<"$app" \
+        || { echo "command feeds are allowed only from ~/.config/omarchy/omabump/apps.json" >&2; return 1; }
       cmd=$(jq -r '.feed.command // ""' <<<"$app")
       body=$(timeout -k 10 60 bash -c "$cmd" </dev/null) || { echo "feed command failed" >&2; return 1; }
       v=$(head -1 <<<"$body") ;;
