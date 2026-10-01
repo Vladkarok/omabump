@@ -108,7 +108,8 @@ mise_load() {
   command -v mise >/dev/null || return 0
   mise_ls_json=$(mise_run ls --json 2>/dev/null | jq -ce 'if type == "object" then . else {} end' 2>/dev/null) || mise_ls_json='{}'
   (( ${1:-0} )) || return 0
-  err=$(mktemp)
+  mkdir -p "$cache_dir"
+  err=$(mktemp "$cache_dir/.mise.XXXXXX")
   if out=$(mise_run outdated --json 2>"$err") && out=$(jq -ce 'if type == "object" then . else error("bad") end' <<<"$out" 2>/dev/null); then
     mise_outdated_json=$out
   else

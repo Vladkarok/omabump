@@ -38,7 +38,7 @@ previous='{"apps":[]}'
 notified='{}'
 [[ -s $notified_file ]] && jq -e 'type == "object"' "$notified_file" >/dev/null 2>&1 && notified=$(<"$notified_file")
 
-tmp=$(mktemp -d)
+tmp=$(mktemp -d "$state_dir/.check.XXXXXX")
 pkgs_state=""
 pkgs_commit=$(jq -r '.omarchyPkgs.commit // ""' <<<"$previous")
 pkgs_error="" pkgs_note=""
