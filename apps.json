@@ -79,14 +79,163 @@
     "source": "omarchy"
   },
   {
-    "pkg": "z-code-bin",
+    "pkg": "zcode",
     "label": "ZCode",
-    "source": "aur",
+    "source": "vendor-pkg",
+    "installed": [
+      "zcode",
+      "z-code-bin"
+    ],
+    "vendorPkg": {
+      "x86_64": "https://cdn-zcode.z.ai/zcode/electron/releases/{version}/linux-x64/ZCode-{version}-linux-x64.pkg.tar.zst",
+      "aarch64": "https://cdn-zcode.z.ai/zcode/electron/releases/{version}/linux-arm64/ZCode-{version}-linux-arm64.pkg.tar.zst"
+    },
     "feed": {
       "type": "zcode-manifest",
       "url": "https://zcode.z.ai/api/v1/releases/electron/manifest?platform=linux-x64&channel=1"
     },
     "icon": "assets/zcode.svg",
     "iconLight": "assets/zcode-light.svg"
+  },
+  {
+    "pkg": "antigravity",
+    "label": "Antigravity",
+    "source": "indicator",
+    "installed": [
+      "antigravity",
+      "antigravity-appimage"
+    ],
+    "feed": {
+      "type": "aur-rpc",
+      "name": "antigravity"
+    }
+  },
+  {
+    "pkg": "antigravity-ide",
+    "label": "Antigravity IDE",
+    "source": "indicator",
+    "feed": {
+      "type": "aur-rpc",
+      "name": "antigravity-ide"
+    }
+  },
+  {
+    "pkg": "kimi-bin",
+    "label": "Kimi",
+    "source": "indicator",
+    "feed": {
+      "type": "latest-yml",
+      "url": "https://kimi-img.moonshot.cn/app/upgrade/latest.yml"
+    }
+  },
+  {
+    "pkg": "trae-bin",
+    "label": "Trae",
+    "source": "indicator",
+    "feed": {
+      "type": "aur-rpc",
+      "name": "trae-bin"
+    }
+  },
+  {
+    "pkg": "mise:claude",
+    "label": "Claude Code",
+    "source": "mise",
+    "tool": [
+      "claude",
+      "npm:@anthropic-ai/claude-code"
+    ]
+  },
+  {
+    "pkg": "mise:codex",
+    "label": "Codex CLI",
+    "source": "mise",
+    "tool": [
+      "codex",
+      "npm:@openai/codex"
+    ]
+  },
+  {
+    "pkg": "mise:gemini",
+    "label": "Gemini CLI",
+    "source": "mise",
+    "tool": [
+      "gemini",
+      "gemini-cli",
+      "npm:@google/gemini-cli"
+    ]
+  },
+  {
+    "pkg": "mise:jules",
+    "label": "Jules",
+    "source": "mise",
+    "tool": [
+      "jules",
+      "npm:@google/jules"
+    ]
+  },
+  {
+    "pkg": "mise:antigravity-cli",
+    "label": "Antigravity CLI",
+    "source": "mise",
+    "tool": "antigravity-cli"
+  },
+  {
+    "pkg": "mise:qwen",
+    "label": "Qwen Code",
+    "source": "mise",
+    "tool": [
+      "qwen",
+      "qwen-code",
+      "npm:@qwen-code/qwen-code"
+    ]
+  },
+  {
+    "pkg": "mise:kimi-cli",
+    "label": "Kimi CLI",
+    "source": "mise",
+    "tool": [
+      "kimi-cli",
+      "pipx:kimi-cli"
+    ]
+  },
+  {
+    "pkg": "mise:crush",
+    "label": "Crush",
+    "source": "mise",
+    "tool": [
+      "crush",
+      "npm:@charmland/crush"
+    ]
+  },
+  {
+    "pkg": "mise:opencode",
+    "label": "OpenCode",
+    "source": "mise",
+    "tool": [
+      "opencode",
+      "npm:opencode-ai"
+    ]
+  },
+  {
+    "pkg": "mise:amp",
+    "label": "Amp",
+    "source": "mise",
+    "tool": [
+      "amp",
+      "npm:@sourcegraph/amp"
+    ]
+  },
+  {
+    "pkg": "mise:herdr",
+    "label": "herdr",
+    "source": "mise",
+    "tool": "herdr"
+  },
+  {
+    "pkg": "mise:grok-cli",
+    "label": "Grok CLI",
+    "source": "mise",
+    "tool": "npm:@xai-official/grok"
   }
 ]

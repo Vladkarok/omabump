@@ -22,6 +22,8 @@ Item {
 
   readonly property int refreshIntervalSec: Math.max(60, Number(setting("refreshIntervalSec", 900)) || 900)
   readonly property bool notify: setting("notify", true) !== false
+  readonly property bool showMise: setting("showMise", true) !== false
+  onShowMiseChanged: { parse(statusFile.text()); refresh() }
 
   property var apps: []
   property string checkedAt: ""
@@ -35,7 +37,8 @@ Item {
       if (apps[i].updateAvailable === true && apps[i].installable === true) count++
     return count
   }
-  // Newer upstream releases that have no build path yet (no recipe watch).
+  // Newer upstream releases with no install path (no recipe watch, or an
+  // indicator-only app).
   readonly property int waitingCount: {
     var count = 0
     for (var i = 0; i < apps.length; i++)
@@ -55,14 +58,20 @@ Item {
 
   function refresh() {
     if (checkProcess.running) return
-    checkProcess.command = notify ? [checkScript] : [checkScript, "--no-notify"]
+    var command = [checkScript]
+    if (!notify) command.push("--no-notify")
+    if (!showMise) command.push("--no-mise")
+    checkProcess.command = command
     checkProcess.running = true
   }
 
   function parse(content) {
+    if (String(content || "").trim() === "") return
     try {
       var parsed = JSON.parse(String(content || ""))
-      apps = parsed && Array.isArray(parsed.apps) ? parsed.apps : []
+      var all = parsed && Array.isArray(parsed.apps) ? parsed.apps : []
+      // A check run from a terminal lists mise tools whatever the setting says.
+      apps = showMise ? all : all.filter(function(app) { return app.source !== "mise" })
       checkedAt = parsed && parsed.checkedAt ? String(parsed.checkedAt) : ""
       var pkgs = parsed && parsed.omarchyPkgs ? parsed.omarchyPkgs : {}
       pkgsCommit = String(pkgs.commit || "")

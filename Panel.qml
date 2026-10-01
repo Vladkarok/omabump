@@ -22,6 +22,7 @@ Panel {
 
   readonly property var apps: checker.apps
   readonly property int updateCount: checker.updateCount
+  readonly property bool iconOnlyWithUpdates: settings && settings.barIconOnlyWithUpdates === true
 
   property int rowIndex: 0
   property bool cursorActive: false
@@ -73,7 +74,7 @@ Panel {
   function summaryText() {
     var parts = []
     if (updateCount > 0) parts.push(updateCount + (updateCount === 1 ? " update" : " updates"))
-    if (checker.waitingCount > 0) parts.push(checker.waitingCount + " newer release, not in the recipe yet")
+    if (checker.waitingCount > 0) parts.push(checker.waitingCount + " newer without an install path")
     var failed = checker.errorCount
     if (failed > 0) parts.push("check failed for " + failed + (failed === 1 ? " app" : " apps"))
     return parts.join(", ")
@@ -82,6 +83,11 @@ Panel {
   function tooltipText() {
     var summary = summaryText()
     return summary === "" ? "Agent apps up to date" : "Agent apps: " + summary
+  }
+
+  function badgeText(app) {
+    if (!app) return ""
+    return app.source === "vendor-pkg" ? "vendor" : String(app.source || "")
   }
 
   // openai-codex-desktop may be installed as the AUR's chatgpt-desktop.
@@ -106,7 +112,7 @@ Panel {
     if (app.updateAvailable === true) {
       if (app.source === "omarchy") return "Update builds Omarchy's recipe at " + app.latest
       if (app.source === "mise") return "Update runs mise up"
-      return "Update builds the AUR recipe at " + app.latest
+      return "Update installs the vendor's package"
     }
     return "Up to date" + aliasText(app)
   }
@@ -128,6 +134,10 @@ Panel {
     return path.charAt(0) === "/" ? "file://" + path : Qt.resolvedUrl(path)
   }
 
+  // Like the system update icon, it can stay out of the bar until there is
+  // something to install. While the panel is open (IPC open/toggle) it shows,
+  // so the panel has an anchor.
+  visible: !iconOnlyWithUpdates || updateCount > 0 || opened
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
@@ -419,7 +429,7 @@ Panel {
               id: badgeText
               anchors.centerIn: parent
               textFormat: Text.PlainText
-              text: appRow.app ? String(appRow.app.source || "") : ""
+              text: root.badgeText(appRow.app)
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -456,9 +466,10 @@ Panel {
         foreground: root.urgent
         fontFamily: root.fontFamily
         fontSize: Style.font.bodySmall
-        tooltipText: !appRow.app ? "" : appRow.app.source === "mise"
-          ? "Run mise up in a terminal"
-          : "Build " + appRow.app.latest + " from the " + (appRow.app.source === "omarchy" ? "Omarchy" : "AUR") + " recipe in a terminal"
+        tooltipText: !appRow.app ? ""
+          : appRow.app.source === "mise" ? "Run mise up in a terminal"
+          : appRow.app.source === "omarchy" ? "Build " + appRow.app.latest + " from the Omarchy recipe in a terminal"
+          : "Install the vendor's " + appRow.app.latest + " package in a terminal"
         onClicked: root.updateApp(appRow.app)
       }
     }

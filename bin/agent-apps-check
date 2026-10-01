@@ -1,17 +1,26 @@
 #!/bin/bash
-# Compare each installed agent desktop app with the newest version it could be
-# updated to and record the result for the bar panel. Never installs anything.
+# Compare each installed agent app with the newest version it could be updated
+# to and record the result for the bar panel. Never installs anything.
 #
-# Omarchy-packaged apps: omarchy-pkgs' own bin/sync-upstream moves the recipe
-# to the vendor's newest release in a local clone, the resulting version is
-# read back, and the recipe is restored. Other apps ask their feed in apps.json.
+#   omarchy     omarchy-pkgs' own bin/sync-upstream moves the recipe to the
+#               vendor's newest release in a local clone, the resulting version
+#               is read back, and the recipe is restored.
+#   vendor-pkg  the feed in apps.json; the vendor publishes the package.
+#   indicator   the feed in apps.json; no install path.
+#   mise        `mise latest <tool>`.
 #
-#   agent-apps-check [--no-notify]
+#   agent-apps-check [--no-notify] [--no-mise]
 set -euo pipefail
 source "$(dirname "$(readlink -f "$0")")/agent-apps-common"
 
-notify=1
-[[ ${1:-} == --no-notify ]] && notify=0
+notify=1 with_mise=1
+for arg; do
+  case $arg in
+    --no-notify) notify=0 ;;
+    --no-mise) with_mise=0 ;;
+    *) echo "usage: agent-apps-check [--no-notify] [--no-mise]" >&2; exit 2 ;;
+  esac
+done
 
 mkdir -p "$state_dir"
 # The shell timer and a hand run can overlap; the second one has nothing to add.
@@ -55,6 +64,7 @@ rows=()
 while IFS= read -r app; do
   pkg=$(jq -r '.pkg' <<<"$app")
   label=$(jq -r '.label // .pkg' <<<"$app")
+  [[ $with_mise == 0 && $(jq -r '.source' <<<"$app") == mise ]] && continue
   read -r source installed_name installed < <(installed_app "$app") || continue
 
   prev=$(jq -c --arg pkg "$pkg" '[.apps[] | select(.pkg == $pkg)][0] // {}' <<<"$previous")
@@ -64,9 +74,24 @@ while IFS= read -r app; do
   case $source in
     mise)
       installable=true
-      latest=$(feed_version "$app" 2>"$tmp/err") && from=mise || error=$(<"$tmp/err") ;;
-    aur)
-      installable=true
+      rc=0
+      latest=$(mise_latest "$installed_name" 2>"$tmp/err") || rc=$?
+      case $rc in
+        0) from=mise ;;
+        2) continue ;;  # not in mise's registry, so nothing to compare with
+        *) latest="" error=$(<"$tmp/err") ;;
+      esac ;;
+    vendor-pkg)
+      if vendor_pkg_url "$app" x >/dev/null; then
+        installable=true
+        [[ $installed_name != "$pkg" ]] && note="Installed as $installed_name, Update switches to $pkg"
+      else
+        note="No vendor package for $(uname -m)"
+      fi
+      latest=$(feed_version "$app" 2>"$tmp/err") && from=feed || error=$(<"$tmp/err") ;;
+    indicator)
+      note="No supported install path"
+      [[ $(jq -r '.feed.type // ""' <<<"$app") == aur-rpc ]] && note+=", version from AUR"
       latest=$(feed_version "$app" 2>"$tmp/err") && from=feed || error=$(<"$tmp/err") ;;
     omarchy)
       sync_err=""
@@ -152,7 +177,8 @@ while IFS= read -r app; do
 done < <(apps_table | jq -c '.[]')
 
 out=$(mktemp "$state_dir/.status.XXXXXX")
-printf '%s\n' "${rows[@]}" | jq -s --arg at "$(date -Iseconds)" \
+# Desktop apps first, mise tools after them, each in table order.
+printf '%s\n' "${rows[@]}" | jq -s 'sort_by(.source == "mise")' | jq --arg at "$(date -Iseconds)" \
   --arg commit "$pkgs_commit" --arg perr "$pkgs_error" \
   '{checkedAt: $at, omarchyPkgs: {commit: $commit, error: $perr}, apps: .}' >"$out"
 mv -f "$out" "$status_file"

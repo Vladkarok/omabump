@@ -2,27 +2,31 @@
   "schemaVersion": 1,
   "id": "io.github.vladkarok.agent-apps",
   "name": "Agent Apps",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": "vladkarok",
   "license": "MIT",
-  "description": "Installed and newest version of the AI desktop apps behind Omarchy's Install > AI menu, with a one-click local build of Omarchy's own recipe at the vendor's newest release.",
+  "description": "Installed and newest version of the AI desktop apps behind Omarchy's Install > AI menu, and of the agent CLIs mise manages, with one-click updates through Omarchy's recipe, the vendor's own package or mise.",
   "kinds": ["bar-widget"],
   "entryPoints": {
     "barWidget": "Panel.qml"
   },
   "barWidget": {
     "displayName": "Agent Apps",
-    "description": "Shows when a vendor has released a newer version of an installed AI app than the [omarchy] repo carries, and builds Omarchy's recipe at that version in a terminal when you press Update.",
+    "description": "Shows when a vendor has released a newer version of an installed AI app or agent CLI, and updates it in a terminal through Omarchy's recipe, the vendor's Arch package or mise when you press Update.",
     "category": "AI",
     "allowMultiple": false,
     "defaultSection": "right",
     "defaults": {
       "refreshIntervalSec": 900,
-      "notify": true
+      "notify": true,
+      "showMise": true,
+      "barIconOnlyWithUpdates": false
     },
     "schema": [
       { "key": "refreshIntervalSec", "type": "integer", "label": "Check interval (seconds)", "min": 60, "max": 86400, "step": 60, "defaultValue": 900 },
-      { "key": "notify", "type": "boolean", "label": "Notify on new versions", "defaultValue": true, "description": "Send a desktop notification when a vendor publishes a version newer than the installed one." }
+      { "key": "notify", "type": "boolean", "label": "Notify on new versions", "defaultValue": true, "description": "Send a desktop notification when a vendor publishes a version newer than the installed one." },
+      { "key": "showMise", "type": "boolean", "label": "Show mise tools", "defaultValue": true, "description": "List the agent CLIs mise has installed (Claude Code, Codex CLI, OpenCode...) after the desktop apps." },
+      { "key": "barIconOnlyWithUpdates", "type": "boolean", "label": "Hide icon until an update", "defaultValue": false, "description": "Show the bar icon only when an installable update exists. IPC open and toggle still open the panel." }
     ]
   }
 }

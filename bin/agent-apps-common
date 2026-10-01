@@ -28,8 +28,12 @@ apps_table() {
     | [.order[] as $p | .by[$p] | select(.disabled != true)]' "$shipped_apps"
 }
 
+# An app by its pkg, or else by one of its installed package or mise tool
+# names, so `agent-apps-install z-code-bin` finds ZCode.
 app_json() {
-  apps_table | jq -ce --arg pkg "$1" '.[] | select(.pkg == $pkg)'
+  apps_table | jq -ce --arg n "$1" '
+    ([.[] | select(.pkg == $n)] + [.[] | select(((.installed // []) + ([.tool // empty] | flatten)) | index($n))])[0]
+    // error("no app")' 2>/dev/null
 }
 
 # vercmp is the only comparator: pacman, makepkg and omarchy-pkgs all use it.
@@ -39,7 +43,7 @@ newer() { (( $(vercmp "$1" "$2") > 0 )); }
 upstream_part() { local v=${1#*:}; echo "${v%-*}"; }
 
 # What Arch allows in pkgver, plus ":" for an epoch. Versions end up in sed
-# expressions and file names, so anything else is a feed error.
+# expressions, URLs and file names, so anything else is a feed error.
 version_ok() { [[ $1 =~ ^[A-Za-z0-9._+~:]+$ ]]; }
 
 # Prints "<name> <full version>" for the first of the given names pacman has
@@ -56,29 +60,66 @@ installed_package() {
   return 1
 }
 
-# The version mise actually runs: the entry marked active, else what
-# `mise current` prints.
+# `mise ls --json` for every tool, read once per process. Empty without mise.
+mise_ls_cache=""
+mise_ls() {
+  if [[ -z $mise_ls_cache ]]; then
+    mise_ls_cache='{}'
+    if command -v mise >/dev/null; then
+      mise_ls_cache=$(timeout 60 mise ls --json </dev/null 2>/dev/null | jq -ce 'if type == "object" then . else {} end' 2>/dev/null) \
+        || mise_ls_cache='{}'
+    fi
+  fi
+  echo "$mise_ls_cache"
+}
+
+# Prints "<tool> <active version>" for the first of the app's tool names that
+# mise has installed and active. The key is whatever the user's mise config
+# uses, e.g. claude or npm:@anthropic-ai/claude-code.
 mise_active() {
-  local tool=$1 v
-  command -v mise >/dev/null || return 1
-  v=$(mise ls --json "$tool" 2>/dev/null | jq -r '[.[]? | select(.active == true)][0].version // ""' 2>/dev/null) || v=""
-  [[ -n $v ]] || v=$(mise current "$tool" 2>/dev/null | awk '{print $1; exit}')
-  [[ -n $v ]] && echo "$v"
+  local app=$1
+  mise_ls | jq -re --argjson tools "$(jq -c '[.tool // empty] | flatten' <<<"$app")" '
+    . as $ls | [$tools[] as $t | ($ls[$t] // [])[] | select(.active == true and .installed != false)
+      | "\($t) \(.version)"][0] // empty'
 }
 
 # Prints "<source> <installed name> <version>" for an app, or fails when it is
-# not installed. A mise install wins over a pacman one: its shims sit ahead of
-# /usr/bin in PATH, so it is the copy in use.
+# not installed.
 installed_app() {
-  local app=$1 tool v line names
-  tool=$(jq -r '.mise // ""' <<<"$app")
-  if [[ -n $tool ]] && v=$(mise_active "$tool"); then
-    echo "mise $tool $v"
+  local app=$1 source line names
+  source=$(jq -r '.source // ""' <<<"$app")
+  if [[ $source == mise ]]; then
+    line=$(mise_active "$app") || return 1
+  else
+    mapfile -t names < <(jq -r '(.installed // [.pkg])[]' <<<"$app")
+    line=$(installed_package "${names[@]}") || return 1
+  fi
+  echo "$source $line"
+}
+
+# Newest version of a mise tool as mise itself resolves it, so the user's
+# prerelease and release-age settings apply. Exit 2 when mise's registry does
+# not know the tool, 1 on any other failure.
+mise_latest() {
+  local out rc
+  out=$(timeout 60 mise latest "$1" </dev/null 2>&1) && rc=0 || rc=$?
+  out=$(sed 's/\x1b\[[0-9;]*m//g' <<<"$out")
+  if (( rc == 0 )) && version_ok "$(tail -1 <<<"$out")"; then
+    tail -1 <<<"$out"
     return 0
   fi
-  mapfile -t names < <(jq -r '((.installed // [.pkg]) + (if .aur then [.aur] else [] end))[]' <<<"$app")
-  line=$(installed_package "${names[@]}") || return 1
-  echo "$(jq -r '.source // "aur"' <<<"$app") $line"
+  grep -q 'not found in mise tool registry' <<<"$out" && return 2
+  echo "mise latest $1: $(grep -v '^[[:space:]]*$' <<<"$out" | head -1 || echo 'no version')" >&2
+  return 1
+}
+
+# The vendor package URL for this machine's architecture with {version}
+# filled in, or nothing when the vendor builds none for it.
+vendor_pkg_url() {
+  local app=$1 version=$2 url
+  url=$(jq -r --arg arch "$(uname -m)" '.vendorPkg[$arch] // ""' <<<"$app")
+  [[ -n $url ]] || return 1
+  echo "${url//\{version\}/$version}"
 }
 
 # Newest version in a Debian Packages index for one exact package name.
@@ -106,9 +147,16 @@ feed_version() {
       want=$(jq -r '.feed.package // .pkg' <<<"$app")
       body=$(curl -fsSL --max-time 30 "$url" 2>/dev/null) || { echo "could not fetch $url (curl exit $?)" >&2; return 1; }
       v=$(apt_newest "$body" "$want") || { echo "no $want in the apt index" >&2; return 1; } ;;
-    zcode-manifest)
+    zcode-manifest|latest-yml)
       body=$(curl -fsSL --max-time 30 "$url" 2>/dev/null) || { echo "could not fetch $url (curl exit $?)" >&2; return 1; }
       v=$(sed -n 's/^version: *//p' <<<"$body" | head -1) ;;
+    aur-rpc)
+      want=$(jq -r '.feed.name // .pkg' <<<"$app")
+      body=$(curl -fsSL --max-time 30 "https://aur.archlinux.org/rpc/v5/info?arg%5B%5D=$want" 2>/dev/null) \
+        || { echo "could not reach the AUR (curl exit $?)" >&2; return 1; }
+      v=$(jq -r '.results[0].Version // ""' <<<"$body" 2>/dev/null) || v=""
+      [[ -n $v ]] || { echo "the AUR has no $want" >&2; return 1; }
+      v=$(upstream_part "$v") ;;
     github-release)
       # The /releases/latest redirect names the tag; the REST API would do the
       # same but allows only 60 unauthenticated calls an hour.

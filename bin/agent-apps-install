@@ -1,19 +1,19 @@
 #!/bin/bash
-# Build and install the newest release of one agent desktop app. Meant to run
-# in a visible terminal: makepkg and pacman talk to the user and sudo may ask
-# for a password.
+# Install the newest release of one agent app. Meant to run in a visible
+# terminal: makepkg and pacman talk to the user and sudo may ask for a password.
+# Every path runs install knowledge someone else maintains:
 #
-#   omarchy  Omarchy's own recipe from omarchy-pkgs, moved to the vendor's
-#            newest release by omarchy-pkgs' bin/sync-upstream. The recipe
-#            diff is shown before anything is built.
-#   aur      The AUR recipe with pkgver set to the version the app's feed
-#            advertises and checksums refreshed by updpkgsums.
-#   mise     mise up <tool>.
+#   omarchy     Omarchy's own recipe from omarchy-pkgs, moved to the vendor's
+#               newest release by omarchy-pkgs' bin/sync-upstream. The recipe
+#               diff is shown before anything is built.
+#   vendor-pkg  The Arch package the vendor publishes, at the version the
+#               app's feed advertises, installed with pacman -U.
+#   mise        mise up <tool>.
 #
 #   agent-apps-install [--dry-run] <pkg>
 #
-# --dry-run stops before makepkg builds anything: it prepares the recipe, shows
-# the diff, the version check and the package files makepkg would produce.
+# --dry-run stops before anything is built, downloaded or installed and prints
+# what would run.
 set -euo pipefail
 here=$(dirname "$(readlink -f "$0")")
 source "$here/agent-apps-common"
@@ -25,6 +25,7 @@ pkg=${1:?usage: agent-apps-install [--dry-run] <pkg>}
 die() { echo "agent-apps: $*" >&2; exit 1; }
 
 app=$(app_json "$pkg") || die "$pkg is not in the app table"
+pkg=$(jq -r .pkg <<<"$app")
 label=$(jq -r '.label // .pkg' <<<"$app")
 
 # One update per app at a time; the clone lock below serialises Omarchy builds.
@@ -34,7 +35,7 @@ flock -n 7 || die "another update of $label is already running"
 
 installed_name="" installed=""
 if read -r source installed_name installed < <(installed_app "$app"); then :; else
-  source=$(jq -r '.source // "aur"' <<<"$app")
+  source=$(jq -r '.source // ""' <<<"$app")
 fi
 echo "$label: installed ${installed:-nothing} (${installed_name:-$pkg}, $source)"
 
@@ -120,56 +121,75 @@ install_omarchy() {
   exec 8>&-
 }
 
-install_aur() {
-  local aur dir latest
-  aur=$(jq -r '.aur // .pkg' <<<"$app")
+# pacman would download a URL itself, but it checks remote files against
+# RemoteFileSigLevel, which defaults to SigLevel (Required) and vendors do not
+# sign these packages. So curl fetches the file, pacman -Qp checks its name and
+# version, and pacman -U installs the local file (LocalFileSigLevel).
+install_vendor_pkg() {
+  local latest url file line name ver now_line confirm=(--noconfirm)
   latest=$(feed_version "$app") || die "the feed has no version"
   echo "Feed: $latest"
-  dir=$cache_dir/aur/$aur
-  if [[ -d $dir/.git ]]; then
-    { git -C "$dir" fetch -q </dev/null && git -C "$dir" reset -q --hard origin/HEAD && git -C "$dir" clean -qfdx; } \
-      || die "could not update the AUR clone of $aur"
-  else
-    mkdir -p "$(dirname "$dir")"
-    git clone -q "https://aur.archlinux.org/$aur.git" "$dir" </dev/null || die "could not clone $aur from the AUR"
+  url=$(vendor_pkg_url "$app" "$latest") || die "the vendor publishes no $pkg package for $(uname -m)"
+  echo "Vendor package: $url"
+  if [[ -n $installed ]] && ! newer "$latest" "$(upstream_part "$installed")"; then
+    msg="$latest is not newer than the installed $installed_name $installed"
+    (( dry_run )) && { echo "Would refuse: $msg"; return 0; }
+    die "$msg; nothing to do"
   fi
-  cd "$dir"
-  [[ -f PKGBUILD ]] || die "AUR has no $aur"
-  sed -i "s/^pkgver=.*/pkgver=$latest/; s/^pkgrel=.*/pkgrel=1/" PKGBUILD
-  updpkgsums
-  echo
-  echo "Changes to the AUR $aur recipe:"
-  git --no-pager diff --color=auto -- PKGBUILD
-  echo
-  check_target "$dir" "$aur"
-  build_and_install "$aur"
+  # Replacing a differently named package (z-code-bin by zcode) is a conflict
+  # prompt whose default answer is No, so --noconfirm would abort.
+  if [[ -n $installed_name && $installed_name != "$pkg" ]]; then
+    confirm=()
+    echo "pacman will ask to replace $installed_name with $pkg; answer y to switch."
+  fi
+  file=$PKGDEST/${url##*/}
+  if (( dry_run )); then
+    echo "Would download it to $file, check it with pacman -Qp, then run:"
+    echo "  sudo pacman -U ${confirm[*]:+${confirm[*]} }-- $file"
+    return 0
+  fi
+
+  curl -fL --retry 2 -o "$file.part" "$url" || die "could not download $url"
+  mv -f "$file.part" "$file"
+  line=$(pacman -Qp -- "$file") || die "cannot read $file"
+  name=${line%% *} ver=${line#* }
+  [[ $name == "$pkg" ]] || die "the vendor package is '$name', expected '$pkg'"
+  [[ $(upstream_part "$ver") == "$latest" ]] || die "the vendor package is $ver, expected $latest"
+  sudo pacman -U "${confirm[@]}" -- "$file"
+  now_line=$(installed_package "$pkg") || die "pacman -Q $pkg finds nothing after the install"
+  [[ $now_line == "$pkg $ver" ]] || die "pacman -Q says '$now_line', expected '$pkg $ver'"
+  echo "Installed $now_line."
+  target_version=$ver
 }
 
 install_mise() {
-  local tool latest now
-  tool=$(jq -r '.mise' <<<"$app")
-  latest=$(feed_version "$app" 2>/dev/null) || latest=""
+  local tool=$installed_name latest now
+  [[ -n $tool ]] || die "mise has no active $label"
+  latest=$(mise_latest "$tool" 2>/dev/null) || latest=""
   if (( dry_run )); then
+    echo "Newest: ${latest:-unknown}"
     echo "Would run: MISE_MINIMUM_RELEASE_AGE=0 mise up $tool"
     return 0
   fi
   # mise withholds releases younger than its cooldown; omarchy-update-mise
   # lifts it the same way.
   MISE_MINIMUM_RELEASE_AGE=0 mise up "$tool"
-  now=$(mise_active "$tool") || now=""
+  now=$(mise_active "$app") || now=""
+  now=${now#* }
   if [[ -z $latest ]]; then
-    echo "$label is now ${now:-unknown}; the feed did not answer, so it may not be the newest."
+    echo "$label is now ${now:-unknown}; mise latest did not answer, so it may not be the newest."
   elif [[ $now == "$latest" ]]; then
-    echo "$label is now $now, the vendor's newest."
+    echo "$label is now $now, the newest mise knows."
   else
-    echo "$label is still ${now:-unknown} but the vendor has $latest. mise may pin an older version in its config (mise ls $tool)."
+    echo "$label is still ${now:-unknown} but mise latest says $latest. mise may pin an older version in its config (mise ls $tool)."
   fi
 }
 
 case $source in
   omarchy) install_omarchy ;;
-  aur) install_aur ;;
+  vendor-pkg) install_vendor_pkg ;;
   mise) install_mise ;;
+  indicator) die "$label has no supported install path; update it the way you installed it" ;;
   *) die "unknown source '$source'" ;;
 esac
 
