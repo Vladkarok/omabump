@@ -90,8 +90,24 @@ Panel {
   function showSettings(on, withCursor) {
     settingsOpen = on
     settingIndex = 0
-    cursorActive = withCursor
+    if (on) cursorActive = withCursor
+    else resetCursor()
     if (panelFlick) panelFlick.contentY = 0
+  }
+
+  function hasAction(app) {
+    return !!app && ((app.updateAvailable === true && app.installable === true)
+      || askable(app) || app.switchable === true)
+  }
+
+  // A fresh list puts the cursor on the first row with something to do (else
+  // the first row), so Enter acts without an arrow key first.
+  function resetCursor() {
+    var first = 0
+    for (var i = 0; i < orderedApps.length; i++)
+      if (hasAction(orderedApps[i])) { first = i; break }
+    rowIndex = first
+    cursorActive = orderedApps.length > 0
   }
 
   // shell.json hot-reloads and the bar injects the new settings, so the
@@ -331,10 +347,9 @@ Panel {
   implicitHeight: button.implicitHeight
 
   onOpenedChanged: if (opened) {
-    cursorActive = false
     actionNotes = {}
     settingsOpen = false
-    rowIndex = 0
+    resetCursor()
     nowMs = Date.now()
     if (panelFlick) panelFlick.contentY = 0
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
