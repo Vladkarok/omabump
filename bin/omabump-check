@@ -194,7 +194,11 @@ while IFS= read -r app; do
 
   # Everything but mise reads its newest version from the feed in apps.json.
   if [[ $source != mise ]]; then
-    latest=$(feed_version "$app" 2>"$tmp/err") && from=feed || { latest=""; feed_error=$(<"$tmp/err"); }
+    if latest=$(feed_version "$app" 2>"$tmp/err"); then
+      from=feed
+    else
+      latest="" feed_error=$(<"$tmp/err")
+    fi
   fi
 
   # Keep the last known version so a flaky feed neither hides a pending
