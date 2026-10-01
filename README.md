@@ -1,15 +1,13 @@
 # Agent Apps
 
-An Omarchy bar widget for the AI desktop apps. It shows the installed and the
-newest version of each one, and on request builds the newest version locally.
+An Omarchy bar widget for AI desktop apps and the agent CLIs mise manages. It
+shows the installed and the newest version of each one and, when you press
+Update, installs the newest version in a terminal.
 
-The apps behind Omarchy's Install > AI menu come from the [omarchy] pacman
-repo, built from the recipes in [omacom/omarchy-pkgs](https://github.com/omacom/omarchy-pkgs).
-That repo notices a vendor release within hours, but the update waits for a
-reviewed pull request, so the repo can lag the vendor by days. This plugin runs
-the same recipe update on your machine, at the moment you press Update, so you
-get the vendor's release built from Omarchy's own recipe until the repo catches
-up. It never installs anything on its own.
+The plugin installs only through mechanisms whose install knowledge someone
+else maintains: Omarchy's own recipe, the vendor's own Arch package, or mise.
+An app that none of these covers is still listed, as an indicator-only row. It
+never installs anything on its own.
 
 ![Agent Apps panel](preview.png)
 
@@ -24,20 +22,49 @@ Remove it with `omarchy plugin remove io.github.vladkarok.agent-apps`.
 ## Prerequisites
 
 - `base-devel` (makepkg) and `git`
-- `pacman-contrib` (`updpkgsums`, used for AUR apps)
 - `jq`, `curl`, `python` 3.11 or newer, `libarchive` (`bsdtar`): what
   omarchy-pkgs' `bin/sync-upstream` needs
 - sudo rights for `pacman -U`
-- `mise`, optional, for apps you run through mise
+- `mise`, optional, for the agent CLIs
 
 ## What Update runs
 
-Update opens a floating terminal and runs `bin/agent-apps-install <pkg>`. It
-executes packaging code you did not write on your machine: Omarchy's recipe
-from omarchy-pkgs, or the AUR recipe for an app Omarchy does not package.
-Before building, it prints the recipe diff, so you see exactly what changed in
-Omarchy's recipe (normally `pkgver` and checksums). Read it before you type
-your sudo password.
+Update opens a floating terminal and runs `bin/agent-apps-install <pkg>`.
+Which of three mechanisms it uses depends on the row's source badge.
+
+**omarchy.** The apps behind Omarchy's Install > AI menu come from the
+[omarchy] pacman repo, built from the recipes in
+[omacom/omarchy-pkgs](https://github.com/omacom/omarchy-pkgs). That repo
+notices a vendor release within hours, but the update waits for a reviewed
+pull request, so the repo can lag the vendor by days. Update runs the same
+recipe update on your machine: it resets a clone of omarchy-pkgs to
+`origin/master`, runs omarchy-pkgs' `bin/sync-upstream <pkg>`, prints the
+recipe diff (normally `pkgver` and checksums), checks that the recipe builds
+the expected package at a version newer than the installed one, builds it with
+`makepkg` and installs it with `sudo pacman -U`. This runs packaging code you
+did not write, so read the diff before you type your sudo password.
+
+**vendor.** The vendor publishes a ready Arch package. `apps.json` gives its
+URL with `{version}` in it and a feed for the newest version. Update refuses
+unless the feed's version is newer than the installed one, prints the URL,
+downloads the file with curl to `~/.cache/agent-apps/packages`, checks its
+name and version with `pacman -Qp`, installs it with `sudo pacman -U` and
+confirms the result with `pacman -Q`. curl fetches the file because pacman
+checks a URL given to `-U` against `RemoteFileSigLevel`, which defaults to
+`SigLevel = Required`, and vendors do not sign these packages. A local file
+falls under `LocalFileSigLevel = Optional`. When the app is installed under
+another name, pacman asks to replace that package; answer `y`.
+
+**mise.** Update runs `MISE_MINIMUM_RELEASE_AGE=0 mise up <tool>` and reports
+whether the active version now matches `mise latest <tool>`.
+
+**indicator.** No Update button. These rows show the installed and newest
+version and the status "No supported install path". Nobody packages these apps
+in a way the plugin could install without keeping its own recipe for them, and
+a recipe of ours would need fixing every time the vendor changes something.
+Update them the way you installed them.
+
+### Omarchy builds and the repo
 
 A locally built package says `Packager: Unknown Packager` in `pacman -Qi`.
 pacman replaces it with the repo package only when the repo's full version
@@ -52,6 +79,33 @@ pacman replaces it with the repo package only when the repo's full version
 
 `sudo pacman -S <pkg>` puts the repo package back at any time.
 
+A recipe without an upstream watch (hermes-desktop, and grok-bot on master, which sets
+`"sync": false`) cannot be moved this way. Those rows show the version from the
+vendor feed in `apps.json` and no Update button. T3 Code's recipe hook
+downloads both release AppImages to hash them, so the check asks its GitHub
+releases instead and the hook only runs on Update.
+
+### ZCode
+
+Z.ai publishes an Arch package at
+`https://cdn-zcode.z.ai/zcode/electron/releases/{version}/linux-x64/ZCode-{version}-linux-x64.pkg.tar.zst`
+(and `linux-arm64/...-linux-arm64...`). Checked with 3.14.4 on 2026-10-01:
+
+- `pacman -Qp` reads `zcode 3.14.4-7912`. The pkgrel is Z.ai's build number.
+- It is built with fpm. No provides, conflicts or replaces; packager
+  `ZCode <dev@zcode.z.ai>`; no description; license `unknown`; no signature.
+  Dependencies are all in the Arch repos.
+- Files go to `/opt/ZCode` and `/usr/share`. The install script links
+  `/usr/bin/zcode` to `/opt/ZCode/zcode`, so no package owns that link.
+- `/opt/ZCode/resources/package-type` contains `pacman`. The AUR's
+  `z-code-bin` repackages the Debian package, and there the file says `deb`.
+  With `pacman`, ZCode's own updater should handle later updates itself.
+- The AUR's `z-code-bin` declares `provides=zcode` and `conflicts=zcode`, so
+  `pacman -U` asks to remove `z-code-bin` the first time. Update leaves out
+  `--noconfirm` for that run so you can answer.
+
+The newest version comes from Z.ai's update manifest.
+
 ## What it shows
 
 The bar icon turns the urgent colour when an app can be updated. Left click
@@ -60,13 +114,14 @@ app, the tooltip says so and that row shows the error; the icon colour stays
 normal.
 
 The panel lists every catalog app that is installed (found with `pacman -Q`,
-or `mise` for mise tools), with a source badge, the installed version, the
+or `mise ls` for mise tools) with a source badge, the installed version, the
 newest version when it is newer, a status line, and an Update button when the
-plugin can build it. The footer shows the omarchy-pkgs commit used and when
-the last check ran.
+plugin can install it. Desktop apps come first, mise tools after them. The
+footer shows the omarchy-pkgs commit used and when the last check ran.
 
 Keys: `j`/`k` or arrows select a row, `Enter` updates it, `r` checks now,
-`Esc` closes.
+`Esc` closes. IPC: `qs ipc call io.github.vladkarok.agent-apps open` (also
+`close`, `toggle`, `refresh`, `status`).
 
 | Package | App | Source |
 |---|---|---|
@@ -74,49 +129,49 @@ Keys: `j`/`k` or arrows select a row, `Enter` updates it, `r` checks now,
 | `openai-codex-desktop` | Codex (also found as AUR `chatgpt-desktop`) | omarchy |
 | `t3code-bin` | T3 Code | omarchy |
 | `hermes-desktop` | Hermes | omarchy, no Update yet |
-| `grok-bot` | Grok | omarchy, no Update yet |
+| `grok-bot` | Grok | omarchy |
 | `lmstudio-bin` | LM Studio | omarchy |
 | `openclaw` | OpenClaw | omarchy |
 | `perplexity` | Perplexity | omarchy |
 | `voxtype-bin` | Dictation (voxtype) | omarchy |
-| `z-code-bin` | ZCode | aur |
+| `zcode` | ZCode (also found as AUR `z-code-bin`) | vendor |
+| `antigravity` | Antigravity (or `antigravity-appimage`) | indicator, version from AUR |
+| `antigravity-ide` | Antigravity IDE | indicator, version from AUR |
+| `kimi-bin` | Kimi | indicator, version from Moonshot's update feed |
+| `trae-bin` | Trae | indicator, version from AUR |
+
+mise tools, shown when mise has them installed and active: Claude Code,
+Codex CLI, Gemini CLI, Jules, Antigravity CLI, Qwen Code, Kimi CLI, Crush,
+OpenCode, Amp, herdr, Grok CLI. Each entry lists the names a mise config may
+use for it (`claude` or `npm:@anthropic-ai/claude-code`, for example). A tool
+that mise's registry does not know is skipped.
+
+Antigravity and Antigravity IDE are separate products with separate version
+lines (2.18 and 2.5 at the time of writing), so they are separate rows. Google
+publishes neither with a "latest" pointer, and Trae's update API mixes two
+version schemes, so those rows ask the AUR.
 
 ## How it works
-
-### Omarchy-packaged apps
-
-The plugin keeps a clone of omarchy-pkgs in
-`~/.cache/agent-apps/omarchy-pkgs` and resets it to `origin/master` before
-each use. The check runs `bin/sync-upstream <pkg>` there, which rewrites the
-recipe only when the vendor has something newer, reads the resulting version,
-and restores the recipe. Recipe policies apply as they do in the repo: a
-`min_release_age` hold (openclaw, voxtype) keeps a fresh release back.
-
-Update does the same sync, shows the diff, checks that the recipe builds the
-expected package at a version newer than the installed one, builds it with
-`makepkg` and installs it with `sudo pacman -U`. Sources, build files and
-packages go to `~/.cache/agent-apps/{sources,build,packages}`, so the clone
-stays clean and downloads are reused.
-
-A recipe without an upstream watch (hermes-desktop, and grok-bot, which sets
-`"sync": false`) cannot be moved this way. Those rows show the version from the
-vendor feed in `apps.json` and no Update button. T3 Code's recipe hook
-downloads both release AppImages to hash them, so the check asks its GitHub
-releases instead and the hook only runs on Update.
-
-### Other apps
-
-- `aur`: Update clones the AUR package into `~/.cache/agent-apps/aur/`, sets
-  `pkgver` to the feed's version, refreshes checksums with `updpkgsums`, shows
-  the diff and builds it the same way.
-- `mise`: Update runs `MISE_MINIMUM_RELEASE_AGE=0 mise up <tool>` and reports
-  whether the active version now matches the feed.
 
 `bin/agent-apps-check` writes
 `~/.local/state/omarchy/plugins/io.github.vladkarok.agent-apps/status.json`.
 The widget runs it on a timer and watches that file, so a run from a terminal
-updates the panel too. `bin/agent-apps-install --dry-run <pkg>` does
-everything up to the build and stops.
+updates the panel too. `bin/agent-apps-install --dry-run <pkg>` prints what
+Update would run and stops before building, downloading or installing.
+`<pkg>` may also be an installed package name (`z-code-bin`) or a mise tool
+name (`claude`).
+
+For omarchy rows the check runs `bin/sync-upstream <pkg>` in the clone at
+`~/.cache/agent-apps/omarchy-pkgs`, which rewrites the recipe only when the
+vendor has something newer, reads the resulting version, and restores the
+recipe. Recipe policies apply as they do in the repo: a `min_release_age` hold
+(openclaw, voxtype) keeps a fresh release back. Sources, build files and
+packages go to `~/.cache/agent-apps/{sources,build,packages}`, so the clone
+stays clean and downloads are reused.
+
+For mise rows the check reads `mise ls --json` once and asks `mise latest
+<tool>`, so your mise settings (`prerelease`, release age) decide what counts
+as newest.
 
 ## Settings
 
@@ -124,6 +179,10 @@ everything up to the build and stops.
 - `notify`: send a desktop notification when a newer version shows up,
   default on. Each version is announced once; announced versions are kept in
   `notified.json` next to `status.json`.
+- `showMise`: list mise tools, default on.
+- `barIconOnlyWithUpdates`: hide the bar icon unless an installable update
+  exists, default off. IPC `open` and `toggle` still open the panel, and the
+  icon shows while it is open.
 
 ## Adding or changing apps
 
@@ -135,9 +194,10 @@ existing `pkg` overrides the fields it sets, and `"disabled": true` hides one.
 [
   { "pkg": "lmstudio-bin", "disabled": true },
   {
-    "pkg": "my-app-bin",
+    "pkg": "my-app",
     "label": "My App",
-    "source": "aur",
+    "source": "vendor-pkg",
+    "vendorPkg": { "x86_64": "https://example.com/{version}/my-app-{version}-x86_64.pkg.tar.zst" },
     "feed": { "type": "github-release", "repo": "owner/my-app" }
   }
 ]
@@ -145,13 +205,16 @@ existing `pkg` overrides the fields it sets, and `"disabled": true` hides one.
 
 Fields:
 
-- `pkg`: the omarchy-pkgs recipe name, or the AUR package for `aur`.
-- `source`: `omarchy` or `aur`.
+- `pkg`: the omarchy-pkgs recipe name, or the package name the vendor's
+  package installs as for `vendor-pkg`. For mise entries any unique id
+  (the shipped ones use `mise:<name>`).
+- `source`: `omarchy`, `vendor-pkg`, `mise` or `indicator`.
 - `installed` (optional): package names to look for with `pacman -Q`, default
   `[pkg]`.
-- `aur` (optional): the AUR package to build when it differs from `pkg`.
-- `mise` (optional): a mise tool name. When mise has it, that copy is the one
-  reported and Update runs `mise up`.
+- `tool` (mise only): the mise tool name, or a list of names; the first one
+  mise has active is used.
+- `vendorPkg` (vendor-pkg only): package URL per architecture (`uname -m`
+  as key), with `{version}` replaced by the feed's version.
 - `checkWith: "feed"` (optional, omarchy only): check with `feed` instead of
   running the recipe sync.
 - `recipeRef` (optional, omarchy only): an omarchy-pkgs ref whose recipe is
@@ -160,13 +223,17 @@ Fields:
   `refs/pull/725/head`). The panel row says so, and the install diff is shown
   against master, so the PR's changes are visible too. Drop the field once
   the PR merges.
-- `feed`: where the newest version comes from for `aur` and `mise` apps, and
-  the fallback for `omarchy` apps whose recipe cannot sync:
+- `feed`: where the newest version comes from for `vendor-pkg` and
+  `indicator` apps, and the fallback for `omarchy` apps whose recipe cannot
+  sync:
   - `apt-index` with `url` and `package`: a Debian `Packages` file, newest
     stanza for that exact package name.
-  - `zcode-manifest` with `url`: YAML with `version:` on its own line.
+  - `zcode-manifest` or `latest-yml` with `url`: YAML with `version:` on its
+    own line (electron-updater's `latest.yml`).
   - `github-release` with `repo`: the tag behind `/releases/latest`, leading
     `v` stripped. No API calls, so no rate limit.
+  - `aur-rpc` with `name`: the AUR's version of that package, pkgrel
+    stripped.
   - `command` with `command`: any shell command that prints the version.
 - `icon` and `iconLight` (optional): SVG marks for dark and light themes,
   relative to the plugin folder or absolute.
