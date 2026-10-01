@@ -113,7 +113,7 @@ installed_package() {
 
 # mise answers depend on the config files of the current directory, so every
 # mise call runs in $HOME, in the check and the installer alike.
-mise_run() { (cd "$HOME" && timeout -k 10 "${mise_timeout:-120}" mise "$@" </dev/null); }
+mise_run() { (cd "$HOME" && MISE_HIDE_UPDATE_WARNING=1 timeout -k 10 "${mise_timeout:-120}" mise "$@" </dev/null); }
 
 # mise_load fills these once, in the calling shell (never call it in a
 # subshell, the values would be lost there): `mise ls --json`, and with $1=1

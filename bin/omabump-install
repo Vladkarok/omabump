@@ -72,6 +72,45 @@ fi
 export PKGDEST=$cache_dir/packages SRCDEST=$cache_dir/sources BUILDDIR=$cache_dir/build PKGEXT=.pkg.tar
 mkdir -p "$PKGDEST" "$SRCDEST" "$BUILDDIR"
 
+# Code from omarchy-pkgs (bin/sync-upstream, the recipe's hook) and makepkg
+# download with curl. Two files written on every run keep those downloads
+# HTTPS only, redirects included, and bounded:
+#   $cache_dir/curl/.curlrc   read by every plain curl sync-upstream and its
+#                             hooks run, through CURL_HOME
+#   $cache_dir/makepkg.conf   the user's makepkg configuration, sourced in
+#                             makepkg's own order, with DLAGENTS replaced
+# Both are 0600. sync-upstream also gets its own TMPDIR under the cache.
+write_download_policy() {
+  mkdir -p "$cache_dir/curl" "$cache_dir/tmp"
+  (umask 077
+   cat >"$cache_dir/curl/.curlrc" <<'EOF'
+proto = "=https"
+proto-redir = "=https"
+connect-timeout = 15
+max-time = 900
+max-filesize = 4G
+EOF
+   cat >"$cache_dir/makepkg.conf" <<'EOF'
+# Written by omabump-install on every run; edits are lost.
+for c in /etc/makepkg.conf /etc/makepkg.conf.d/*.conf; do
+  [[ -r $c ]] && source "$c"
+done
+if [[ -r ${XDG_CONFIG_HOME:-$HOME/.config}/pacman/makepkg.conf ]]; then
+  source "${XDG_CONFIG_HOME:-$HOME/.config}/pacman/makepkg.conf"
+elif [[ -r $HOME/.makepkg.conf ]]; then
+  source "$HOME/.makepkg.conf"
+fi
+unset c
+DLAGENTS=('https::/usr/bin/curl -qgb "" --proto =https --proto-redir =https --connect-timeout 15 --max-time 1800 --max-filesize 4G -fLC - --retry 3 --retry-delay 3 -o %o %u'
+          'http::/bin/false' 'ftp::/bin/false' 'scp::/bin/false' 'rsync::/bin/false')
+EOF
+  )
+  chmod 0600 "$cache_dir/curl/.curlrc" "$cache_dir/makepkg.conf"
+}
+
+# makepkg under the configuration above.
+mkpkg() { makepkg --config "$cache_dir/makepkg.conf" "$@"; }
+
 # A failed build or install keeps its files for a look; a successful one
 # removes them (clean_after_install).
 restore_clone=0 started=0
@@ -118,7 +157,7 @@ switch_conflicts() {
     info=$(pacman -Qip -- "$src")
     new_c=$(qi_names 'Conflicts With' <<<"$info") new_p=$(qi_names Provides <<<"$info")
   else
-    info=$(cd "$src" && makepkg --printsrcinfo 2>/dev/null) || return 1
+    info=$(cd "$src" && mkpkg --printsrcinfo 2>/dev/null) || return 1
     new_c=$(sed -n 's/^\tconflicts = //p' <<<"$info" | sed 's/[<>=].*//')
     new_p=$(sed -n 's/^\tprovides = //p' <<<"$info" | sed 's/[<>=].*//')
   fi
@@ -227,7 +266,7 @@ stage_and_install() {
 # Builds the recipe in the current directory, checks the result and installs it.
 build_and_install() {
   local want=$1 list files f line msg match=""
-  list=$(makepkg --packagelist) || die "makepkg --packagelist failed"
+  list=$(mkpkg --packagelist) || die "makepkg --packagelist failed"
   mapfile -t files <<<"$list"
   for f in "${files[@]}"; do
     [[ $(basename "$f") == "$want-$target_version-"* ]] && match=$f
@@ -243,7 +282,7 @@ build_and_install() {
   fi
 
   started=1
-  makepkg -sfC --noconfirm
+  mkpkg -sfC --noconfirm
   [[ -f $match ]] || die "makepkg did not produce $match"
   line=$(pacman -Qp -- "$match") || die "cannot read $match"
   [[ $line == "$want $target_version" ]] || die "built package is '$line', expected '$want $target_version'"
@@ -258,7 +297,7 @@ build_and_install() {
 # makepkg builds in $BUILDDIR/<pkgbase>. Run in the recipe directory.
 clean_build_tree() {
   local base
-  base=$(makepkg --printsrcinfo 2>/dev/null | sed -n 's/^pkgbase = //p' | head -1)
+  base=$(mkpkg --printsrcinfo 2>/dev/null | sed -n 's/^pkgbase = //p' | head -1)
   [[ $base =~ ^[a-z0-9@._+-]+$ && -d $BUILDDIR/$base ]] || return 0
   rm -rf -- "${BUILDDIR:?}/$base" && echo "Removed the build tree $BUILDDIR/$base."
 }
@@ -286,7 +325,7 @@ clean_old_sources() {
       [[ -f $old && $old != "$SRCDEST/$f" && $old -ot $SRCDEST/$f ]] || continue
       rm -f -- "$old" && echo "Removed the older source ${old##*/}."
     done
-  done < <(makepkg --printsrcinfo 2>/dev/null | sed -n 's/^\tsource\(_[a-z0-9_]*\)\? = //p')
+  done < <(mkpkg --printsrcinfo 2>/dev/null | sed -n 's/^\tsource\(_[a-z0-9_]*\)\? = //p')
 }
 
 install_omarchy() {
@@ -313,8 +352,13 @@ install_omarchy() {
   [[ -z $blocker ]] || die "$blocker; wait for the [omarchy] repo"
 
   # The first fetched code that runs: omarchy-pkgs' sync tool and the
-  # recipe's upstream hook, as you, after you pressed Update.
-  (cd "$pkgs_dir" && timeout -k 10 900 bin/sync-upstream "$pkg") </dev/null || die "bin/sync-upstream $pkg failed"
+  # recipe's upstream hook, as you, after you pressed Update. Its curl calls
+  # read the .curlrc above, its temporary files go under the cache, and the
+  # maintainer-only release-age bypass never reaches it.
+  write_download_policy
+  (cd "$pkgs_dir" && env -u BYPASS_MIN_RELEASE_AGE -u MIN_RELEASE_AGE_SECONDS \
+     CURL_HOME="$cache_dir/curl" TMPDIR="$cache_dir/tmp" \
+     timeout -k 10 900 bin/sync-upstream "$pkg") </dev/null || die "bin/sync-upstream $pkg failed"
 
   echo
   echo "Changes to Omarchy's $pkg recipe against omarchy-pkgs ${pkgs_base:0:12}:"
