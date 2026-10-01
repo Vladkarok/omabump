@@ -27,9 +27,39 @@ Remove it with `omarchy plugin remove io.github.vladkarok.agent-apps`.
 - sudo rights for `pacman -U`
 - `mise`, optional, for the agent CLIs
 
-Update on an omarchy row checks these first and, when something is missing,
-prints the `sudo pacman -S --needed ...` line that installs it and stops. The
-panel says "Missing: makepkg, jq" on those rows.
+Tested on Omarchy r2083 and r6691.
+
+When something is missing, omarchy rows have no Update button and say
+"Missing: makepkg, jq; sudo pacman -S --needed base-devel jq".
+
+## Security model
+
+| Step | What runs | As whom |
+|---|---|---|
+| Background check (timer, Refresh) | curl and git fetch of feeds and the omarchy-pkgs clone; the fetched recipe is read as text | you, nothing fetched executes |
+| Update on an omarchy row | omarchy-pkgs' `bin/sync-upstream`, the recipe's upstream hook, makepkg and the PKGBUILD | you; sudo for build dependencies |
+| Install of any built or vendor package | the package's install script and pacman hooks | root |
+| Update on a vendor row | the vendor's unsigned package and its install script | root |
+| Update on a mise row | the mise backend that installs the tool | you |
+| Ask agent | whatever your default agent decides to run | the permissions `omarchy-agent` gives it |
+
+The background check never executes fetched code. It reads each app's
+newest version from a feed in `apps.json` (an apt index, a GitHub release
+redirect, a JSON or HTML page) and reads the omarchy-pkgs recipe with
+`git show`. `bin/sync-upstream` runs only after you press Update.
+
+The vendor package is unsigned. The plugin downloads it over HTTPS and
+installs the local file, which pacman accepts under `LocalFileSigLevel`
+(Optional by default). `pacman -Qp` checks the file's name and version, which
+is metadata, not proof of where the file came from. You trust the vendor's
+server, as you would with its .deb.
+
+Every download is HTTPS only, redirects included, with connect and total
+time limits. git fetches, `bin/sync-upstream` and mise calls run under
+`timeout -k`, so a stalled network call cannot hold a lock forever.
+
+Detection covers pacman packages (by exact name) and tools mise has active.
+An app installed some other way, as an AppImage or with npm, is not listed.
 
 ## What Update runs
 
@@ -41,26 +71,29 @@ Which of three mechanisms it uses depends on the row's source badge.
 [omacom/omarchy-pkgs](https://github.com/omacom/omarchy-pkgs). That repo
 notices a vendor release within hours, but the update waits for a reviewed
 pull request, so the repo can lag the vendor by days. Update runs the same
-recipe update on your machine: it resets a clone of omarchy-pkgs to
+recipe update on your machine. It resets a clone of omarchy-pkgs to
 `origin/master`, runs omarchy-pkgs' `bin/sync-upstream <pkg>`, prints the
 recipe diff (normally `pkgver` and checksums), checks that the recipe builds
-the expected package at a version newer than the installed one, builds it with
-`makepkg` and installs it with `sudo pacman -U`. This runs packaging code you
-did not write, so read the diff before you type your sudo password.
+the expected package at a full version newer than the installed one, builds
+it with `makepkg` and installs it with `sudo pacman -U`. The sync tool and the
+recipe's hook already ran by the time the diff shows, so read the diff as a
+record of what changed, and stop at the sudo prompt if it looks wrong.
 
 **vendor.** The vendor publishes a ready Arch package. `apps.json` gives its
 URL with `{version}` in it and a feed for the newest version. Update refuses
-unless the feed's version is newer than the installed one, prints the URL,
-downloads the file with curl to `~/.cache/agent-apps/packages`, checks its
-name and version with `pacman -Qp`, installs it with `sudo pacman -U` and
-confirms the result with `pacman -Q`. curl fetches the file because pacman
-checks a URL given to `-U` against `RemoteFileSigLevel`, which defaults to
-`SigLevel = Required`, and vendors do not sign these packages. A local file
-falls under `LocalFileSigLevel = Optional`. When the app is installed under
-another name, pacman asks to replace that package; answer `y`.
+unless the feed's version is newer than the installed one, downloads the file
+to `~/.cache/agent-apps/packages`, checks its name with `pacman -Qp`, and
+compares its full `epoch:pkgver-pkgrel` with the installed package's, read
+again at that moment. Only then does it run `sudo pacman -U` and confirm the
+result with `pacman -Q`. curl fetches the file because pacman checks a URL
+given to `-U` against `RemoteFileSigLevel`, which defaults to
+`SigLevel = Required`, and vendors do not sign these packages.
 
-**mise.** Update runs `MISE_MINIMUM_RELEASE_AGE=0 mise up <tool>` and reports
-whether the active version now matches `mise latest <tool>`.
+**mise.** Update runs `mise up <tool>` in `$HOME`. The check asked
+`mise outdated` what that command can reach, so the configured request (an
+exact pin or a range) and mise's release-age cooldown apply to both. A tool
+pinned below the newest release shows "Pinned to 0.96.1, 0.97.1 exists" and
+no Update button. Change the request with `mise use` to move it.
 
 **indicator.** No Update button. These rows show the installed and newest
 version and the status "No supported install path". Nobody packages these apps
@@ -68,18 +101,36 @@ in a way the plugin could install without keeping its own recipe for them, and
 a recipe of ours would need fixing every time the vendor changes something.
 Update them the way you installed them.
 
+### Switch
+
+Codex may be installed as the AUR's `chatgpt-desktop` and ZCode as
+`z-code-bin`. When the canonical package (`openai-codex-desktop`, `zcode`)
+has the same or a newer version, the row says "Installed as chatgpt-desktop,
+switch to openai-codex-desktop" and has a Switch button (`w`). It runs
+`agent-apps-install --switch <pkg>`, which allows an equal full version where
+Update needs a newer one. Before pacman runs it checks that one of the two
+packages declares a conflict with the other (otherwise pacman would keep
+both), prints the new package's install script and the old one's, and names
+the app's config directory (`~/.config/Codex`, `~/.config/ZCode`). pacman then
+asks to remove the old package. pacman does not touch `$HOME`; whether the new
+package picks up the old settings is up to the app, and the plugin does not
+promise it.
+
 ### Ask agent
 
 A row with a newer version but no Update button (an indicator row, a recipe
-without an upstream watch, or a row whose last check failed after it had seen
-a newer version) has **Ask agent** and a copy button instead. Ask agent opens
-your default coding agent (`omarchy default agent <name>`) in a terminal with
-a prompt to update that app: what is installed, what the vendor published and
-where, which install routes to prefer, to show the plan before any sudo
-command and to leave `/usr/share/omarchy` and `~/.config` alone. With no
-default agent set it copies the prompt instead and the row says so. The copy
-button (`c`) only copies it. `bin/agent-apps-prompt <pkg>` prints the same
-prompt from the last check's results.
+without an upstream watch, or a row whose route failed) has **Ask agent** and
+a copy button instead. Ask agent opens your default agent
+(`omarchy default agent <name>`) in a terminal with a prompt that asks for a
+plan first: what is installed, what the vendor published and where, to use
+the Omarchy recipe or the vendor's Arch package, to wait for your approval
+before changing anything, and to leave `/usr/share/omarchy` and `~/.config`
+alone. The agent runs with whatever permissions `omarchy-agent` grants it,
+which for some agents means running commands without asking, so the row says
+"Opens your default agent; it may change the system". With no default agent
+set it copies the prompt instead. The copy button (`c`) only copies it.
+`bin/agent-apps-prompt <pkg>` prints the same prompt from the last check's
+results.
 
 ### Omarchy builds and the repo
 
@@ -96,11 +147,10 @@ pacman replaces it with the repo package only when the repo's full version
 
 `sudo pacman -S <pkg>` puts the repo package back at any time.
 
-A recipe without an upstream watch (hermes-desktop, and grok-bot on master, which sets
-`"sync": false`) cannot be moved this way. Those rows show the version from the
-vendor feed in `apps.json` and no Update button. T3 Code's recipe hook
-downloads both release AppImages to hash them, so the check asks its GitHub
-releases instead and the hook only runs on Update.
+A recipe without an upstream watch (hermes-desktop, and grok-bot on master,
+which sets `"sync": false`) cannot be moved by `bin/sync-upstream`. Those rows
+show the vendor's version and no Update button. Grok uses the recipe from
+omarchy-pkgs PR #725, pinned to one commit (see `recipeCommit` below).
 
 ### ZCode
 
@@ -116,29 +166,34 @@ Z.ai publishes an Arch package at
   `/usr/bin/zcode` to `/opt/ZCode/zcode`, so no package owns that link.
 - `/opt/ZCode/resources/package-type` contains `pacman`. The AUR's
   `z-code-bin` repackages the Debian package, and there the file says `deb`.
-  With `pacman`, ZCode's own updater should handle later updates itself.
+  Whether ZCode's own updater then calls pacman or rewrites `/opt/ZCode`
+directly is not verified.
 - The AUR's `z-code-bin` declares `provides=zcode` and `conflicts=zcode`, so
-  `pacman -U` asks to remove `z-code-bin` the first time. Update leaves out
-  `--noconfirm` for that run so you can answer.
+  `pacman -U` asks to remove `z-code-bin` the first time. Update and Switch
+  leave out `--noconfirm` for that run so you can answer.
 
-The newest version comes from Z.ai's update manifest.
+The newest version comes from Z.ai's update manifest for this machine's
+architecture.
 
 ## What it shows
 
 The bar icon turns the urgent colour when an app can be updated. Left click
-opens the panel, middle or right click checks now. When a check fails for an
-app, the tooltip says so and that row shows the error; the icon colour stays
-normal.
+opens the panel, middle or right click checks now. The tooltip and the panel
+header say one of: all current, N updates, check failed (the checker or the
+omarchy-pkgs fetch failed, or a row's feed or route did), and last known (rows
+that keep an earlier run's version because this run could not get one). A
+failed check never reads as up to date.
 
 The panel lists every catalog app that is installed (found with `pacman -Q`,
 or `mise ls` for mise tools) with a source badge, the installed version, the
-newest version when it is newer, a status line, and an Update button when the
-plugin can install it. Desktop apps come first, mise tools after them. The
-footer shows the omarchy-pkgs commit used and when the last check ran.
+newest version when it is newer, a status line, and an Update or Switch
+button when the plugin can do it. Desktop apps come first, mise tools after
+them. The footer shows the omarchy-pkgs commit used and when the last check
+ran.
 
 Keys: `j`/`k` or arrows select a row, `Enter` updates it (or asks the agent
-on a row without Update), `c` copies the agent prompt, `r` checks now, `s`
-opens the settings, `Esc` closes. IPC: `qs ipc call
+on a row without Update), `w` switches the package, `c` copies the agent
+prompt, `r` checks now, `s` opens the settings, `Esc` closes. IPC: `qs ipc call
 io.github.vladkarok.agent-apps open` (also `close`, `toggle`, `refresh`,
 `status`, `settings`).
 
@@ -148,7 +203,7 @@ io.github.vladkarok.agent-apps open` (also `close`, `toggle`, `refresh`,
 | `openai-codex-desktop` | Codex (also found as AUR `chatgpt-desktop`) | omarchy |
 | `t3code-bin` | T3 Code | omarchy |
 | `hermes-desktop` | Hermes | omarchy, no Update yet |
-| `grok-bot` | Grok | omarchy |
+| `grok-bot` | Grok | omarchy, recipe pinned from PR #725 |
 | `lmstudio-bin` | LM Studio | omarchy |
 | `openclaw` | OpenClaw | omarchy |
 | `perplexity` | Perplexity | omarchy |
@@ -177,29 +232,38 @@ version schemes, so those rows ask the AUR.
 The widget runs it on a timer and watches that file, so a run from a terminal
 updates the panel too. The file is rewritten after every app: rows not checked
 yet keep their last result marked `"checking": true` and say "Checking…" in
-the panel. `bin/agent-apps-install --dry-run <pkg>` prints what
-Update would run and stops before building, downloading or installing.
-`<pkg>` may also be an installed package name (`z-code-bin`) or a mise tool
-name (`claude`).
+the panel. `startedAt` records when the run began; a "checking" mark older
+than 10 minutes counts as a dead run and Refresh comes back.
 
-For omarchy rows the check runs `bin/sync-upstream <pkg>` in the clone at
-`~/.cache/agent-apps/omarchy-pkgs`, which rewrites the recipe only when the
-vendor has something newer, reads the resulting version, and restores the
-recipe. Recipe policies apply as they do in the repo: a `min_release_age` hold
-(openclaw, voxtype) keeps a fresh release back. Sources, build files and
+For omarchy rows the check fetches the clone at
+`~/.cache/agent-apps/omarchy-pkgs` (data only, no checkout) and reads the
+recipe with `git show`. A row is installable when the recipe exists on master
+(or at the pinned commit), has an upstream watch or hook, and the build tools
+are present. The newest version comes from the feed and is compared with the
+installed version less epoch and pkgrel; the installer compares full
+versions. Recipe policies such as openclaw's 24 h `min_release_age` are not
+in the feed, so a fresh release can show up a day before Update will build
+it; until then the installer stops with "not newer than the installed".
+
+`bin/agent-apps-install --prepare <pkg>` fetches, syncs and prepares the
+recipe, and stops before makepkg builds. That runs `bin/sync-upstream` and
+the recipe's hook, and makepkg reads the PKGBUILD. On the vendor path it
+downloads and checks the package and stops before `pacman -U`. Add
+`--switch` to prepare a switch. `<pkg>` may also be an installed package name
+(`z-code-bin`) or a mise tool name (`claude`). Sources, build files and
 packages go to `~/.cache/agent-apps/{sources,build,packages}`, so the clone
 stays clean and downloads are reused.
 
-For mise rows the check reads `mise ls --json` once and asks `mise latest
-<tool>`, so your mise settings (`prerelease`, release age) decide what counts
-as newest.
+For mise rows the check runs `mise ls --json`, `mise outdated --json` and
+`mise outdated --bump --json` once each in `$HOME`. mise versions are shown
+as mise prints them, and mise decides what is newer.
 
 ## Settings
 
 Settings live in the panel behind the gear in its header (or press `s`):
 show mise tools, bar icon only when updates exist, notify on new releases
-(each version is announced once, tracked in `notified.json` next to
-`status.json`), and the check interval. The scripted equivalent is
+(each version is announced once, saved to `notified.json` next to
+`status.json` right after the notification goes out), and the check interval. The scripted equivalent is
 `omarchy bar set io.github.vladkarok.agent-apps <key> <value>` with the keys
 `showMise`, `barIconOnlyWithUpdates`, `notify` and `refreshIntervalSec`
 (seconds).
@@ -233,32 +297,41 @@ Fields:
   `[pkg]`.
 - `tool` (mise only): the mise tool name, or a list of names; the first one
   mise has active is used.
-- `vendorPkg` (vendor-pkg only): package URL per architecture (`uname -m`
-  as key), with `{version}` replaced by the feed's version.
-- `checkWith: "feed"` (optional, omarchy only): check with `feed` instead of
-  running the recipe sync.
-- `recipeRef` (optional, omarchy only): an omarchy-pkgs ref whose recipe is
-  laid over origin/master before checking and building, for a package whose
-  upstream watch is still in an unmerged PR (Grok Bot uses
-  `refs/pull/725/head`). The panel row says so, and the install diff is shown
-  against master, so the PR's changes are visible too. Drop the field once
-  the PR merges.
-- `feed`: where the newest version comes from for `vendor-pkg` and
-  `indicator` apps, and the fallback for `omarchy` apps whose recipe cannot
-  sync:
+- `vendorPkg` (vendor-pkg only): HTTPS package URL per architecture
+  (`uname -m` as key), with `{version}` replaced by the feed's version.
+- `recipeCommit` (optional, omarchy only): a 40-hex omarchy-pkgs commit
+  whose exact recipe tree replaces master's before building, for a package
+  whose upstream watch is still in an unmerged PR. `recipeFetch` names a ref
+  to fetch when the server does not hand out the bare commit (Grok uses
+  `refs/pull/725/head`), and `recipeNote` is the text the row shows. If the
+  commit cannot be fetched or lacks the recipe, the row is not installable
+  and shows the error; the plugin never falls back to master. Once master's
+  recipe has a watch, the pin is ignored and the row says "Pinned recipe no
+  longer needed", so the entry can go. Both commits are recorded in
+  `status.json`.
+- `configDir` (optional): where the app keeps its settings, printed before a
+  package switch.
+- `feed`: where the newest version comes from. Every non-mise app needs one.
+  `url` may be a string or an object keyed by `uname -m`, and must be HTTPS.
   - `apt-index` with `url` and `package`: a Debian `Packages` file, newest
     stanza for that exact package name.
   - `zcode-manifest` or `latest-yml` with `url`: YAML with `version:` on its
     own line (electron-updater's `latest.yml`).
   - `github-release` with `repo`: the tag behind `/releases/latest`, leading
     `v` stripped. No API calls, so no rate limit.
+  - `json` with `url` and `path`: a jq path into a JSON document
+    (`.version`).
+  - `regex` with `url` and `pattern`: a Python regex with one capture group,
+    tried on the page and on the page with `\"` read as `"` (JSON inside a
+    script tag).
   - `aur-rpc` with `name`: the AUR's version of that package, pkgrel
     stripped.
-  - `command` with `command`: any shell command that prints the version.
+  - `command` with `command`: a shell command that prints the version. It
+    runs during the check, so only use it in your own `apps.json`.
 - `icon` and `iconLight` (optional): SVG marks for dark and light themes,
   relative to the plugin folder or absolute.
 
-All versions are compared with `vercmp`.
+pacman versions are compared with `vercmp`; mise versions are left to mise.
 
 ## Attribution
 
