@@ -143,7 +143,6 @@ while IFS= read -r app; do
         note="Missing: sudo or curl; sudo pacman -S --needed base-devel curl"
       elif vendor_pkg_url "$app" x >/dev/null; then
         installable=true
-        [[ $installed_name != "$pkg" ]] && note="Installed as $installed_name, Update switches to $pkg"
       else
         note="No vendor package for $(uname -m)"
       fi ;;
@@ -203,6 +202,18 @@ while IFS= read -r app; do
     newer "$latest" "$have" && update=true
   fi
 
+  # Installed under another name (chatgpt-desktop, z-code-bin): Update
+  # replaces it when a newer version exists, Switch does it at the same one.
+  switchable=false
+  if [[ ($source == omarchy || $source == vendor-pkg) && $installed_name != "$pkg" && $installable == true ]]; then
+    if [[ $update == true ]]; then
+      note="Installed as $installed_name, Update switches to $pkg${note:+; $note}"
+    elif [[ -n $latest ]] && ! newer "$(upstream_part "$installed")" "$latest"; then
+      switchable=true
+      note="Installed as $installed_name, switch to $pkg${note:+; $note}"
+    fi
+  fi
+
   announced=$(jq -r --arg pkg "$pkg" '.[$pkg] // ""' <<<"$notified")
   if (( notify )) && [[ $update == true && -z $error ]] \
      && { [[ -z $announced ]] || newer "$latest" "$announced"; }; then
@@ -218,12 +229,12 @@ while IFS= read -r app; do
     --arg installedName "$installed_name" --arg installed "$installed" \
     --arg latest "$latest" --arg versionFrom "$from" --argjson update "$update" \
     --argjson installable "$installable" --arg error "$error" --arg note "$note" \
-    --argjson stale "$stale" --arg recipe "$recipe" --arg recipeCommit "$recipe_commit" \
+    --argjson stale "$stale" --argjson switchable "$switchable" --arg recipe "$recipe" --arg recipeCommit "$recipe_commit" \
     --arg icon "$(jq -r '.icon // ""' <<<"$app")" --arg iconLight "$(jq -r '.iconLight // ""' <<<"$app")" \
     '{pkg: $pkg, label: $label, source: $source, installedName: $installedName,
       installed: $installed, latest: $latest, versionFrom: $versionFrom,
       updateAvailable: $update, installable: $installable, error: $error, note: $note,
-      stale: $stale, recipe: $recipe, recipeCommit: $recipeCommit,
+      stale: $stale, switchable: $switchable, recipe: $recipe, recipeCommit: $recipeCommit,
       icon: $icon, iconLight: $iconLight}')")
   write_status 0
 done < <(jq -c '.[]' <<<"$table")

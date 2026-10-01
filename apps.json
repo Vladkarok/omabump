@@ -23,6 +23,7 @@
       "url": "https://persistent.oaistatic.com/codex-app-prod/linux/deb/dists/stable/main/binary-amd64/Packages",
       "package": "chatgpt"
     },
+    "configDir": "~/.config/Codex",
     "icon": "assets/codex.svg",
     "iconLight": "assets/codex-light.svg"
   },
@@ -117,6 +118,7 @@
         "aarch64": "https://zcode.z.ai/api/v1/releases/electron/manifest?platform=linux-arm64&channel=1"
       }
     },
+    "configDir": "~/.config/ZCode",
     "icon": "assets/zcode.svg",
     "iconLight": "assets/zcode-light.svg"
   },

@@ -10,7 +10,13 @@
 #               app's feed advertises, installed with pacman -U.
 #   mise        mise up <tool>.
 #
-#   agent-apps-install [--prepare] <pkg>
+#   agent-apps-install [--prepare] [--switch] <pkg>
+#
+# --switch replaces an app installed under another package name
+# (chatgpt-desktop, z-code-bin) with <pkg> at the same or a newer full
+# version. Update requires a strictly newer one. Either way pacman asks
+# before it removes the old package, and the scripts the new package runs
+# are printed first.
 #
 # --prepare fetches, syncs and prepares the recipe (this runs omarchy-pkgs'
 # sync tool and the recipe's hook, and makepkg reads the PKGBUILD), and stops
@@ -20,9 +26,16 @@ set -euo pipefail
 here=$(dirname "$(readlink -f "$0")")
 source "$here/agent-apps-common"
 
-prepare=0
-[[ ${1:-} == --prepare ]] && { prepare=1; shift; }
-pkg=${1:?usage: agent-apps-install [--prepare] <pkg>}
+prepare=0 switch=0
+while [[ ${1:-} == --* ]]; do
+  case $1 in
+    --prepare) prepare=1 ;;
+    --switch) switch=1 ;;
+    *) echo "usage: agent-apps-install [--prepare] [--switch] <pkg>" >&2; exit 2 ;;
+  esac
+  shift
+done
+pkg=${1:?usage: agent-apps-install [--prepare] [--switch] <pkg>}
 
 die() { echo "agent-apps: $*" >&2; exit 1; }
 command -v jq >/dev/null || die "jq is missing; install it with: sudo pacman -S --needed jq"
@@ -43,6 +56,11 @@ if read -r source installed_name installed < <(installed_app "$app"); then :; el
 fi
 [[ $source == omarchy ]] && require_omarchy_tools
 echo "$label: installed ${installed:-nothing} (${installed_name:-$pkg}, $source)"
+if (( switch )); then
+  [[ $source == omarchy || $source == vendor-pkg ]] || die "--switch works for omarchy and vendor rows only"
+  [[ -n $installed_name && $installed_name != "$pkg" ]] || die "$label is not installed under another name; nothing to switch"
+  echo "Switching from $installed_name to $pkg at the same or a newer version."
+fi
 
 export PKGDEST=$cache_dir/packages SRCDEST=$cache_dir/sources BUILDDIR=$cache_dir/build
 mkdir -p "$PKGDEST" "$SRCDEST" "$BUILDDIR"
@@ -50,13 +68,90 @@ mkdir -p "$PKGDEST" "$SRCDEST" "$BUILDDIR"
 refresh_panel() { "$here/agent-apps-check" --no-notify || true; }
 
 # Fails unless the full version $1 (epoch:pkgver-pkgrel) is newer than what
-# pacman has installed under the app's installed name right now.
+# pacman has installed under the app's installed name right now, or with
+# --switch at least as new.
 guard_version() {
   local now_line
   now_line=$(installed_package "$installed_name") || return 0
-  newer "$1" "${now_line#* }" && return 0
-  echo "$1 is not newer than the installed $now_line"
+  if (( switch )); then
+    newer "${now_line#* }" "$1" || return 0
+    echo "$1 is older than the installed $now_line"
+  else
+    newer "$1" "${now_line#* }" && return 0
+    echo "$1 is not newer than the installed $now_line"
+  fi
   return 1
+}
+
+# Names in a pacman -Qi / -Qip field ("Provides", "Conflicts With"), with
+# version constraints cut off; nothing for "None".
+qi_names() {
+  sed -n "s/^$1 *: //p" | tr -s ' ' '\n' | sed 's/[<>=].*//' | grep -vx 'None' | grep -v '^$' || true
+}
+
+# pacman replaces the old package only when one of the two declares a
+# conflict with the other (by name or by something the other provides).
+# Without one it would keep both, so the switch stops. $1 is the new
+# package file, or a recipe directory read through makepkg --printsrcinfo.
+switch_conflicts() {
+  local src=$1 new_c new_p old_c old_p info
+  if [[ -f $src ]]; then
+    info=$(pacman -Qip -- "$src")
+    new_c=$(qi_names 'Conflicts With' <<<"$info") new_p=$(qi_names Provides <<<"$info")
+  else
+    info=$(cd "$src" && makepkg --printsrcinfo 2>/dev/null) || return 1
+    new_c=$(sed -n 's/^\tconflicts = //p' <<<"$info" | sed 's/[<>=].*//')
+    new_p=$(sed -n 's/^\tprovides = //p' <<<"$info" | sed 's/[<>=].*//')
+  fi
+  info=$(pacman -Qi -- "$installed_name")
+  old_c=$(qi_names 'Conflicts With' <<<"$info") old_p=$(qi_names Provides <<<"$info")
+  grep -qxF -f <(printf '%s\n' "$installed_name" $old_p) <<<"$new_c" && return 0
+  grep -qxF -f <(printf '%s\n' "$pkg" $new_p) <<<"$old_c" && return 0
+  return 1
+}
+
+# Before pacman replaces a differently named package: what the new package's
+# install script and the old one's remove script will run, and where the
+# app keeps its data. Nothing is promised about that data; pacman does not
+# touch $HOME, the app itself may. $1 is the package file or, before a build,
+# the recipe's install file.
+show_switch() {
+  local script=$1 old config
+  [[ -n $installed_name && $installed_name != "$pkg" ]] || return 0
+  echo
+  switch_conflicts "${2:-$script}" \
+    || die "neither $pkg nor $installed_name declares a conflict with the other, so pacman would keep both; not switching"
+  echo "pacman will ask to remove $installed_name for $pkg (declared conflict); answer y to switch."
+  if [[ $script == *.pkg.tar.* ]]; then
+    if bsdtar -tf "$script" .INSTALL >/dev/null 2>&1; then
+      echo "--- $pkg install script (.INSTALL), run as root:"
+      bsdtar -xOf "$script" .INSTALL
+      echo "---"
+    else
+      echo "$pkg has no install script."
+    fi
+  elif [[ -f $script ]]; then
+    echo "--- $pkg install script (${script##*/} in the recipe), run as root:"
+    cat "$script"
+    echo "---"
+  else
+    echo "$pkg's recipe has no install script."
+  fi
+  old=/var/lib/pacman/local/$installed_name-$installed/install
+  if [[ -f $old ]]; then
+    echo "--- $installed_name's install script, its remove hooks run as root:"
+    cat "$old"
+    echo "---"
+  else
+    echo "$installed_name has no install script."
+  fi
+  config=$(jq -r '.configDir // ""' <<<"$app")
+  if [[ -n $config ]]; then
+    echo "$label keeps its settings in $config. pacman does not touch \$HOME; whether $pkg reads that directory the same way is up to the app."
+  else
+    echo "pacman does not touch \$HOME; whether $pkg reads $installed_name's settings is up to the app."
+  fi
+  echo
 }
 
 # Refuses unless the recipe in $1 builds a package named $2 that is newer than
@@ -83,6 +178,7 @@ build_and_install() {
   [[ -n $match ]] || die "makepkg would not produce $want $target_version: ${files[*]}"
   echo "Package file: $match"
   if (( prepare )); then
+    show_switch "$PWD/$(pkgbuild_field install <PKGBUILD)" "$PWD"
     echo "Prepared: stopping before makepkg builds."
     return 0
   fi
@@ -92,6 +188,7 @@ build_and_install() {
   line=$(pacman -Qp -- "$match") || die "cannot read $match"
   [[ $line == "$want $target_version" ]] || die "built package is '$line', expected '$want $target_version'"
   msg=$(guard_version "$target_version") || die "$msg; not installing"
+  show_switch "$match"
 
   # Replacing a differently named package (chatgpt-desktop by
   # openai-codex-desktop) is a conflict prompt whose default answer is No, so
@@ -149,22 +246,27 @@ install_omarchy() {
 # its name and version (metadata only, not an authentication), and pacman -U
 # installs the local file under LocalFileSigLevel.
 install_vendor_pkg() {
-  local latest url file line name ver now_line msg confirm=(--noconfirm)
+  local latest url file line name ver now_line msg have confirm=(--noconfirm)
   latest=$(feed_version "$app") || die "the feed has no version"
   echo "Feed: $latest"
   url=$(vendor_pkg_url "$app" "$latest") || die "the vendor publishes no https $pkg package for $(uname -m)"
   echo "Vendor package: $url"
-  if [[ -n $installed ]] && ! newer "$latest" "$(upstream_part "$installed")"; then
-    msg="$latest is not newer than the installed $installed_name $installed"
+  msg=""
+  if [[ -n $installed ]]; then
+    have=$(upstream_part "$installed")
+    if (( switch )); then
+      if newer "$have" "$latest"; then msg="$latest is older than the installed $installed_name $installed"; fi
+    elif ! newer "$latest" "$have"; then
+      msg="$latest is not newer than the installed $installed_name $installed"
+    fi
+  fi
+  if [[ -n $msg ]]; then
     (( prepare )) && { echo "Would refuse: $msg"; return 0; }
     die "$msg; nothing to do"
   fi
   # Replacing a differently named package (z-code-bin by zcode) is a conflict
   # prompt whose default answer is No, so --noconfirm would abort.
-  if [[ -n $installed_name && $installed_name != "$pkg" ]]; then
-    confirm=()
-    echo "pacman will ask to replace $installed_name with $pkg; answer y to switch."
-  fi
+  [[ -n $installed_name && $installed_name != "$pkg" ]] && confirm=()
   file=$PKGDEST/${url##*/}
   if [[ -f $file ]]; then
     echo "Using the download from an earlier run: $file"
@@ -180,6 +282,7 @@ install_vendor_pkg() {
   # version with what is installed right now.
   msg=$(guard_version "$ver") || die "vendor package: $msg; not installing"
   echo "Package file: $file ($line)"
+  show_switch "$file"
   if (( prepare )); then
     echo "Prepared: stopping before sudo pacman -U ${confirm[*]:+${confirm[*]} }-- $file"
     return 0

@@ -130,6 +130,15 @@ Panel {
     root.close()
   }
 
+  // Installed under another package name at a version the canonical package
+  // matches: replace it in a terminal, where pacman asks first.
+  function switchApp(app) {
+    if (!app || app.switchable !== true || !root.bar) return
+    var inner = Util.shellQuote(checker.installScript) + " --switch " + Util.shellQuote(app.pkg)
+    root.bar.run("omarchy-launch-floating-terminal-with-presentation " + Util.shellQuote(inner))
+    root.close()
+  }
+
   // An update exists but the plugin cannot install it: an indicator row, a
   // recipe without a watch, or a feed that failed with a newer version known.
   function askable(app) {
@@ -173,6 +182,7 @@ Panel {
   function hintText() {
     if (root.settingsOpen) return "Space change · Esc back"
     if (root.cursorActive && root.askable(root.selectedApp())) return "Enter ask agent · c copy prompt · Esc close"
+    if (root.cursorActive && root.selectedApp() && root.selectedApp().switchable === true) return "w switch package · Esc close"
     return "Enter update · s settings · Esc close"
   }
 
@@ -383,6 +393,7 @@ Panel {
         else if (t === "\b" && root.settingsOpen) root.showSettings(false, false)
         else if ((t === "r" || t === "R") && !root.settingsOpen) root.refreshNow()
         else if ((t === "c" || t === "C") && !root.settingsOpen && root.cursorActive) root.promptFor(root.selectedApp(), "copy")
+        else if ((t === "w" || t === "W") && !root.settingsOpen && root.cursorActive) root.switchApp(root.selectedApp())
       }
 
       // The hero and the footer stay put; only the rows scroll, so the
@@ -644,6 +655,7 @@ Panel {
     hasCursor: root.cursorActive && root.rowIndex === rowIndex
     foreground: root.foreground
     implicitHeight: Math.max(rowContent.implicitHeight, updateButton.implicitHeight) + Style.spacing.rowPaddingX
+    readonly property bool switchable: !!app && app.switchable === true && !updatable
 
     MouseArea {
       anchors.fill: parent
@@ -765,6 +777,18 @@ Panel {
           : appRow.app.source === "omarchy" ? "Build " + appRow.app.latest + " from the Omarchy recipe in a terminal"
           : "Install the vendor's " + appRow.app.latest + " package in a terminal"
         onClicked: root.updateApp(appRow.app)
+      }
+
+      Button {
+        visible: appRow.switchable
+        Layout.alignment: Qt.AlignVCenter
+        text: "Switch"
+        bordered: true
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        fontSize: Style.font.bodySmall
+        tooltipText: appRow.app ? "Replace " + appRow.app.installedName + " with " + appRow.app.pkg + " in a terminal; pacman asks first  w" : ""
+        onClicked: root.switchApp(appRow.app)
       }
 
       Button {
