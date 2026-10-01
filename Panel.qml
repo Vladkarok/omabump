@@ -22,13 +22,18 @@ Panel {
   readonly property string fallbackMark: ""
 
   readonly property var apps: checker.apps
+  // Desktop apps first, then the mise CLIs: the keyboard cursor walks
+  // this order across both sections.
+  readonly property var desktopApps: apps.filter(function(app) { return app.source !== "mise" })
+  readonly property var cliApps: apps.filter(function(app) { return app.source === "mise" })
+  readonly property var orderedApps: desktopApps.concat(cliApps)
   readonly property int updateCount: checker.updateCount
   readonly property bool iconOnlyWithUpdates: settings && settings.barIconOnlyWithUpdates === true
 
   property int rowIndex: 0
   property bool cursorActive: false
   // What the last Ask agent or Copy prompt did, by pkg, shown as the row's
-  // status line until the panel closes.
+  // second line until the panel closes.
   property var actionNotes: ({})
 
   // The settings view swaps in for the app list. Its rows are the check
@@ -54,7 +59,7 @@ Panel {
   function refreshNow() { checker.refresh() }
 
   function selectedApp() {
-    return apps.length > 0 ? apps[clamp(rowIndex, 0, apps.length - 1)] : null
+    return orderedApps.length > 0 ? orderedApps[clamp(rowIndex, 0, orderedApps.length - 1)] : null
   }
 
   function moveCursor(dy) {
@@ -62,14 +67,19 @@ Panel {
       settingIndex = clamp(settingIndex + dy, 0, settingRows.length)
       return
     }
-    if (apps.length === 0) return
-    rowIndex = clamp(rowIndex + dy, 0, apps.length - 1)
+    if (orderedApps.length === 0) return
+    rowIndex = clamp(rowIndex + dy, 0, orderedApps.length - 1)
     ensureRowVisible()
+  }
+
+  function rowItem(index) {
+    if (index < desktopApps.length) return desktopRepeater.itemAt(index)
+    return cliRepeater.itemAt(index - desktopApps.length)
   }
 
   // Keeps the keyboard cursor on screen when the list scrolls.
   function ensureRowVisible() {
-    var item = appRepeater.itemAt(rowIndex)
+    var item = rowItem(rowIndex)
     if (!item) return
     var top = item.mapToItem(body, 0, 0).y
     if (top < panelFlick.contentY) panelFlick.contentY = top
@@ -181,9 +191,11 @@ Panel {
 
   function hintText() {
     if (root.settingsOpen) return "Space change · Esc back"
-    if (root.cursorActive && root.askable(root.selectedApp())) return "Enter ask agent · c copy prompt · Esc close"
-    if (root.cursorActive && root.selectedApp() && root.selectedApp().switchable === true) return "w switch package · Esc close"
-    return "Enter update · s settings · Esc close"
+    var app = root.cursorActive ? root.selectedApp() : null
+    if (root.askable(app)) return "Enter ask agent · c copy prompt · Esc close"
+    if (app && app.updateAvailable === true && app.installable === true) return "Enter update · Esc close"
+    if (app && app.switchable === true) return "w switch package · Esc close"
+    return (root.orderedApps.length > 0 ? "↑↓ select · " : "") + "r refresh · s settings"
   }
 
   function checkedText() {
@@ -199,13 +211,21 @@ Panel {
     return "checked " + Math.floor(hours / 24) + " d ago"
   }
 
-  function footerText() {
-    var commit = checker.pkgsCommit !== "" ? "omarchy-pkgs " + checker.pkgsCommit.substring(0, 7) + " · " : ""
-    return commit + checkedText()
+  // The hero says one thing: all current, N updates, check failed, or last
+  // known (rows from an earlier run because this one failed for them).
+  function heroMeta() {
+    if (root.settingsOpen) return "Settings"
+    if (checker.checking) return "Checking…"
+    if (checker.checkFailed) return "Check failed"
+    var updates = updateCount + checker.waitingCount
+    if (updates > 0) return updates + (updates === 1 ? " update" : " updates")
+    if (checker.staleCount > 0) return "Last known, " + checkedText()
+    if (checker.errorCount > 0) return "Check failed"
+    if (checker.checkedAt === "") return "Not checked yet"
+    return apps.length > 0 ? "All current" : ""
   }
 
-  // Four states, never mixed up: all current, N updates, check failed, and
-  // last known (rows from an earlier run because this one failed for them).
+  // The bar tooltip and the status IPC call keep the full count.
   function summaryText() {
     var parts = []
     if (updateCount > 0) parts.push(updateCount + (updateCount === 1 ? " update" : " updates"))
@@ -224,46 +244,65 @@ Panel {
     return checker.checkedAt === "" ? "Agent apps: not checked yet" : "Agent apps: none installed"
   }
 
-  function badgeText(app) {
+  // The package release (-1) says nothing next to an upstream version, so
+  // rows drop it unless it is the only difference.
+  function installedText(app) {
     if (!app) return ""
-    return app.source === "vendor-pkg" ? "vendor" : String(app.source || "")
+    var full = String(app.installed || "")
+    if (app.source === "mise") return full
+    var short = full.replace(/-[0-9.]+$/, "")
+    return app.updateAvailable === true && short === String(app.latest || "") ? full : short
   }
 
-  // openai-codex-desktop may be installed as the AUR's chatgpt-desktop.
-  function aliasText(app) {
-    if (!app || !app.installedName || app.installedName === app.pkg || app.source === "mise") return ""
-    return ", installed as " + app.installedName
+  // Notes from the checker carry the route ("switch to …"); the tooltip
+  // keeps that, the row keeps the first clause.
+  function shortNote(note) {
+    var first = String(note || "").split("; ")[0]
+    return first.replace(/, (Update switches|switch) to \S+$/, "")
   }
 
-  function versionText(app) {
-    if (!app) return ""
-    if (app.updateAvailable === true) return app.installed + " → " + app.latest
-    return app.installed
-  }
-
-  // A selected Ask agent row says what the button does instead of its note:
-  // omarchy-agent may run the agent with permission to act on its own.
-  function statusText(app, selected) {
+  // The second line of a row: exceptions only.
+  function extraLine(app) {
     if (!app) return ""
     if (app.checking === true) return "Checking…"
     var action = actionNotes[app.pkg]
     if (action) return action
-    if (selected && askable(app)) return "Opens your default agent; it may change the system"
-    var text = statusLine(app)
-    return askable(app) ? versionText(app) + " · " + text : text
+    if (String(app.error || "") !== "") return "Check failed: " + app.error
+    var note = shortNote(app.note)
+    if (note !== "") return note
+    if (askable(app)) return "No install route"
+    if (app.stale === true) return "Last known version"
+    return ""
   }
 
-  function statusLine(app) {
-    var note = String(app.note || "")
-    if (String(app.error || "") !== "") return "Check failed: " + app.error
-    if (app.updateAvailable === true && app.installable !== true) return note !== "" ? note : "No update path"
-    if (note !== "") return note
-    if (app.updateAvailable === true) {
-      if (app.source === "omarchy") return "Update builds Omarchy's recipe at " + app.latest
-      if (app.source === "mise") return "Update runs mise up"
-      return "Update installs the vendor's package"
+  function sourceLabel(app) {
+    if (app.stale === true) return "an earlier check"
+    if (app.versionFrom === "mise") return "mise"
+    if (app.versionFrom === "feed") return "the vendor's release feed"
+    return String(app.versionFrom || "")
+  }
+
+  // How the row knows what it shows and what Update would do.
+  function rowTooltip(app) {
+    if (!app) return ""
+    var lines = []
+    var name = String(app.installedName || "")
+    lines.push("Installed " + String(app.installed || "")
+      + (name !== "" && name !== app.pkg && app.source !== "mise" ? " as " + name : ""))
+    if (String(app.latest || "") !== "") {
+      var from = sourceLabel(app)
+      lines.push("Newest " + app.latest + (from !== "" ? " from " + from : ""))
     }
-    return "Up to date" + aliasText(app)
+    if (app.source === "mise") lines.push("Updates with mise up")
+    else if (app.source === "omarchy") {
+      var commit = String(app.recipeCommit || "")
+      lines.push("Updates through Omarchy's recipe"
+        + (String(app.recipe || "") !== "" ? " " + app.recipe : "")
+        + (commit !== "" ? " at " + commit.substring(0, 7) : ""))
+    } else if (app.source === "vendor-pkg") lines.push("Updates with the vendor's Arch package")
+    if (String(app.note || "") !== "") lines.push(app.note)
+    if (String(app.error || "") !== "") lines.push("Check failed: " + app.error)
+    return lines.join("\n")
   }
 
   function colorLuminance(c) {
@@ -299,7 +338,7 @@ Panel {
     if (panelFlick) panelFlick.contentY = 0
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
-  onAppsChanged: rowIndex = clamp(rowIndex, 0, Math.max(0, apps.length - 1))
+  onOrderedAppsChanged: rowIndex = clamp(rowIndex, 0, Math.max(0, orderedApps.length - 1))
 
   Main {
     id: checker
@@ -368,7 +407,7 @@ Panel {
     open: root.opened
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(380))
-    contentHeight: panel.fittedContentHeight(header.implicitHeight + body.implicitHeight + footer.implicitHeight + column.spacing * 2, Style.space(560))
+    contentHeight: panel.fittedContentHeight(header.implicitHeight + body.implicitHeight + footer.implicitHeight + column.spacing * 2, Style.space(640))
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -396,8 +435,7 @@ Panel {
         else if ((t === "w" || t === "W") && !root.settingsOpen && root.cursorActive) root.switchApp(root.selectedApp())
       }
 
-      // The hero and the footer stay put; only the rows scroll, so the
-      // settings button never scrolls away.
+      // The hero and the footer stay put; only the rows scroll.
       Column {
         id: column
         anchors.fill: parent
@@ -411,20 +449,32 @@ Panel {
           PanelHero {
             width: parent.width
             title: "Agent apps"
-            meta: root.settingsOpen ? "Settings"
-              : root.summaryText()
-            detail: ""
+            meta: root.heroMeta()
             foreground: root.foreground
             fontFamily: root.fontFamily
 
             trailingControl: Component {
-              PanelActionButton {
-                iconText: "󰒓"
-                tooltipText: root.settingsOpen ? "Back to the apps  Esc" : "Settings  s"
-                bordered: root.settingsOpen
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                onClicked: root.showSettings(!root.settingsOpen, false)
+              Row {
+                spacing: Style.spacing.xs
+
+                PanelActionButton {
+                  visible: !root.settingsOpen
+                  enabled: !checker.checking
+                  iconText: "󰑐"
+                  tooltipText: root.checkedText() + " · Refresh  r"
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  onClicked: root.refreshNow()
+                }
+
+                PanelActionButton {
+                  iconText: "󰒓"
+                  tooltipText: root.settingsOpen ? "Back to the apps  Esc" : "Settings  s"
+                  bordered: root.settingsOpen
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  onClicked: root.showSettings(!root.settingsOpen, false)
+                }
               }
             }
 
@@ -439,15 +489,19 @@ Panel {
             }
           }
 
+          // Why the hero says Check failed, or that the result is not fresh.
           Text {
             textFormat: Text.PlainText
-            visible: checker.checkError !== ""
+            visible: !root.settingsOpen && text !== ""
             width: parent.width
-            text: checker.checkError
-            color: root.urgent
+            text: checker.checkError !== "" ? checker.checkError
+              : checker.pkgsError !== "" ? checker.pkgsError : checker.pkgsNote
+            color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
             wrapMode: Text.WordWrap
+            maximumLineCount: 2
+            elide: Text.ElideRight
           }
 
           PanelSeparator { foreground: root.foreground }
@@ -471,35 +525,98 @@ Panel {
             width: panelFlick.width - (panelFlick.interactive ? scrollBar.width + Style.space(4) : 0)
             spacing: Style.space(12)
 
-            Text {
-              textFormat: Text.PlainText
+            Column {
               visible: !root.settingsOpen && root.apps.length === 0
               width: parent.width
-              topPadding: Style.space(12)
-              bottomPadding: Style.space(12)
-              text: checker.checking ? "Checking for new versions…" : "None of the tracked apps are installed."
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.body
-              horizontalAlignment: Text.AlignHCenter
-              wrapMode: Text.WordWrap
+              topPadding: Style.space(24)
+              bottomPadding: Style.space(24)
+              spacing: Style.spacing.sm
+
+              Text {
+                textFormat: Text.PlainText
+                width: parent.width
+                text: checker.checking ? "Checking for new versions…" : "No agent apps installed"
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+              }
+
+              Text {
+                textFormat: Text.PlainText
+                visible: !checker.checking
+                width: parent.width
+                text: "Install from the Omarchy menu, AI"
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+              }
             }
 
             Column {
-              visible: !root.settingsOpen && root.apps.length > 0
+              visible: !root.settingsOpen && root.desktopApps.length > 0
               width: parent.width
-              spacing: Style.space(4)
+              spacing: Style.space(10)
 
-              Repeater {
-                id: appRepeater
-                model: root.apps
+              PanelSectionHeader {
+                text: "DESKTOP APPS"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+              }
 
-                AppRow {
-                  required property var modelData
-                  required property int index
-                  width: parent.width
-                  app: modelData
-                  rowIndex: index
+              Column {
+                width: parent.width
+                spacing: Style.spacing.xxs
+
+                Repeater {
+                  id: desktopRepeater
+                  model: root.desktopApps
+
+                  AppRow {
+                    required property var modelData
+                    required property int index
+                    width: parent.width
+                    app: modelData
+                    rowIndex: index
+                  }
+                }
+              }
+            }
+
+            PanelSeparator {
+              visible: !root.settingsOpen && root.desktopApps.length > 0 && root.cliApps.length > 0
+              foreground: root.foreground
+            }
+
+            Column {
+              visible: !root.settingsOpen && root.cliApps.length > 0
+              width: parent.width
+              spacing: Style.space(10)
+
+              PanelSectionHeader {
+                text: "CLI TOOLS"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+              }
+
+              Column {
+                width: parent.width
+                spacing: Style.spacing.xxs
+
+                Repeater {
+                  id: cliRepeater
+                  model: root.cliApps
+
+                  AppRow {
+                    required property var modelData
+                    required property int index
+                    width: parent.width
+                    app: modelData
+                    rowIndex: root.desktopApps.length + index
+                  }
                 }
               }
             }
@@ -538,7 +655,7 @@ Panel {
                   text: "Check every"
                   color: root.foreground
                   font.family: root.fontFamily
-                  font.pixelSize: Style.font.subtitle
+                  font.pixelSize: Style.font.body
                   font.bold: true
                   elide: Text.ElideRight
                 }
@@ -570,6 +687,7 @@ Panel {
                   description: modelData.description
                   checked: root.settingOn(modelData)
                   hasCursor: root.cursorActive && root.settingIndex === index + 1
+                  titleSize: Style.font.body
                   foreground: root.foreground
                   fontFamily: root.fontFamily
                   onHovered: function(on) {
@@ -584,80 +702,43 @@ Panel {
           }
         }
 
-        Column {
+        Text {
           id: footer
+          textFormat: Text.PlainText
           width: parent.width
-          spacing: Style.space(12)
-
-          PanelSeparator { foreground: root.foreground }
-
-          Text {
-            textFormat: Text.PlainText
-            visible: !root.settingsOpen
-            width: parent.width
-            text: root.footerText()
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            elide: Text.ElideRight
-          }
-
-          Text {
-            textFormat: Text.PlainText
-            visible: !root.settingsOpen && (checker.pkgsError !== "" || checker.pkgsNote !== "")
-            width: parent.width
-            text: checker.pkgsError !== "" ? checker.pkgsError : checker.pkgsNote
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            wrapMode: Text.WordWrap
-          }
-
-          RowLayout {
-            width: parent.width
-            spacing: Style.space(8)
-
-            Text {
-              textFormat: Text.PlainText
-              Layout.fillWidth: true
-              text: root.hintText()
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              elide: Text.ElideRight
-            }
-
-            Button {
-              visible: !root.settingsOpen
-              text: checker.checking ? "Checking…" : "Refresh  r"
-              enabled: !checker.checking
-              bordered: true
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              fontSize: Style.font.bodySmall
-              onClicked: root.refreshNow()
-            }
-          }
+          text: root.hintText()
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          horizontalAlignment: Text.AlignHCenter
+          elide: Text.ElideRight
         }
       }
     }
   }
 
+  // One line per app: mark, name, version. A second dim line only for an
+  // exception. The row's action shows only while it holds the cursor, in
+  // place of the version.
   component AppRow: CursorSurface {
     id: appRow
     property var app: null
     property int rowIndex: 0
     readonly property bool hasUpdate: !!app && app.updateAvailable === true
     readonly property bool updatable: hasUpdate && app.installable === true
-    readonly property bool failed: !!app && String(app.error || "") !== ""
     readonly property bool askable: root.askable(app)
+    readonly property bool switchable: !!app && app.switchable === true && !updatable
+    readonly property bool showAction: hasCursor && (updatable || askable || switchable)
+    readonly property string extra: root.extraLine(app)
+    property bool actionHovered: false
+    onShowActionChanged: if (!showAction) actionHovered = false
 
     hasCursor: root.cursorActive && root.rowIndex === rowIndex
     foreground: root.foreground
     implicitHeight: Math.max(rowContent.implicitHeight, updateButton.implicitHeight) + Style.spacing.rowPaddingX
-    readonly property bool switchable: !!app && app.switchable === true && !updatable
 
     MouseArea {
+      id: rowMouse
       anchors.fill: parent
       hoverEnabled: true
       acceptedButtons: Qt.NoButton
@@ -665,6 +746,12 @@ Panel {
         root.cursorActive = true
         root.rowIndex = appRow.rowIndex
       }
+    }
+
+    PanelToolTip {
+      visible: rowMouse.containsMouse && !appRow.actionHovered
+      text: root.rowTooltip(appRow.app)
+      fontFamily: root.fontFamily
     }
 
     RowLayout {
@@ -677,15 +764,15 @@ Panel {
 
       Item {
         Layout.alignment: Qt.AlignVCenter
-        implicitWidth: Style.font.title
-        implicitHeight: Style.font.title
+        implicitWidth: Style.font.icon
+        implicitHeight: Style.font.icon
 
         Image {
           id: mark
           anchors.fill: parent
           source: root.iconUrl(appRow.app)
-          sourceSize.width: Style.font.title * 2
-          sourceSize.height: Style.font.title * 2
+          sourceSize.width: Style.font.icon * 2
+          sourceSize.height: Style.font.icon * 2
           fillMode: Image.PreserveAspectFit
         }
 
@@ -703,84 +790,71 @@ Panel {
       ColumnLayout {
         id: rowContent
         Layout.fillWidth: true
+        Layout.alignment: Qt.AlignVCenter
         spacing: Style.space(1)
-
-        RowLayout {
-          Layout.fillWidth: true
-          spacing: Style.space(8)
-
-          Text {
-            textFormat: Text.PlainText
-            Layout.fillWidth: true
-            text: appRow.app ? String(appRow.app.label || appRow.app.pkg) : ""
-            color: root.foreground
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.body
-            elide: Text.ElideRight
-          }
-
-          Rectangle {
-            Layout.alignment: Qt.AlignVCenter
-            implicitWidth: badgeText.implicitWidth + Style.space(8)
-            implicitHeight: badgeText.implicitHeight + Style.space(2)
-            radius: Style.space(3)
-            color: "transparent"
-            border.width: 1
-            border.color: root.dim
-
-            Text {
-              id: badgeText
-              anchors.centerIn: parent
-              textFormat: Text.PlainText
-              text: root.badgeText(appRow.app)
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-            }
-          }
-
-          // Rows with Ask agent and Copy prompt have no room for it here,
-          // so their status line carries it.
-          Text {
-            textFormat: Text.PlainText
-            visible: !appRow.askable
-            text: root.versionText(appRow.app)
-            color: appRow.hasUpdate ? root.urgent : root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            font.bold: appRow.hasUpdate
-          }
-        }
 
         Text {
           textFormat: Text.PlainText
           Layout.fillWidth: true
-          text: root.statusText(appRow.app, appRow.hasCursor)
-          color: appRow.failed ? root.urgent : root.dim
+          text: appRow.app ? String(appRow.app.label || appRow.app.pkg) : ""
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
+          elide: Text.ElideRight
+        }
+
+        Text {
+          textFormat: Text.PlainText
+          visible: appRow.extra !== ""
+          Layout.fillWidth: true
+          text: appRow.extra
+          color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
         }
       }
 
+      Row {
+        visible: !appRow.showAction
+        Layout.alignment: Qt.AlignVCenter
+        spacing: Style.spacing.sm
+
+        Text {
+          textFormat: Text.PlainText
+          text: root.installedText(appRow.app)
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+
+        Text {
+          textFormat: Text.PlainText
+          visible: appRow.hasUpdate
+          text: appRow.app ? "→ " + appRow.app.latest : ""
+          color: root.urgent
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+        }
+      }
+
       Button {
         id: updateButton
-        visible: appRow.updatable
+        visible: appRow.showAction && appRow.updatable
         Layout.alignment: Qt.AlignVCenter
         text: "Update"
         bordered: true
         foreground: root.urgent
         fontFamily: root.fontFamily
         fontSize: Style.font.bodySmall
-        tooltipText: !appRow.app ? ""
-          : appRow.app.source === "mise" ? "Run mise up in a terminal"
-          : appRow.app.source === "omarchy" ? "Build " + appRow.app.latest + " from the Omarchy recipe in a terminal"
-          : "Install the vendor's " + appRow.app.latest + " package in a terminal"
+        tooltipText: appRow.app ? root.installedText(appRow.app) + " → " + appRow.app.latest + ", in a terminal  Enter" : ""
+        onHovered: function(on) { appRow.actionHovered = on }
         onClicked: root.updateApp(appRow.app)
       }
 
       Button {
-        visible: appRow.switchable
+        visible: appRow.showAction && appRow.switchable
         Layout.alignment: Qt.AlignVCenter
         text: "Switch"
         bordered: true
@@ -788,29 +862,32 @@ Panel {
         fontFamily: root.fontFamily
         fontSize: Style.font.bodySmall
         tooltipText: appRow.app ? "Replace " + appRow.app.installedName + " with " + appRow.app.pkg + " in a terminal; pacman asks first  w" : ""
+        onHovered: function(on) { appRow.actionHovered = on }
         onClicked: root.switchApp(appRow.app)
       }
 
+      PanelActionButton {
+        visible: appRow.showAction && appRow.askable
+        Layout.alignment: Qt.AlignVCenter
+        iconText: "󰆏"
+        tooltipText: "Copy prompt  c"
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        onHovered: function(on) { appRow.actionHovered = on }
+        onClicked: root.promptFor(appRow.app, "copy")
+      }
+
       Button {
-        visible: appRow.askable
+        visible: appRow.showAction && appRow.askable
         Layout.alignment: Qt.AlignVCenter
         text: "Ask agent"
         bordered: true
         foreground: root.urgent
         fontFamily: root.fontFamily
         fontSize: Style.font.bodySmall
-        tooltipText: "Open your default agent with a prompt to plan an update of " + (appRow.app ? appRow.app.label : "") + "; it may change the system  Enter"
+        tooltipText: "Open your default agent with a prompt to plan the update; it may change the system  Enter"
+        onHovered: function(on) { appRow.actionHovered = on }
         onClicked: root.promptFor(appRow.app, "ask")
-      }
-
-      PanelActionButton {
-        visible: appRow.askable
-        Layout.alignment: Qt.AlignVCenter
-        iconText: "󰆏"
-        tooltipText: "Copy prompt  c"
-        foreground: root.foreground
-        fontFamily: root.fontFamily
-        onClicked: root.promptFor(appRow.app, "copy")
       }
     }
   }

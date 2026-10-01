@@ -64,7 +64,8 @@ An app installed some other way, as an AppImage or with npm, is not listed.
 ## What Update runs
 
 Update opens a floating terminal and runs `bin/agent-apps-install <pkg>`.
-Which of three mechanisms it uses depends on the row's source badge.
+Which of three mechanisms it uses depends on the app's `source` in
+`apps.json`; the row's tooltip names it.
 
 **omarchy.** The apps behind Omarchy's Install > AI menu come from the
 [omarchy] pacman repo, built from the recipes in
@@ -185,11 +186,14 @@ that keep an earlier run's version because this run could not get one). A
 failed check never reads as up to date.
 
 The panel lists every catalog app that is installed (found with `pacman -Q`,
-or `mise ls` for mise tools) with a source badge, the installed version, the
-newest version when it is newer, a status line, and an Update or Switch
-button when the plugin can do it. Desktop apps come first, mise tools after
-them. The footer shows the omarchy-pkgs commit used and when the last check
-ran.
+or `mise ls` for mise tools) in two sections, Desktop apps and CLI tools. A
+row shows the installed version, or `installed → newest` when there is an
+update. A second line appears only for an exception: a pin, a recipe from an
+open omarchy-pkgs PR, another package name, a failed check, no install route.
+The row's action (Update, Switch, Ask agent, Copy prompt) shows in place of
+the version while the row holds the cursor or the pointer; its tooltip says
+where the version came from and what Update runs. The refresh button in the
+header tells when the last check ran.
 
 Keys: `j`/`k` or arrows select a row, `Enter` updates it (or asks the agent
 on a row without Update), `w` switches the package, `c` copies the agent
