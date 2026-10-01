@@ -293,9 +293,10 @@ Settings live in the panel behind the gear in its header (or press `s`):
 show mise tools, bar icon only when updates exist, notify on new releases
 (each version is announced once, saved to `notified.json` next to
 `status.json` right after the notification goes out), and the check interval. The scripted equivalent is
-`omarchy bar set io.github.vladkarok.omabump <key> <value>` with the keys
-`showMise`, `barIconOnlyWithUpdates`, `notify` and `refreshIntervalSec`
-(seconds).
+`omarchy bar set io.github.vladkarok.omabump <key> <value> --json` with the
+keys `showMise`, `barIconOnlyWithUpdates`, `notify` and `refreshIntervalSec`
+(seconds). Without `--json` the value is stored as a string, and `"false"`
+counts as on.
 
 ## Adding or changing apps
 
