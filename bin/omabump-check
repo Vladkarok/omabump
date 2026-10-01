@@ -3,9 +3,9 @@
 # to and record the result for the bar panel. Never installs anything.
 #
 #   omarchy     the feed in apps.json gives the vendor's newest version; the
-#               recipe in a fetched omarchy-pkgs clone is only read (PKGBUILD
-#               and .omarchy/ as text) to see whether bin/sync-upstream could
-#               move it. Nothing fetched is run: sync-upstream runs only in
+#               recipe at the omarchy-pkgs commit pinned in pins.json is only
+#               read (PKGBUILD and .omarchy/ as text, with git show) to see
+#               whether bin/sync-upstream could move it. Nothing fetched is run: sync-upstream runs only in
 #               omabump-install, after the user pressed Update.
 #   vendor-pkg  the feed in apps.json; the vendor publishes the package.
 #   indicator   the feed in apps.json; no install path.
@@ -61,7 +61,7 @@ pkgs_ready() {
       pkgs_state=busy
       pkgs_note="The omarchy-pkgs clone is busy with an update, showing the last result"
     elif pkgs_commit=$(pkgs_fetch 2>"$tmp/git.err"); then
-      pkgs_state=ready
+      pkgs_state=ready pkgs_base=$pkgs_commit
     else
       pkgs_state=failed
       pkgs_error="Could not fetch omarchy-pkgs: $(tail -1 "$tmp/git.err")"
@@ -86,13 +86,15 @@ write_status() {
   # Desktop apps first, mise tools after them, each in table order.
   printf '%s\n' "${rows[@]}" | jq -s --argjson prev "$previous" --argjson order "$order" \
     --argjson final "$final" --arg at "$at" --arg started "$started" \
-    --arg commit "$pkgs_commit" --arg perr "$pkgs_error" --arg pnote "$pkgs_note" '
+    --arg commit "$pkgs_commit" --arg perr "$pkgs_error" --arg pnote "$pkgs_note" \
+    --argjson following "$pkgs_follow" '
     (map(.pkg)) as $done
     | (if $final == 1 then .
        else . + [$prev.apps[] | select(.pkg as $p | $done | index($p) | not) | .checking = ($final == 0)] end)
     | sort_by([.source == "mise", (.pkg as $p | $order | index($p) // 1e9)])
     | {checkedAt: $at, checking: ($final == 0), startedAt: $started,
-       omarchyPkgs: {commit: $commit, error: $perr, note: $pnote}, apps: .}' >"$out"
+       omarchyPkgs: {commit: $commit, following: ($following == 1), error: $perr, note: $pnote},
+       apps: .}' >"$out"
   mv -f "$out" "$status_file"
 }
 
@@ -151,7 +153,8 @@ while IFS= read -r app; do
       [[ $(jq -r '.feed.type // ""' <<<"$app") == aur-rpc ]] && note+=", version from AUR" ;;
     omarchy)
       # Installable means bin/sync-upstream could move the recipe: it exists
-      # on master (or at the pinned commit) and has a watch or hook.
+      # at the pinned omarchy-pkgs commit (or the app's recipeCommit) and has
+      # a watch or hook.
       if pkgs_ready; then
         if recipe_source "$pkg" "$app" 2>"$tmp/err"; then
           note=$(recipe_blocker "$recipe_rev" "$pkg")
@@ -160,7 +163,7 @@ while IFS= read -r app; do
             note=$recipe_note
           fi
           read -r _ recipe < <(recipe_file "$recipe_rev" "$pkg" PKGBUILD | recipe_version 2>/dev/null) || recipe=""
-          [[ $recipe_rev == "$master" ]] || recipe_commit=$recipe_rev
+          [[ $recipe_rev == "$pkgs_base" ]] || recipe_commit=$recipe_rev
         else
           route_error=$(<"$tmp/err")
         fi

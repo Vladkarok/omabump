@@ -11,7 +11,38 @@ cache_dir=${XDG_CACHE_HOME:-$HOME/.cache}/omabump
 pkgs_dir=$cache_dir/omarchy-pkgs
 pkgs_url=https://github.com/omacom/omarchy-pkgs.git
 pkgs_lock=$cache_dir/omarchy-pkgs.lock
-master=origin/master
+shipped_pins=$plugin_dir/pins.json
+user_pins=${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/omabump/pins.json
+
+# The omarchy-pkgs commit every recipe read, sync and build starts from:
+# pins.json's 40-hex commit, with the user's pins.json merged over it. The
+# install path runs that repo's sync tool and hook scripts, so a moving
+# branch is never the default. "omarchyPkgs": {"follow": "master"} in the
+# user's file opts in to origin/master; pkgs_fetch then resolves it to a
+# commit. Sets pkgs_base (empty when the pin is unusable), pkgs_follow and
+# pkgs_pin_ref; pkgs_pin_error says why a pin is unusable.
+pkgs_base="" pkgs_follow=0 pkgs_pin_ref="" pkgs_pin_error=""
+pkgs_pin() {
+  local user='{}' pins follow
+  if [[ -f $user_pins ]]; then
+    user=$(jq -ce 'if type == "object" then . else error("not an object") end' "$user_pins" 2>/dev/null) \
+      || { echo "ignoring $user_pins: not a JSON object" >&2; user='{}'; }
+  fi
+  pins=$(jq -c --argjson user "$user" '. * $user | .omarchyPkgs // {}' "$shipped_pins" 2>/dev/null) || pins='{}'
+  follow=$(jq -r '.follow // ""' <<<"$pins")
+  if [[ $follow == master ]]; then
+    pkgs_follow=1 pkgs_pin_ref=refs/heads/master
+    return 0
+  fi
+  [[ -z $follow ]] || { pkgs_pin_error="omarchyPkgs.follow '$follow' is not \"master\""; return 0; }
+  pkgs_base=$(jq -r '.commit // ""' <<<"$pins")
+  pkgs_pin_ref=$(jq -r '.ref // "refs/heads/master"' <<<"$pins")
+  if [[ ! $pkgs_base =~ ^[0-9a-f]{40}$ ]]; then
+    pkgs_pin_error="the omarchy-pkgs pin '$pkgs_base' is not a 40-hex commit"
+    pkgs_base=""
+  fi
+}
+pkgs_pin
 
 # The app table: the shipped one, with the user's file merged over it by pkg.
 # A user entry adds an app or overrides fields of a shipped one; "disabled":
@@ -274,25 +305,38 @@ pkgs_take_lock() {
 pgit() { GIT_ALLOW_PROTOCOL=https GIT_TERMINAL_PROMPT=0 git -C "$pkgs_dir" "$@" </dev/null; }
 pgit_net() { timeout -k 10 300 env GIT_ALLOW_PROTOCOL=https GIT_TERMINAL_PROMPT=0 git "$@" </dev/null; }
 
-# Fetches origin into the clone (cloning it first) and prints origin/master's
-# commit. Only data moves: the work tree is not touched. Needs the lock.
+# Makes the pinned commit (or, when following, origin/master's) present in
+# the clone, cloning it first, and prints that commit. The caller sets
+# pkgs_base to it. Only data moves: the work tree is not touched. A pinned
+# commit already in the clone needs no network. Needs the lock.
 pkgs_fetch() {
   if [[ ! -d $pkgs_dir/.git ]]; then
     rm -rf "$pkgs_dir"
     pgit_net clone -q --no-checkout --filter=blob:none "$pkgs_url" "$pkgs_dir" >&2 || return 1
   fi
-  pgit_net -C "$pkgs_dir" fetch -q origin >&2 || return 1
-  pgit rev-parse "$master"
+  if (( pkgs_follow )); then
+    pgit_net -C "$pkgs_dir" fetch -q origin >&2 || return 1
+    pgit rev-parse origin/master
+    return
+  fi
+  [[ -n $pkgs_base ]] || { echo "$pkgs_pin_error" >&2; return 1; }
+  if ! pgit cat-file -e "$pkgs_base^{commit}" 2>/dev/null; then
+    pgit_net -C "$pkgs_dir" fetch -q origin "$pkgs_base" 2>/dev/null \
+      || pgit_net -C "$pkgs_dir" fetch -q origin "$pkgs_pin_ref" >&2 || true
+    pgit cat-file -e "$pkgs_base^{commit}" 2>/dev/null \
+      || { echo "pinned omarchy-pkgs commit ${pkgs_base:0:12} is unreachable" >&2; return 1; }
+  fi
+  echo "$pkgs_base"
 }
 
-# Puts the work tree at origin/master for a build. Needs the lock.
+# Puts the work tree, detached, at pkgs_base for a build. Needs the lock.
 pkgs_checkout() {
-  pgit reset -q --hard "$master" >&2 && pgit clean -qfdx >&2
+  pgit checkout -q -f --detach "$pkgs_base" >&2 && pgit clean -qfdx >&2
 }
 
-# Puts Omarchy's recipe back the way origin/master has it.
+# Puts Omarchy's recipe back the way pkgs_base has it.
 pkgs_restore() {
-  pgit reset -q --hard "$master" 2>/dev/null || true
+  pgit checkout -q -f --detach "$pkgs_base" 2>/dev/null || true
   pgit clean -qfdx -- "pkgbuilds/${1:?}" 2>/dev/null || true
 }
 
@@ -317,17 +361,18 @@ recipe_blocker() {
 
 # Which commit's recipe an app uses. apps.json may pin one with
 # "recipeCommit", a 40-hex SHA from an unmerged omarchy-pkgs PR that gives the
-# package the watch master lacks ("recipeFetch" names a ref to fetch when the
-# server will not hand out the bare SHA). Sets recipe_rev and recipe_note.
-# Fails closed with the reason on stderr and never falls back to master. Once
-# master's own recipe has a watch, the pin is ignored.
+# package the watch the pinned omarchy-pkgs commit lacks ("recipeFetch" names
+# a ref to fetch when the server will not hand out the bare SHA). Sets
+# recipe_rev and recipe_note. Fails closed with the reason on stderr and never
+# falls back to pkgs_base. Once pkgs_base's own recipe has a watch, the
+# recipeCommit is ignored.
 recipe_source() {
   local pkg=$1 app=$2 sha ref
-  recipe_rev=$master recipe_note=""
+  recipe_rev=$pkgs_base recipe_note=""
   sha=$(jq -r '.recipeCommit // ""' <<<"$app")
   [[ -n $sha ]] || return 0
-  if [[ -z $(recipe_blocker "$master" "$pkg") ]]; then
-    recipe_note="Pinned recipe no longer needed, master has a watch"
+  if [[ -z $(recipe_blocker "$pkgs_base" "$pkg") ]]; then
+    recipe_note="Pinned recipe no longer needed, omarchy-pkgs has a watch"
     return 0
   fi
   [[ $sha =~ ^[0-9a-f]{40}$ ]] || { echo "recipeCommit '$sha' is not a 40-hex commit" >&2; return 1; }
@@ -345,10 +390,10 @@ recipe_source() {
 }
 
 # Replaces the work tree's recipe with the exact tree at commit $2, so no
-# master-only file survives next to it. Needs the lock and pkgs_checkout.
+# pkgs_base-only file survives next to it. Needs the lock and pkgs_checkout.
 recipe_materialise() {
   local pkg=$1 rev=$2
-  [[ $rev == "$master" ]] && return 0
+  [[ $rev == "$pkgs_base" ]] && return 0
   rm -rf "${pkgs_dir:?}/pkgbuilds/$pkg"
   pgit archive "$rev" "pkgbuilds/$pkg" | tar -x -C "$pkgs_dir" || return 1
   [[ -f $pkgs_dir/pkgbuilds/$pkg/PKGBUILD ]]

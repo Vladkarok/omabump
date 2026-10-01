@@ -3,7 +3,8 @@
 # terminal: makepkg and pacman talk to the user and sudo may ask for a password.
 # Every path runs install knowledge someone else maintains:
 #
-#   omarchy     Omarchy's own recipe from omarchy-pkgs, moved to the vendor's
+#   omarchy     Omarchy's own recipe from omarchy-pkgs at the commit pinned
+#               in pins.json, checked out detached, moved to the vendor's
 #               newest release by omarchy-pkgs' bin/sync-upstream. The recipe
 #               diff is shown before anything is built.
 #   vendor-pkg  The Arch package the vendor publishes, at the version the
@@ -256,13 +257,18 @@ install_omarchy() {
   echo "Waiting for the omarchy-pkgs clone..."
   pkgs_take_lock 600 || die "the omarchy-pkgs clone stayed locked"
   commit=$(pkgs_fetch) || die "could not fetch omarchy-pkgs"
-  pkgs_checkout || die "could not reset the omarchy-pkgs clone"
+  pkgs_base=$commit
+  pkgs_checkout || die "could not check out omarchy-pkgs ${commit:0:12}"
   restore_clone=1
-  echo "omarchy-pkgs master at ${commit:0:12}"
+  if (( pkgs_follow )); then
+    echo "omarchy-pkgs: following master (unpinned), at $commit"
+  else
+    echo "omarchy-pkgs pinned at $commit, checked out detached"
+  fi
 
   recipe_source "$pkg" "$app" || die "the pinned recipe is not usable"
   [[ -n $recipe_note ]] && echo "$recipe_note"
-  if [[ $recipe_rev != "$master" ]]; then
+  if [[ $recipe_rev != "$pkgs_base" ]]; then
     recipe_materialise "$pkg" "$recipe_rev" || die "could not lay out the recipe from $recipe_rev"
     echo "Recipe tree taken whole from $recipe_rev"
   fi
@@ -274,10 +280,10 @@ install_omarchy() {
   (cd "$pkgs_dir" && timeout -k 10 900 bin/sync-upstream "$pkg") </dev/null || die "bin/sync-upstream $pkg failed"
 
   echo
-  echo "Changes to Omarchy's $pkg recipe against origin/master:"
+  echo "Changes to Omarchy's $pkg recipe against omarchy-pkgs ${pkgs_base:0:12}:"
   pgit add -A -- "pkgbuilds/$pkg"
   if pgit diff --cached --quiet HEAD -- "pkgbuilds/$pkg"; then
-    echo "(none, origin/master already holds the newest release)"
+    echo "(none, the recipe already holds the newest release)"
   else
     pgit --no-pager diff --cached --color=auto HEAD -- "pkgbuilds/$pkg"
   fi
@@ -287,7 +293,7 @@ install_omarchy() {
   cd "$pkgs_dir/pkgbuilds/$pkg"
   build_and_install "$pkg"
   cd /
-  # Leave the clone as origin/master has it.
+  # Leave the clone as the pinned commit has it.
   pkgs_restore "$pkg"
   restore_clone=0
   exec 8>&-

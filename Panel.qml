@@ -258,11 +258,14 @@ Panel {
     return parts.join(", ")
   }
 
+  readonly property string followingText: checker.pkgsFollowing ? "omarchy-pkgs: following master (unpinned)" : ""
+
   function tooltipText() {
     var summary = summaryText()
-    if (summary === "All current") return "Omabump up to date"
-    if (summary !== "") return "Omabump: " + summary
-    return checker.checkedAt === "" ? "Omabump: not checked yet" : "Omabump: none installed"
+    var text = summary === "All current" ? "Omabump up to date"
+      : summary !== "" ? "Omabump: " + summary
+      : checker.checkedAt === "" ? "Omabump: not checked yet" : "Omabump: none installed"
+    return followingText !== "" ? text + "\n" + followingText : text
   }
 
   // The package release (-1) says nothing next to an upstream version, so
@@ -316,7 +319,7 @@ Panel {
     }
     if (app.source === "mise") lines.push("Updates with mise up")
     else if (app.source === "omarchy") {
-      var commit = String(app.recipeCommit || "")
+      var commit = String(app.recipeCommit || checker.pkgsCommit || "")
       lines.push("Updates through Omarchy's recipe"
         + (String(app.recipe || "") !== "" ? " " + app.recipe : "")
         + (commit !== "" ? " at " + commit.substring(0, 7) : ""))
@@ -726,16 +729,32 @@ Panel {
           }
         }
 
-        Text {
+        Column {
           id: footer
-          textFormat: Text.PlainText
           width: parent.width
-          text: root.hintText()
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          horizontalAlignment: Text.AlignHCenter
-          elide: Text.ElideRight
+
+          Text {
+            textFormat: Text.PlainText
+            width: parent.width
+            text: root.hintText()
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            horizontalAlignment: Text.AlignHCenter
+            elide: Text.ElideRight
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            visible: text !== ""
+            width: parent.width
+            text: root.followingText
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            horizontalAlignment: Text.AlignHCenter
+            elide: Text.ElideRight
+          }
         }
       }
     }

@@ -33,6 +33,8 @@ Item {
   property var apps: []
   property string checkedAt: ""
   property string pkgsCommit: ""
+  // The user opted out of the pinned omarchy-pkgs commit (pins.json).
+  property bool pkgsFollowing: false
   property string pkgsError: ""
   property string pkgsNote: ""
   property string checkError: ""
@@ -102,6 +104,7 @@ Item {
       nowMs = Date.now()
       var pkgs = parsed && parsed.omarchyPkgs ? parsed.omarchyPkgs : {}
       pkgsCommit = String(pkgs.commit || "")
+      pkgsFollowing = pkgs.following === true
       pkgsError = String(pkgs.error || "")
       pkgsNote = String(pkgs.note || "")
     } catch (e) {
