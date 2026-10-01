@@ -121,20 +121,27 @@ mise_run() { (cd "$HOME" && MISE_HIDE_UPDATE_WARNING=1 timeout -k 10 "${mise_tim
 # and release-age cooldown) and `mise outdated --bump --json` (newer releases
 # outside the request). All keyed by tool name. mise versions are kept as
 # mise prints them and never compared with vercmp: mise decides.
+# Both outdated calls name the app table's tools that `mise ls` reports
+# installed, never all tools: resolving a version can run a backend's own
+# scripts (asdf and vfox plugins), so only the listed tools are queried.
 mise_ls_json='{}' mise_outdated_json='{}' mise_bump_json='{}' mise_error=""
 mise_load() {
-  local out err
+  local out err tools=()
   command -v mise >/dev/null || return 0
   mise_ls_json=$(mise_run ls --json 2>/dev/null | jq -ce 'if type == "object" then . else {} end' 2>/dev/null) || mise_ls_json='{}'
   (( ${1:-0} )) || return 0
+  mapfile -t tools < <(apps_table 2>/dev/null | jq -r --argjson ls "$mise_ls_json" '
+    [.[] | select(.source == "mise") | [.tool // empty] | flatten | .[]
+     | select(type == "string" and any(($ls[.] // [])[]; .installed != false))] | unique | .[]')
+  (( ${#tools[@]} )) || return 0
   mkdir -p "$cache_dir"
   err=$(mktemp "$cache_dir/.mise.XXXXXX")
-  if out=$(mise_run outdated --json 2>"$err") && out=$(jq -ce 'if type == "object" then . else error("bad") end' <<<"$out" 2>/dev/null); then
+  if out=$(mise_run outdated --json -- "${tools[@]}" 2>"$err") && out=$(jq -ce 'if type == "object" then . else error("bad") end' <<<"$out" 2>/dev/null); then
     mise_outdated_json=$out
   else
     mise_error="mise outdated failed: $(sed 's/\x1b\[[0-9;]*m//g' "$err" | grep -v 'WARN' | grep -v '^[[:space:]]*$' | head -1)"
   fi
-  if out=$(mise_run outdated --bump --json 2>/dev/null) && out=$(jq -ce 'if type == "object" then . else error("bad") end' <<<"$out" 2>/dev/null); then
+  if out=$(mise_run outdated --bump --json -- "${tools[@]}" 2>/dev/null) && out=$(jq -ce 'if type == "object" then . else error("bad") end' <<<"$out" 2>/dev/null); then
     mise_bump_json=$out
   fi
   rm -f "$err"

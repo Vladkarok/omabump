@@ -146,6 +146,9 @@ does not sign the package.
 `mise outdated` what that command can reach, so the configured request and
 mise's release-age cooldown apply to both. A tool pinned below the newest
 release shows "Pinned to 0.96.1, 0.97.1 exists" and no Update button.
+Resolving versions can run a tool backend's own scripts (asdf and vfox
+plugins), so Omabump passes `mise outdated` only the tools from its app table
+that `mise ls` reports installed, never every tool in your mise config.
 
 **indicator.** No Update button. These rows show the installed and newest
 version. Update them the way you installed them.
