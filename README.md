@@ -259,9 +259,25 @@ recipe, and stops before makepkg builds. That runs `bin/sync-upstream` and
 the recipe's hook, and makepkg reads the PKGBUILD. On the vendor path it
 downloads and checks the package and stops before `pacman -U`. Add
 `--switch` to prepare a switch. `<pkg>` may also be an installed package name
-(`z-code-bin`) or a mise tool name (`claude`). Sources, build files and
-packages go to `~/.cache/omabump/{sources,build,packages}`, so the clone
-stays clean and downloads are reused.
+(`z-code-bin`) or a mise tool name (`claude`).
+
+The installer keeps its files under `~/.cache/omabump`, so the clone stays
+clean:
+
+| Path | Holds | After a successful install |
+| --- | --- | --- |
+| `omarchy-pkgs/` | the omarchy-pkgs clone | kept |
+| `sources/` | the vendor files a recipe downloads | kept for a retry; older files of the same name are removed |
+| `build/<pkg>/` | makepkg's build tree | removed |
+| `packages/` | the built package, or the vendor's downloaded one | removed |
+
+makepkg writes an uncompressed `.pkg.tar`, since pacman installs it seconds
+later. A failed build or install removes nothing and says so, so you can look
+at what it left. To clear the leftovers by hand:
+
+```bash
+rm -rf ~/.cache/omabump/{build,packages}
+```
 
 For mise rows the check runs `mise ls --json`, `mise outdated --json` and
 `mise outdated --bump --json` once each in `$HOME`. mise versions are shown

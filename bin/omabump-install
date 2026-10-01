@@ -68,6 +68,18 @@ fi
 export PKGDEST=$cache_dir/packages SRCDEST=$cache_dir/sources BUILDDIR=$cache_dir/build PKGEXT=.pkg.tar
 mkdir -p "$PKGDEST" "$SRCDEST" "$BUILDDIR"
 
+# A failed build or install keeps its files for a look; a successful one
+# removes them (clean_after_install).
+restore_clone=0 started=0
+on_exit() {
+  local rc=$?
+  (( restore_clone )) && pkgs_restore "$pkg"
+  if (( rc != 0 && started )); then
+    echo "omabump: nothing was cleaned up; the build and download files are in $cache_dir/{build,packages,sources}" >&2
+  fi
+}
+trap on_exit EXIT
+
 refresh_panel() { "$here/omabump-check" --no-notify || true; }
 
 # Fails unless the full version $1 (epoch:pkgver-pkgrel) is newer than what
@@ -186,6 +198,7 @@ build_and_install() {
     return 0
   fi
 
+  started=1
   makepkg -sfC --noconfirm
   [[ -f $match ]] || die "makepkg did not produce $match"
   line=$(pacman -Qp -- "$match") || die "cannot read $match"
@@ -199,6 +212,43 @@ build_and_install() {
   local confirm=(--noconfirm)
   [[ -n $installed_name && $installed_name != "$want" ]] && confirm=()
   sudo pacman -U "${confirm[@]}" -- "$match"
+  clean_after_install "${files[@]}"
+  clean_build_tree
+  clean_old_sources
+}
+
+# makepkg builds in $BUILDDIR/<pkgbase>. Run in the recipe directory.
+clean_build_tree() {
+  local base
+  base=$(makepkg --printsrcinfo 2>/dev/null | sed -n 's/^pkgbase = //p' | head -1)
+  [[ $base =~ ^[a-z0-9@._+-]+$ && -d $BUILDDIR/$base ]] || return 0
+  rm -rf -- "${BUILDDIR:?}/$base" && echo "Removed the build tree $BUILDDIR/$base."
+}
+
+# After pacman -U succeeded: the package files go. $@ are the files.
+clean_after_install() {
+  local f
+  for f; do [[ -f $f ]] && rm -f -- "$f"; done
+  echo "Removed the installed package file from $PKGDEST."
+}
+
+# Downloaded sources stay in SRCDEST so a retry does not fetch them again,
+# but only the newest of each: a file this recipe uses replaces older files
+# with the same name up to the version (chatgpt_26.928.31416_amd64.deb
+# replaces older chatgpt_*.deb). Run in the recipe directory.
+clean_old_sources() {
+  local used f prefix old
+  while IFS= read -r used; do
+    f=${used%%::*}
+    [[ $used == *::* ]] || f=${used##*/}
+    [[ -n $f && -f $SRCDEST/$f ]] || continue
+    prefix=${f%%[-_][0-9]*}
+    [[ -n $prefix && $prefix != "$f" ]] || continue
+    for old in "$SRCDEST/$prefix"[-_][0-9]*; do
+      [[ -f $old && $old != "$SRCDEST/$f" && $old -ot $SRCDEST/$f ]] || continue
+      rm -f -- "$old" && echo "Removed the older source ${old##*/}."
+    done
+  done < <(makepkg --printsrcinfo 2>/dev/null | sed -n 's/^\tsource\(_[a-z0-9_]*\)\? = //p')
 }
 
 install_omarchy() {
@@ -207,7 +257,7 @@ install_omarchy() {
   pkgs_take_lock 600 || die "the omarchy-pkgs clone stayed locked"
   commit=$(pkgs_fetch) || die "could not fetch omarchy-pkgs"
   pkgs_checkout || die "could not reset the omarchy-pkgs clone"
-  trap 'pkgs_restore "$pkg"' EXIT
+  restore_clone=1
   echo "omarchy-pkgs master at ${commit:0:12}"
 
   recipe_source "$pkg" "$app" || die "the pinned recipe is not usable"
@@ -239,7 +289,7 @@ install_omarchy() {
   cd /
   # Leave the clone as origin/master has it.
   pkgs_restore "$pkg"
-  trap - EXIT
+  restore_clone=0
   exec 8>&-
 }
 
@@ -271,6 +321,7 @@ install_vendor_pkg() {
   # prompt whose default answer is No, so --noconfirm would abort.
   [[ -n $installed_name && $installed_name != "$pkg" ]] && confirm=()
   file=$PKGDEST/${url##*/}
+  started=1
   if [[ -f $file ]]; then
     echo "Using the download from an earlier run: $file"
   else
@@ -294,6 +345,7 @@ install_vendor_pkg() {
   now_line=$(installed_package "$pkg") || die "pacman -Q $pkg finds nothing after the install"
   [[ $now_line == "$pkg $ver" ]] || die "pacman -Q says '$now_line', expected '$pkg $ver'"
   echo "Installed $now_line."
+  clean_after_install "$file"
   target_version=$ver
 }
 
