@@ -1,6 +1,14 @@
 # Sourced by omabump-check and omabump-install; not run on its own.
 # shellcheck shell=bash
 
+# One locale for every script: ${var:0:N} counts characters, and regexes,
+# sorting and tool output (pacman -Qi fields) do not depend on the user's.
+if locale -a 2>/dev/null | grep -qix 'c\.utf-\?8'; then
+  export LC_ALL=C.UTF-8
+else
+  export LC_ALL=C
+fi
+
 plugin_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 shipped_apps=$plugin_dir/apps.json
 user_apps=${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/omabump/apps.json
@@ -71,6 +79,10 @@ app_json() {
     ([.[] | select(.pkg == $n)] + [.[] | select(((.installed // []) + ([.tool // empty] | flatten)) | index($n))])[0]
     // error("no app")' 2>/dev/null
 }
+
+# Text bound for status.json and notifications, made inert: control
+# characters dropped and < > replaced, since a tooltip may render rich text.
+clean_text() { printf '%s' "$1" | tr -d '\000-\037\177' | sed 's/</‹/g; s/>/›/g'; }
 
 # vercmp is the only comparator: pacman, makepkg and omarchy-pkgs all use it.
 newer() { (( $(vercmp "$1" "$2") > 0 )); }

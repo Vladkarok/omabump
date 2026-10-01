@@ -86,7 +86,7 @@ write_status() {
   # Desktop apps first, mise tools after them, each in table order.
   printf '%s\n' "${rows[@]}" | jq -s --argjson prev "$previous" --argjson order "$order" \
     --argjson final "$final" --arg at "$at" --arg started "$started" \
-    --arg commit "$pkgs_commit" --arg perr "$pkgs_error" --arg pnote "$pkgs_note" \
+    --arg commit "$pkgs_commit" --arg perr "$(clean_text "$pkgs_error")" --arg pnote "$(clean_text "$pkgs_note")" \
     --argjson following "$pkgs_follow" '
     (map(.pkg)) as $done
     | (if $final == 1 then .
@@ -196,6 +196,7 @@ while IFS= read -r app; do
     stale=true
   fi
   error=$(printf '%s\n' "$route_error" "$feed_error" | sed '/^$/d' | paste -sd';' - | sed 's/;/; /g')
+  error=$(clean_text "$error")
   error=${error:0:240}
 
   # A feed knows only upstream's version, so it is compared with the
@@ -224,18 +225,20 @@ while IFS= read -r app; do
      && { [[ -z $announced ]] || newer "$latest" "$announced"; }; then
     body="Installed: $installed. Open the Omabump panel to update."
     [[ $installable == true ]] || body="Installed: $installed. ${note^}."
-    if notify-send -a Omabump "$label $latest available" "$body" 2>/dev/null; then
+    if notify-send -a Omabump "$(clean_text "$label $latest available")" "$(clean_text "$body")" 2>/dev/null; then
       notified=$(jq -c --arg pkg "$pkg" --arg v "$latest" '.[$pkg] = $v' <<<"$notified")
       save_notified
     fi
   fi
 
-  rows+=("$(jq -cn --arg pkg "$pkg" --arg label "$label" --arg source "$source" \
-    --arg installedName "$installed_name" --arg installed "$installed" \
-    --arg latest "$latest" --arg versionFrom "$from" --argjson update "$update" \
-    --argjson installable "$installable" --arg error "$error" --arg note "$note" \
-    --argjson stale "$stale" --argjson switchable "$switchable" --arg recipe "$recipe" --arg recipeCommit "$recipe_commit" \
-    --arg request "$request" \
+  # Every string from a feed, mise, pacman or apps.json goes through
+  # clean_text on its way into status.json.
+  rows+=("$(jq -cn --arg pkg "$pkg" --arg label "$(clean_text "$label")" --arg source "$source" \
+    --arg installedName "$(clean_text "$installed_name")" --arg installed "$(clean_text "$installed")" \
+    --arg latest "$(clean_text "$latest")" --arg versionFrom "$from" --argjson update "$update" \
+    --argjson installable "$installable" --arg error "$error" --arg note "$(clean_text "$note")" \
+    --argjson stale "$stale" --argjson switchable "$switchable" --arg recipe "$(clean_text "$recipe")" --arg recipeCommit "$recipe_commit" \
+    --arg request "$(clean_text "$request")" \
     --arg icon "$(jq -r '.icon // ""' <<<"$app")" --arg iconLight "$(jq -r '.iconLight // ""' <<<"$app")" \
     '{pkg: $pkg, label: $label, source: $source, installedName: $installedName,
       installed: $installed, latest: $latest, versionFrom: $versionFrom,
