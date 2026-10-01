@@ -117,6 +117,38 @@ same "apps_table: a user feed marks the entry" 'true true' "$(jq -r '[.[1]._user
 same "feed_version: a command feed from the user's file runs" 1.2.3 "$(feed_version "$(app_json b)")"
 same "feed_version: a command feed from the shipped file is refused" \
   "command feeds are allowed only from ~/.config/omarchy/omabump/apps.json" "$(feed_version "$(app_json a)" 2>&1 >/dev/null)"
+cat >"$user_apps" <<'EOF'
+[
+  {"pkg": "../../victim", "source": "indicator"},
+  {"pkg": "-x", "source": "indicator"},
+  {"pkg": "e", "source": "indicator", "installed": ["e", "../f"]},
+  {"pkg": "mise:g", "source": "mise", "tool": ["g", "npm:@scope/g"]},
+  {"pkg": "mise:h", "source": "mise", "tool": "npm:../h"},
+  {"pkg": "mise:i", "source": "indicator"},
+  {"pkg": 7}
+]
+EOF
+same "apps_table: entries with bad pkg, installed or tool names are dropped" \
+  'a b c mise:g' "$(apps_table 2>/dev/null | jq -r 'map(.pkg) | join(" ")')"
+same "apps_table: each dropped entry is named on stderr" 5 "$(apps_table 2>&1 >/dev/null | grep -c '^ignoring app')"
+check "pkg_name_ok: claude-desktop" pkg_name_ok claude-desktop
+check "pkg_name_ok: lib32-foo+bar@x_y.z" pkg_name_ok lib32-foo+bar@x_y.z
+refuse "pkg_name_ok: a leading dot" pkg_name_ok .foo
+refuse "pkg_name_ok: a leading dash" pkg_name_ok -foo
+refuse "pkg_name_ok: a slash" pkg_name_ok foo/bar
+refuse "pkg_name_ok: upper case" pkg_name_ok Foo
+check "app_id_ok: mise:claude" app_id_ok mise:claude
+refuse "app_id_ok: mise:../x" app_id_ok mise:../x
+check "tool_name_ok: npm:@anthropic-ai/claude-code" tool_name_ok npm:@anthropic-ai/claude-code
+refuse "tool_name_ok: .." tool_name_ok npm:@a/../b
+refuse "tool_name_ok: a leading dash" tool_name_ok -t
+check "ref_ok: refs/pull/725/head" ref_ok refs/pull/725/head
+refuse "ref_ok: not under refs/" ref_ok heads/master
+refuse "ref_ok: .." ref_ok refs/heads/../x
+refuse "ref_ok: a space" ref_ok 'refs/heads/a b'
+refuse "ref_ok: an option" ref_ok --upload-pack=x
+same "recipe_fetch: a recipeFetch outside refs/ is refused" "recipeFetch '--upload-pack=x' is not a refs/ name" \
+  "$(recipe_fetch 0123456789abcdef0123456789abcdef01234567 '{"recipeFetch": "--upload-pack=x"}' 2>&1 >/dev/null | grep recipeFetch)"
 echo '{"pkg": "x"}' >"$user_apps"
 same "apps_table: a user file that is not an array is ignored" 'a b c' "$(apps_table 2>/dev/null | jq -r 'map(.pkg) | join(" ")')"
 rm -f "$user_apps"
@@ -130,6 +162,7 @@ same "recipe_version: epoch=0 is no epoch" 'foo 1.0-1' "$(printf 'pkgname=foo\np
 refuse "recipe_version: an unreadable pkgver" recipe_version <<<$'pkgname=foo\npkgver=$(echo 1)\npkgrel=1'
 refuse "recipe_version: an unreadable epoch" recipe_version <<<$'pkgname=foo\npkgver=1.0\npkgrel=1\nepoch=a'
 refuse "recipe_version: no pkgrel" recipe_version <<<$'pkgname=foo\npkgver=1.0'
+refuse "recipe_version: a pkgname with a leading dash" recipe_version <<<$'pkgname=-foo\npkgver=1.0\npkgrel=1'
 
 # --- version_ok, upstream_part ------------------------------------------------
 
@@ -186,6 +219,9 @@ same "pkgs_pin: an unknown branch to follow is an error" "0 x" "$pkgs_follow ${p
 echo '{"omarchyPkgs": {"commit": "abc123"}}' >"$user_pins"
 repin
 same "pkgs_pin: a malformed commit leaves no base" "x" "${pkgs_pin_error:+x}$pkgs_base"
+echo '{"omarchyPkgs": {"ref": "refs/heads/../x"}}' >"$user_pins"
+repin
+same "pkgs_pin: a ref outside refs/ or with .. leaves no base" "x" "${pkgs_pin_error:+x}$pkgs_base"
 echo '[]' >"$user_pins"
 repin
 same "pkgs_pin: a user file that is not an object is ignored" "$shipped_commit" "$pkgs_base"

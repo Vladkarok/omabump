@@ -25,6 +25,23 @@ pkgs_lock=$cache_dir/omarchy-pkgs.lock
 shipped_pins=$plugin_dir/pins.json
 user_pins=${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/omabump/pins.json
 
+# Names that reach pacman, file names, git and mise. A package name as Arch
+# allows it, never starting with a dot or dash; an app id is that or, for a
+# mise row, "mise:<name>"; a mise tool may also carry a backend prefix and a
+# scope (npm:@scope/name); a git ref sits under refs/. None may hold "..".
+pkg_name_ok() { [[ $1 =~ ^[a-z0-9@_+][a-z0-9@._+-]*$ ]]; }
+app_id_ok() { pkg_name_ok "$1" || { [[ $1 == mise:* ]] && pkg_name_ok "${1#mise:}"; }; }
+tool_name_ok() { [[ $1 =~ ^[A-Za-z0-9@_+:][A-Za-z0-9@._+:/-]*$ && $1 != *..* ]]; }
+ref_ok() { [[ $1 =~ ^refs/[A-Za-z0-9._/-]+$ && $1 != *..* ]]; }
+# The same rules as jq definitions, for apps_table.
+jq_name_rules='
+  def pkg_ok: type == "string" and test("^[a-z0-9@_+][a-z0-9@._+-]*$");
+  def id_ok: pkg_ok or (type == "string" and startswith("mise:") and (.[5:] | pkg_ok));
+  def tool_ok: type == "string" and test("^[A-Za-z0-9@_+:][A-Za-z0-9@._+:/-]*$") and (contains("..") | not);
+  def entry_ok: (.pkg | id_ok) and ((.pkg | pkg_ok) or .source == "mise")
+    and ((.installed // []) | type == "array" and all(.[]; pkg_ok))
+    and ([.tool // empty] | flatten | all(.[]; tool_ok));'
+
 # The omarchy-pkgs commit every recipe read, sync and build starts from:
 # pins.json's 40-hex commit, with the user's pins.json merged over it. The
 # install path runs that repo's sync tool and hook scripts, so a moving
@@ -48,6 +65,11 @@ pkgs_pin() {
   [[ -z $follow ]] || { pkgs_pin_error="omarchyPkgs.follow '$follow' is not \"master\""; return 0; }
   pkgs_base=$(jq -r '.commit // ""' <<<"$pins")
   pkgs_pin_ref=$(jq -r '.ref // "refs/heads/master"' <<<"$pins")
+  if ! ref_ok "$pkgs_pin_ref"; then
+    pkgs_pin_error="the omarchy-pkgs pin ref '$pkgs_pin_ref' is not a refs/ name"
+    pkgs_base="" pkgs_pin_ref=""
+    return 0
+  fi
   if [[ ! $pkgs_base =~ ^[0-9a-f]{40}$ ]]; then
     pkgs_pin_error="the omarchy-pkgs pin '$pkgs_base' is not a 40-hex commit"
     pkgs_base=""
@@ -59,20 +81,26 @@ pkgs_pin
 # A user entry adds an app or overrides fields of a shipped one; "disabled":
 # true hides it. Shipped order comes first, user additions after. An entry
 # whose feed the user's file set carries "_userFeed": true (never taken from
-# either file), which feed_version requires for a command feed.
+# either file), which feed_version requires for a command feed. An entry
+# whose pkg, installed names or tool names break the rules above is dropped
+# with a line on stderr.
 apps_table() {
-  local user='[]'
+  local user='[]' merged
   if [[ -f $user_apps ]]; then
     user=$(jq -ce 'if type == "array" then . else error("not an array") end' "$user_apps" 2>/dev/null) \
       || { echo "ignoring $user_apps: not a JSON array" >&2; user='[]'; }
   fi
-  jq -c --argjson user "$user" '
-    map(del(._userFeed))
-    + ($user | map(del(._userFeed) | if has("feed") then ._userFeed = true else . end))
+  merged=$(jq -c --argjson user "$user" '
+    map(select(type == "object") | del(._userFeed))
+    + ($user | map(select(type == "object") | del(._userFeed) | if has("feed") then ._userFeed = true else . end))
+    | map(select(.pkg | type == "string"))
     | reduce .[] as $a ({order: [], by: {}};
       if .by[$a.pkg] then .by[$a.pkg] += $a
       else .order += [$a.pkg] | .by[$a.pkg] = $a end)
-    | [.order[] as $p | .by[$p] | select(.disabled != true)]' "$shipped_apps"
+    | [.order[] as $p | .by[$p] | select(.disabled != true)]' "$shipped_apps") || return 1
+  jq -r "$jq_name_rules"' .[] | select(entry_ok | not)
+    | "ignoring app \(.pkg | tojson): a pkg, installed or tool name with characters Omabump does not accept"' <<<"$merged" >&2
+  jq -c "$jq_name_rules"' map(select(entry_ok))' <<<"$merged"
 }
 
 # An app by its pkg, or else by one of its installed package or mise tool
@@ -437,8 +465,8 @@ pkgs_fetch() {
   [[ -n $pkgs_base ]] || { echo "$pkgs_pin_error" >&2; return 1; }
   if ! pgit cat-file -e "$pkgs_base^{commit}" 2>/dev/null; then
     local why
-    why=$(pgit_net -C "$pkgs_dir" fetch -q origin "$pkgs_base" 2>&1) \
-      || why=$(pgit_net -C "$pkgs_dir" fetch -q origin "$pkgs_pin_ref" 2>&1) || true
+    why=$(pgit_net -C "$pkgs_dir" fetch -q origin -- "$pkgs_base" 2>&1) \
+      || why=$(pgit_net -C "$pkgs_dir" fetch -q origin -- "$pkgs_pin_ref" 2>&1) || true
     pgit cat-file -e "$pkgs_base^{commit}" 2>/dev/null \
       || { echo "pinned omarchy-pkgs commit ${pkgs_base:0:12} is unreachable${why:+: $(tail -1 <<<"$why")}" >&2; return 1; }
   fi
@@ -477,9 +505,11 @@ recipe_blocker() {
 # Fetches the recipeCommit $1 of app $2, or the ref its recipeFetch names.
 recipe_fetch() {
   local ref
-  pgit_net -C "$pkgs_dir" fetch -q origin "$1" 2>/dev/null && return 0
+  pgit_net -C "$pkgs_dir" fetch -q origin -- "$1" 2>/dev/null && return 0
   ref=$(jq -r '.recipeFetch // ""' <<<"$2")
-  [[ -n $ref ]] && pgit_net -C "$pkgs_dir" fetch -q origin "$ref" 2>/dev/null
+  [[ -n $ref ]] || return 1
+  ref_ok "$ref" || { echo "recipeFetch '$ref' is not a refs/ name" >&2; return 1; }
+  pgit_net -C "$pkgs_dir" fetch -q origin -- "$ref" 2>/dev/null
 }
 
 # Which commit's recipe an app uses. apps.json may pin one with
@@ -532,7 +562,7 @@ recipe_version() {
   text=$(cat)
   name=$(pkgbuild_field pkgname <<<"$text") ver=$(pkgbuild_field pkgver <<<"$text")
   rel=$(pkgbuild_field pkgrel <<<"$text") epoch=$(pkgbuild_field epoch <<<"$text")
-  [[ $name =~ ^[a-z0-9@._+-]+$ ]] || { echo "unreadable pkgname in the recipe" >&2; return 1; }
+  pkg_name_ok "$name" || { echo "unreadable pkgname in the recipe" >&2; return 1; }
   version_ok "$ver" || { echo "unreadable pkgver in the recipe" >&2; return 1; }
   [[ $rel =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "unreadable pkgrel in the recipe" >&2; return 1; }
   [[ -z $epoch || $epoch =~ ^[0-9]+$ ]] || { echo "unreadable epoch in the recipe" >&2; return 1; }

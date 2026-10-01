@@ -46,6 +46,8 @@ command -v jq >/dev/null || die "jq is missing; install it with: sudo pacman -S 
 
 app=$(app_json "$pkg") || die "$pkg is not in the app table"
 pkg=$(jq -r .pkg <<<"$app")
+# The name becomes a lock file name below and reaches pacman and git.
+app_id_ok "$pkg" || die "'$pkg' is not a package name Omabump accepts"
 label=$(jq -r '.label // .pkg' <<<"$app")
 
 # One update per app at a time; the clone lock below serialises Omarchy builds.
@@ -298,7 +300,7 @@ build_and_install() {
 clean_build_tree() {
   local base
   base=$(mkpkg --printsrcinfo 2>/dev/null | sed -n 's/^pkgbase = //p' | head -1)
-  [[ $base =~ ^[a-z0-9@._+-]+$ && -d $BUILDDIR/$base ]] || return 0
+  pkg_name_ok "$base" && [[ -d $BUILDDIR/$base ]] || return 0
   rm -rf -- "${BUILDDIR:?}/$base" && echo "Removed the build tree $BUILDDIR/$base."
 }
 
@@ -467,7 +469,8 @@ install_mise() {
     echo "Would run: mise up $tool (in $HOME)"
     return 0
   fi
-  mise_timeout=900 mise_run up "$tool"
+  tool_name_ok "$tool" || die "'$tool' is not a mise tool name Omabump accepts"
+  mise_timeout=900 mise_run up -- "$tool"
   mise_load 0
   now=$(mise_active "$app") || now=""
   now=${now#* }
