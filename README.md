@@ -215,7 +215,11 @@ before pacman sees it.
 
 The gear in the panel header (or `s`) opens the settings: check interval,
 show mise tools, bar icon only when updates exist, notify on new releases.
-Each new version is announced once. The scripted equivalent:
+Each new version is announced once.
+
+![Omabump settings](docs/settings.png)
+
+The scripted equivalent:
 
 ```sh
 omarchy bar set io.github.vladkarok.omabump <key> <value> --json
