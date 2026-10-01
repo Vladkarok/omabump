@@ -112,7 +112,10 @@
     },
     "feed": {
       "type": "zcode-manifest",
-      "url": "https://zcode.z.ai/api/v1/releases/electron/manifest?platform=linux-x64&channel=1"
+      "url": {
+        "x86_64": "https://zcode.z.ai/api/v1/releases/electron/manifest?platform=linux-x64&channel=1",
+        "aarch64": "https://zcode.z.ai/api/v1/releases/electron/manifest?platform=linux-arm64&channel=1"
+      }
     },
     "icon": "assets/zcode.svg",
     "iconLight": "assets/zcode-light.svg"

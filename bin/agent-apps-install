@@ -46,16 +46,24 @@ mkdir -p "$PKGDEST" "$SRCDEST" "$BUILDDIR"
 
 refresh_panel() { "$here/agent-apps-check" --no-notify || true; }
 
+# Fails unless the full version $1 (epoch:pkgver-pkgrel) is newer than what
+# pacman has installed under the app's installed name right now.
+guard_version() {
+  local now_line
+  now_line=$(installed_package "$installed_name") || return 0
+  newer "$1" "${now_line#* }" && return 0
+  echo "$1 is not newer than the installed $now_line"
+  return 1
+}
+
 # Refuses unless the recipe in $1 builds a package named $2 that is newer than
 # what is installed right now. Sets target_version.
 check_target() {
-  local dir=$1 want=$2 name now_line
+  local dir=$1 want=$2 name msg
   read -r name target_version < <(recipe_version <"$dir/PKGBUILD") || die "cannot read the recipe version"
   [[ $name == "$want" ]] || die "recipe builds '$name', expected '$want'"
   echo "Recipe builds $name $target_version"
-  now_line=$(installed_package "$installed_name") || now_line=""
-  if [[ -n $now_line ]] && ! newer "$target_version" "${now_line#* }"; then
-    msg="$target_version is not newer than the installed ${now_line}"
+  if ! msg=$(guard_version "$target_version"); then
     (( dry_run )) && { echo "Would refuse: $msg"; return 0; }
     die "$msg; nothing to do"
   fi
@@ -63,7 +71,7 @@ check_target() {
 
 # Builds the recipe in the current directory, checks the result and installs it.
 build_and_install() {
-  local want=$1 list files f line match=""
+  local want=$1 list files f line msg match=""
   list=$(makepkg --packagelist) || die "makepkg --packagelist failed"
   mapfile -t files <<<"$list"
   for f in "${files[@]}"; do
@@ -80,6 +88,7 @@ build_and_install() {
   [[ -f $match ]] || die "makepkg did not produce $match"
   line=$(pacman -Qp -- "$match") || die "cannot read $match"
   [[ $line == "$want $target_version" ]] || die "built package is '$line', expected '$want $target_version'"
+  msg=$(guard_version "$target_version") || die "$msg; not installing"
 
   # Replacing a differently named package (chatgpt-desktop by
   # openai-codex-desktop) is a conflict prompt whose default answer is No, so
@@ -133,13 +142,14 @@ install_omarchy() {
 
 # pacman would download a URL itself, but it checks remote files against
 # RemoteFileSigLevel, which defaults to SigLevel (Required) and vendors do not
-# sign these packages. So curl fetches the file, pacman -Qp checks its name and
-# version, and pacman -U installs the local file (LocalFileSigLevel).
+# sign these packages. So curl fetches the file over HTTPS, pacman -Qp reads
+# its name and version (metadata only, not an authentication), and pacman -U
+# installs the local file under LocalFileSigLevel.
 install_vendor_pkg() {
-  local latest url file line name ver now_line confirm=(--noconfirm)
+  local latest url file line name ver now_line msg confirm=(--noconfirm)
   latest=$(feed_version "$app") || die "the feed has no version"
   echo "Feed: $latest"
-  url=$(vendor_pkg_url "$app" "$latest") || die "the vendor publishes no $pkg package for $(uname -m)"
+  url=$(vendor_pkg_url "$app" "$latest") || die "the vendor publishes no https $pkg package for $(uname -m)"
   echo "Vendor package: $url"
   if [[ -n $installed ]] && ! newer "$latest" "$(upstream_part "$installed")"; then
     msg="$latest is not newer than the installed $installed_name $installed"
@@ -159,12 +169,15 @@ install_vendor_pkg() {
     return 0
   fi
 
-  curl -fL --retry 2 -o "$file.part" "$url" || die "could not download $url"
+  max_time=1800 fetch -fL --retry 2 -o "$file.part" "$url" || die "could not download $url"
   mv -f "$file.part" "$file"
   line=$(pacman -Qp -- "$file") || die "cannot read $file"
   name=${line%% *} ver=${line#* }
   [[ $name == "$pkg" ]] || die "the vendor package is '$name', expected '$pkg'"
   [[ $(upstream_part "$ver") == "$latest" ]] || die "the vendor package is $ver, expected $latest"
+  # The feed knows no epoch or pkgrel; the file does. Compare its full
+  # version with what is installed right now.
+  msg=$(guard_version "$ver") || die "vendor package: $msg; not installing"
   sudo pacman -U "${confirm[@]}" -- "$file"
   now_line=$(installed_package "$pkg") || die "pacman -Q $pkg finds nothing after the install"
   [[ $now_line == "$pkg $ver" ]] || die "pacman -Q says '$now_line', expected '$pkg $ver'"
