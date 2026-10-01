@@ -1,77 +1,199 @@
 # Sourced by agent-apps-check and agent-apps-install; not run on its own.
+# shellcheck shell=bash
 
 plugin_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+shipped_apps=$plugin_dir/apps.json
 user_apps=${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/agent-apps/apps.json
 state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/plugins/io.github.vladkarok.agent-apps
 status_file=$state_dir/status.json
+notified_file=$state_dir/notified.json
+cache_dir=${XDG_CACHE_HOME:-$HOME/.cache}/agent-apps
+pkgs_dir=$cache_dir/omarchy-pkgs
+pkgs_url=https://github.com/omacom/omarchy-pkgs.git
+pkgs_lock=$cache_dir/omarchy-pkgs.lock
 
-# The user copy replaces the shipped table outright, so removing an app from
-# it hides that app instead of merging it back in.
-apps_file() {
-  if [[ -f $user_apps ]]; then echo "$user_apps"; else echo "$plugin_dir/apps.json"; fi
+# The app table: the shipped one, with the user's file merged over it by pkg.
+# A user entry adds an app or overrides fields of a shipped one; "disabled":
+# true hides it. Shipped order comes first, user additions after.
+apps_table() {
+  local user='[]'
+  if [[ -f $user_apps ]]; then
+    user=$(jq -ce 'if type == "array" then . else error("not an array") end' "$user_apps" 2>/dev/null) \
+      || { echo "ignoring $user_apps: not a JSON array" >&2; user='[]'; }
+  fi
+  jq -c --argjson user "$user" '
+    reduce (. + $user)[] as $a ({order: [], by: {}};
+      if .by[$a.pkg] then .by[$a.pkg] += $a
+      else .order += [$a.pkg] | .by[$a.pkg] = $a end)
+    | [.order[] as $p | .by[$p] | select(.disabled != true)]' "$shipped_apps"
 }
 
 app_json() {
-  jq -ce --arg pkg "$1" '.[] | select(.pkg == $pkg)' "$(apps_file)"
+  apps_table | jq -ce --arg pkg "$1" '.[] | select(.pkg == $pkg)'
 }
 
-# Prints "<installed package name> <version>" for the first of the given names
-# that pacman knows. pacman -Q also resolves a provided name, but trying the
-# AUR name too keeps that from being load-bearing. Epoch and pkgrel are Arch
-# packaging details; vendor feeds only know the upstream version.
+# vercmp is the only comparator: pacman, makepkg and omarchy-pkgs all use it.
+newer() { (( $(vercmp "$1" "$2") > 0 )); }
+
+# The upstream part of a pacman version: no epoch, no pkgrel.
+upstream_part() { local v=${1#*:}; echo "${v%-*}"; }
+
+# What Arch allows in pkgver, plus ":" for an epoch. Versions end up in sed
+# expressions and file names, so anything else is a feed error.
+version_ok() { [[ $1 =~ ^[A-Za-z0-9._+~:]+$ ]]; }
+
+# Prints "<name> <full version>" for the first of the given names pacman has
+# installed. Only exact names count: a provide could be an unrelated package.
 installed_package() {
-  local name line v
+  local name line
   for name in "$@"; do
     [[ -n $name ]] || continue
-    line=$(pacman -Q "$name" 2>/dev/null) || continue
-    v=${line#* }
-    v=${v#*:}
-    echo "${line%% *} ${v%-*}"
+    line=$(pacman -Q -- "$name" 2>/dev/null) || continue
+    [[ ${line%% *} == "$name" ]] || continue
+    echo "$line"
     return 0
   done
+  return 1
 }
 
-# Prints "<installed name> <version>" for an app, preferring a mise-managed
-# install over a pacman one. A tool that mise tracks updates with `mise up`
-# the minute upstream tags it, so when both exist the mise copy is the one in
-# use (its shims sit ahead of /usr/bin in PATH) and the one worth reporting.
+# The version mise actually runs: the entry marked active, else what
+# `mise current` prints.
+mise_active() {
+  local tool=$1 v
+  command -v mise >/dev/null || return 1
+  v=$(mise ls --json "$tool" 2>/dev/null | jq -r '[.[]? | select(.active == true)][0].version // ""' 2>/dev/null) || v=""
+  [[ -n $v ]] || v=$(mise current "$tool" 2>/dev/null | awk '{print $1; exit}')
+  [[ -n $v ]] && echo "$v"
+}
+
+# Prints "<source> <installed name> <version>" for an app, or fails when it is
+# not installed. A mise install wins over a pacman one: its shims sit ahead of
+# /usr/bin in PATH, so it is the copy in use.
 installed_app() {
-  local app=$1 tool v
+  local app=$1 tool v line names
   tool=$(jq -r '.mise // ""' <<<"$app")
-  if [[ -n $tool ]] && command -v mise >/dev/null; then
-    v=$(mise ls --json "$tool" 2>/dev/null | jq -r '[.[] | select(.installed)][0].version // ""')
-    [[ -n $v ]] && { echo "mise:$tool $v"; return 0; }
+  if [[ -n $tool ]] && v=$(mise_active "$tool"); then
+    echo "mise $tool $v"
+    return 0
   fi
-  installed_package "$(jq -r '.pkg' <<<"$app")" "$(jq -r '.aur // ""' <<<"$app")"
+  mapfile -t names < <(jq -r '((.installed // [.pkg]) + (if .aur then [.aur] else [] end))[]' <<<"$app")
+  line=$(installed_package "${names[@]}") || return 1
+  echo "$(jq -r '.source // "aur"' <<<"$app") $line"
 }
 
-# Prints the newest version the app's feed advertises. The value ends up in a
-# sed expression and a package file name, so anything outside a plain version
-# alphabet is treated as a feed error.
-latest_version() {
-  local app=$1 type url cmd repo v
+# Newest version in a Debian Packages index for one exact package name.
+apt_newest() {
+  local index=$1 want=$2 v best=""
+  while read -r v; do
+    if [[ -z $best ]] || newer "$v" "$best"; then best=$v; fi
+  done < <(awk -v want="$want" '
+    { sub(/\r$/, "") }
+    /^Package:/ { p = $2 }
+    /^Version:/ { v = $2 }
+    /^$/        { if (p == want && v != "") print v; p = v = "" }
+    END         { if (p == want && v != "") print v }' <<<"$index")
+  [[ -n $best ]] && echo "$best"
+}
+
+# Prints the newest version the app's own feed advertises. Every fetch is
+# checked on its own: a failed or cut-off download is an error, never a version.
+feed_version() {
+  local app=$1 type url body v repo cmd want
   type=$(jq -r '.feed.type // ""' <<<"$app")
   url=$(jq -r '.feed.url // ""' <<<"$app")
   case $type in
     apt-index)
-      # One index can list several releases, newest not necessarily last.
-      v=$(curl -fsSL --max-time 30 "$url" | sed -n 's/^Version: *//p' | sort -V | tail -1) ;;
+      want=$(jq -r '.feed.package // .pkg' <<<"$app")
+      body=$(curl -fsSL --max-time 30 "$url" 2>/dev/null) || { echo "could not fetch $url (curl exit $?)" >&2; return 1; }
+      v=$(apt_newest "$body" "$want") || { echo "no $want in the apt index" >&2; return 1; } ;;
     zcode-manifest)
-      v=$(curl -fsSL --max-time 30 "$url" | sed -n 's/^version: *//p' | head -1) ;;
+      body=$(curl -fsSL --max-time 30 "$url" 2>/dev/null) || { echo "could not fetch $url (curl exit $?)" >&2; return 1; }
+      v=$(sed -n 's/^version: *//p' <<<"$body" | head -1) ;;
     github-release)
       # The /releases/latest redirect names the tag; the REST API would do the
       # same but allows only 60 unauthenticated calls an hour.
       repo=$(jq -r '.feed.repo // ""' <<<"$app")
-      v=$(curl -sSI --max-time 30 "https://github.com/$repo/releases/latest" \
-        | tr -d '\r' | sed -n 's|^[Ll]ocation: .*/releases/tag/v\{0,1\}||p' | head -1) ;;
+      body=$(curl -sS -o /dev/null --max-time 30 -w '%{http_code} %{redirect_url}' \
+        "https://github.com/$repo/releases/latest" 2>/dev/null) || { echo "could not reach github.com/$repo (curl exit $?)" >&2; return 1; }
+      [[ $body == 302\ */releases/tag/* ]] || { echo "github.com/$repo has no latest release (${body%% *})" >&2; return 1; }
+      v=${body##*/releases/tag/}
+      v=${v#v} ;;
     command)
       cmd=$(jq -r '.feed.command // ""' <<<"$app")
-      v=$(timeout 60 bash -c "$cmd" </dev/null | head -1) ;;
+      body=$(timeout 60 bash -c "$cmd" </dev/null) || { echo "feed command failed" >&2; return 1; }
+      v=$(head -1 <<<"$body") ;;
+    "")
+      echo "no feed declared" >&2; return 1 ;;
     *)
       echo "unknown feed type '$type'" >&2; return 1 ;;
   esac
   v=$(tr -d '[:space:]' <<<"$v")
   [[ -n $v ]] || { echo "feed returned no version" >&2; return 1; }
-  [[ $v =~ ^[A-Za-z0-9._+~]+$ ]] || { echo "feed returned an odd version '$v'" >&2; return 1; }
+  version_ok "$v" || { echo "feed returned an odd version '$v'" >&2; return 1; }
   echo "$v"
+}
+
+# --- omarchy-pkgs ----------------------------------------------------------
+
+# Takes the clone lock on fd 8 for the rest of the process, waiting up to $1 s.
+pkgs_take_lock() {
+  mkdir -p "$cache_dir"
+  exec 8>"$pkgs_lock"
+  flock -w "${1:-0}" 8
+}
+
+# Brings the clone to origin/master and prints the commit. Needs the lock.
+pkgs_prepare() {
+  if [[ ! -d $pkgs_dir/.git ]]; then
+    rm -rf "$pkgs_dir"
+    git clone -q --filter=blob:none "$pkgs_url" "$pkgs_dir" </dev/null >&2 || return 1
+  fi
+  git -C "$pkgs_dir" fetch -q origin </dev/null >&2 || return 1
+  git -C "$pkgs_dir" reset -q --hard origin/master >&2 || return 1
+  git -C "$pkgs_dir" clean -qfdx >&2 || return 1
+  git -C "$pkgs_dir" rev-parse HEAD
+}
+
+# Puts Omarchy's recipe back the way origin/master has it.
+pkgs_restore() {
+  git -C "$pkgs_dir" checkout -q -- . 2>/dev/null || true
+  git -C "$pkgs_dir" clean -qfdx -- "pkgbuilds/${1:?}" 2>/dev/null || true
+}
+
+# Why the recipe cannot follow its vendor, or nothing when it can.
+recipe_blocker() {
+  local dir=$pkgs_dir/pkgbuilds/$1 meta
+  meta=$dir/.omarchy/package.json
+  [[ -f $dir/PKGBUILD ]] || { echo "No $1 recipe in omarchy-pkgs"; return; }
+  if [[ -f $meta ]] && jq -e '.sync == false' "$meta" >/dev/null 2>&1; then
+    echo "Repo recipe has no upstream watch yet (sync: false)"; return
+  fi
+  if [[ -f $dir/.omarchy/upstream.sh ]] || { [[ -f $meta ]] && jq -e '.upstream' "$meta" >/dev/null 2>&1; }; then
+    return
+  fi
+  echo "Repo recipe has no upstream watch yet"
+}
+
+# Prints "<pkgname> <full version>" from a PKGBUILD without running it. Only
+# plain assignments are accepted, the form omarchy-pkgs' own tools rewrite.
+recipe_version() {
+  local pb=$1/PKGBUILD name ver rel epoch
+  name=$(pkgbuild_field "$pb" pkgname) ver=$(pkgbuild_field "$pb" pkgver)
+  rel=$(pkgbuild_field "$pb" pkgrel) epoch=$(pkgbuild_field "$pb" epoch)
+  [[ $name =~ ^[a-z0-9@._+-]+$ ]] || { echo "unreadable pkgname in $pb" >&2; return 1; }
+  [[ $ver =~ ^[A-Za-z0-9._+~]+$ ]] || { echo "unreadable pkgver in $pb" >&2; return 1; }
+  [[ $rel =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "unreadable pkgrel in $pb" >&2; return 1; }
+  [[ -z $epoch || $epoch =~ ^[0-9]+$ ]] || { echo "unreadable epoch in $pb" >&2; return 1; }
+  echo "$name ${epoch:+$epoch:}$ver-$rel"
+}
+
+pkgbuild_field() { sed -n "s/^$2=//p" "$1" | head -1 | tr -d "\"'"; }
+
+# The last error line of a sync-upstream log, without colour codes.
+sync_error() {
+  local line
+  line=$(sed 's/\x1b\[[0-9;]*m//g' "$1" | grep '^✗' | grep -v 'sync completed with failures' | tail -1) || true
+  [[ -n $line ]] || line=$(grep -v '^[[:space:]]*$' "$1" | tail -1) || true
+  line=${line#✗ }
+  echo "${line:0:200}"
 }

@@ -2,17 +2,17 @@
   "schemaVersion": 1,
   "id": "io.github.vladkarok.agent-apps",
   "name": "Agent Apps",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "vladkarok",
   "license": "MIT",
-  "description": "Installed and newest vendor version of the Claude Desktop, Codex and ZCode apps in the Omarchy bar, with a one-click update from the vendor .deb.",
+  "description": "Installed and newest version of the AI desktop apps behind Omarchy's Install > AI menu, with a one-click local build of Omarchy's own recipe at the vendor's newest release.",
   "kinds": ["bar-widget"],
   "entryPoints": {
     "barWidget": "Panel.qml"
   },
   "barWidget": {
     "displayName": "Agent Apps",
-    "description": "Compares each installed AI agent desktop app against its vendor's release feed and builds the new version in a terminal when you press Update.",
+    "description": "Shows when a vendor has released a newer version of an installed AI app than the [omarchy] repo carries, and builds Omarchy's recipe at that version in a terminal when you press Update.",
     "category": "AI",
     "allowMultiple": false,
     "defaultSection": "right",

@@ -1,53 +1,176 @@
 #!/bin/bash
-# Build and install the vendor's newest release of one agent desktop app.
-# Meant to run in a visible terminal: makepkg and pacman talk to the user and
-# sudo may ask for a password. An app managed by mise is updated with mise
-# instead and never touches pacman.
+# Build and install the newest release of one agent desktop app. Meant to run
+# in a visible terminal: makepkg and pacman talk to the user and sudo may ask
+# for a password.
 #
-# The AUR PKGBUILD repackages the vendor .deb; only its pkgver lags, so it is
-# re-targeted at the version the vendor feed advertises and rebuilt.
+#   omarchy  Omarchy's own recipe from omarchy-pkgs, moved to the vendor's
+#            newest release by omarchy-pkgs' bin/sync-upstream. The recipe
+#            diff is shown before anything is built.
+#   aur      The AUR recipe with pkgver set to the version the app's feed
+#            advertises and checksums refreshed by updpkgsums.
+#   mise     mise up <tool>.
 #
-#   agent-apps-install <pkg>
+#   agent-apps-install [--dry-run] <pkg>
+#
+# --dry-run stops before makepkg builds anything: it prepares the recipe, shows
+# the diff, the version check and the package files makepkg would produce.
 set -euo pipefail
 here=$(dirname "$(readlink -f "$0")")
 source "$here/agent-apps-common"
 
-pkg=${1:?usage: agent-apps-install <pkg>}
-app=$(app_json "$pkg") || { echo "$pkg is not in $(apps_file)" >&2; exit 1; }
+dry_run=0
+[[ ${1:-} == --dry-run ]] && { dry_run=1; shift; }
+pkg=${1:?usage: agent-apps-install [--dry-run] <pkg>}
+
+die() { echo "agent-apps: $*" >&2; exit 1; }
+
+app=$(app_json "$pkg") || die "$pkg is not in the app table"
 label=$(jq -r '.label // .pkg' <<<"$app")
-aur=$(jq -r '.aur // .pkg' <<<"$app")
 
-latest=$(latest_version "$app")
-read -r installed_name installed < <(installed_app "$app") || true
-echo "$label: ${installed:-not installed} -> $latest"
+# One update per app at a time; the clone lock below serialises Omarchy builds.
+mkdir -p "$cache_dir/locks"
+exec 7>"$cache_dir/locks/$pkg.lock"
+flock -n 7 || die "another update of $label is already running"
 
-if [[ ${installed_name:-} == mise:* ]]; then
+installed_name="" installed=""
+if read -r source installed_name installed < <(installed_app "$app"); then :; else
+  source=$(jq -r '.source // "aur"' <<<"$app")
+fi
+echo "$label: installed ${installed:-nothing} (${installed_name:-$pkg}, $source)"
+
+export PKGDEST=$cache_dir/packages SRCDEST=$cache_dir/sources BUILDDIR=$cache_dir/build
+mkdir -p "$PKGDEST" "$SRCDEST" "$BUILDDIR"
+
+refresh_panel() { "$here/agent-apps-check" --no-notify || true; }
+
+# Refuses unless the recipe in $1 builds a package named $2 that is newer than
+# what is installed right now. Sets target_version.
+check_target() {
+  local dir=$1 want=$2 name now_line
+  read -r name target_version < <(recipe_version "$dir") || die "cannot read the recipe version"
+  [[ $name == "$want" ]] || die "recipe builds '$name', expected '$want'"
+  echo "Recipe builds $name $target_version"
+  now_line=$(installed_package "$installed_name") || now_line=""
+  if [[ -n $now_line ]] && ! newer "$target_version" "${now_line#* }"; then
+    msg="$target_version is not newer than the installed ${now_line}"
+    (( dry_run )) && { echo "Would refuse: $msg"; return 0; }
+    die "$msg; nothing to do"
+  fi
+}
+
+# Builds the recipe in the current directory, checks the result and installs it.
+build_and_install() {
+  local want=$1 list files f line match=""
+  list=$(makepkg --packagelist) || die "makepkg --packagelist failed"
+  mapfile -t files <<<"$list"
+  for f in "${files[@]}"; do
+    [[ $(basename "$f") == "$want-$target_version-"* ]] && match=$f
+  done
+  [[ -n $match ]] || die "makepkg would not produce $want $target_version: ${files[*]}"
+  echo "Package file: $match"
+  if (( dry_run )); then
+    echo "Dry run: stopping before makepkg."
+    return 0
+  fi
+
+  makepkg -sfC --noconfirm
+  [[ -f $match ]] || die "makepkg did not produce $match"
+  line=$(pacman -Qp -- "$match") || die "cannot read $match"
+  [[ $line == "$want $target_version" ]] || die "built package is '$line', expected '$want $target_version'"
+
+  # Replacing a differently named package (chatgpt-desktop by
+  # openai-codex-desktop) is a conflict prompt whose default answer is No, so
+  # --noconfirm would abort. Let the user answer it in this terminal instead.
+  local confirm=(--noconfirm)
+  [[ -n $installed_name && $installed_name != "$want" ]] && confirm=()
+  sudo pacman -U "${confirm[@]}" -- "$match"
+}
+
+install_omarchy() {
+  local blocker commit
+  echo "Waiting for the omarchy-pkgs clone..."
+  pkgs_take_lock 600 || die "the omarchy-pkgs clone stayed locked"
+  commit=$(pkgs_prepare) || die "could not update the omarchy-pkgs clone"
+  trap 'pkgs_restore "$pkg"' EXIT
+  echo "omarchy-pkgs at ${commit:0:12}"
+
+  blocker=$(recipe_blocker "$pkg")
+  [[ -z $blocker ]] || die "$blocker; wait for the [omarchy] repo"
+
+  (cd "$pkgs_dir" && bin/sync-upstream "$pkg") </dev/null || die "bin/sync-upstream $pkg failed"
+
+  echo
+  echo "Changes to Omarchy's $pkg recipe:"
+  if git -C "$pkgs_dir" diff --quiet -- "pkgbuilds/$pkg"; then
+    echo "(none, origin/master already holds the newest release)"
+  else
+    git -C "$pkgs_dir" --no-pager diff --color=auto -- "pkgbuilds/$pkg"
+  fi
+  echo
+
+  check_target "$pkgs_dir/pkgbuilds/$pkg" "$pkg"
+  cd "$pkgs_dir/pkgbuilds/$pkg"
+  build_and_install "$pkg"
+  cd /
+  # Leave the clone as origin/master has it and let the panel check use it.
+  pkgs_restore "$pkg"
+  trap - EXIT
+  exec 8>&-
+}
+
+install_aur() {
+  local aur dir latest
+  aur=$(jq -r '.aur // .pkg' <<<"$app")
+  latest=$(feed_version "$app") || die "the feed has no version"
+  echo "Feed: $latest"
+  dir=$cache_dir/aur/$aur
+  if [[ -d $dir/.git ]]; then
+    { git -C "$dir" fetch -q </dev/null && git -C "$dir" reset -q --hard origin/HEAD && git -C "$dir" clean -qfdx; } \
+      || die "could not update the AUR clone of $aur"
+  else
+    mkdir -p "$(dirname "$dir")"
+    git clone -q "https://aur.archlinux.org/$aur.git" "$dir" </dev/null || die "could not clone $aur from the AUR"
+  fi
+  cd "$dir"
+  [[ -f PKGBUILD ]] || die "AUR has no $aur"
+  sed -i "s/^pkgver=.*/pkgver=$latest/; s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+  updpkgsums
+  echo
+  echo "Changes to the AUR $aur recipe:"
+  git --no-pager diff --color=auto -- PKGBUILD
+  echo
+  check_target "$dir" "$aur"
+  build_and_install "$aur"
+}
+
+install_mise() {
+  local tool latest now
+  tool=$(jq -r '.mise' <<<"$app")
+  latest=$(feed_version "$app" 2>/dev/null) || latest=""
+  if (( dry_run )); then
+    echo "Would run: MISE_MINIMUM_RELEASE_AGE=0 mise up $tool"
+    return 0
+  fi
   # mise withholds releases younger than its cooldown; omarchy-update-mise
   # lifts it the same way.
-  MISE_MINIMUM_RELEASE_AGE=0 mise up "${installed_name#mise:}"
-  "$here/agent-apps-check" --no-notify || true
-  echo "$label is now $(mise ls --json "${installed_name#mise:}" | jq -r '[.[] | select(.installed)][0].version')."
-  exit
-fi
+  MISE_MINIMUM_RELEASE_AGE=0 mise up "$tool"
+  now=$(mise_active "$tool") || now=""
+  if [[ -z $latest ]]; then
+    echo "$label is now ${now:-unknown}; the feed did not answer, so it may not be the newest."
+  elif [[ $now == "$latest" ]]; then
+    echo "$label is now $now, the vendor's newest."
+  else
+    echo "$label is still ${now:-unknown} but the vendor has $latest. mise may pin an older version in its config (mise ls $tool)."
+  fi
+}
 
-dir=${XDG_CACHE_HOME:-$HOME/.cache}/agent-apps/$aur
-if [[ -d $dir/.git ]]; then
-  git -C "$dir" fetch -q && git -C "$dir" reset -q --hard origin/HEAD
-else
-  mkdir -p "$(dirname "$dir")"
-  git clone -q "https://aur.archlinux.org/$aur.git" "$dir"
-fi
-cd "$dir"
-sed -i "s/^pkgver=.*/pkgver=$latest/; s/^pkgrel=.*/pkgrel=1/" PKGBUILD
-updpkgsums
-makepkg -sfC --noconfirm
-# Replacing a differently named package (herdr from a repo by herdr-bin from
-# the AUR) is a conflict prompt whose default answer is No, so --noconfirm
-# would abort. Let the user answer it in this terminal instead.
-confirm=(--noconfirm)
-[[ -n ${installed_name:-} && $installed_name != "$aur" ]] && confirm=()
-sudo pacman -U "${confirm[@]}" "$aur-$latest-1-"*.pkg.tar.zst
+case $source in
+  omarchy) install_omarchy ;;
+  aur) install_aur ;;
+  mise) install_mise ;;
+  *) die "unknown source '$source'" ;;
+esac
 
-# Refresh the panel now instead of at the next timer tick.
-"$here/agent-apps-check" --no-notify || true
-echo "Restart $label to use $latest."
+(( dry_run )) && exit 0
+refresh_panel
+[[ $source == mise ]] || echo "Restart $label to use $target_version."

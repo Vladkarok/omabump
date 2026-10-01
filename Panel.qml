@@ -46,28 +46,48 @@ Panel {
   // The launcher joins its arguments into one bash -c string, so the command
   // is quoted once for that inner shell and once more for bar.run's own shell.
   function updateApp(app) {
-    if (!app || app.updateAvailable !== true || !root.bar) return
+    if (!app || app.updateAvailable !== true || app.installable !== true || !root.bar) return
     var inner = Util.shellQuote(checker.installScript) + " " + Util.shellQuote(app.pkg)
     root.bar.run("omarchy-launch-floating-terminal-with-presentation " + Util.shellQuote(inner))
     root.close()
   }
 
   function checkedText() {
-    if (checker.checking) return "Checking"
-    if (checker.checkedAt === "") return "Not checked yet"
+    if (checker.checking) return "checking"
+    if (checker.checkedAt === "") return "not checked yet"
     var ms = new Date(checker.checkedAt).getTime()
     if (!isFinite(ms)) return ""
     var minutes = Math.floor(Math.max(0, root.nowMs - ms) / 60000)
-    if (minutes < 1) return "Checked just now"
-    if (minutes < 60) return "Checked " + minutes + " min ago"
+    if (minutes < 1) return "checked just now"
+    if (minutes < 60) return "checked " + minutes + " min ago"
     var hours = Math.floor(minutes / 60)
-    if (hours < 24) return "Checked " + hours + " h ago"
-    return "Checked " + Math.floor(hours / 24) + " d ago"
+    if (hours < 24) return "checked " + hours + " h ago"
+    return "checked " + Math.floor(hours / 24) + " d ago"
+  }
+
+  function footerText() {
+    var commit = checker.pkgsCommit !== "" ? "omarchy-pkgs " + checker.pkgsCommit.substring(0, 7) + " · " : ""
+    return commit + checkedText()
+  }
+
+  function summaryText() {
+    var parts = []
+    if (updateCount > 0) parts.push(updateCount + (updateCount === 1 ? " update" : " updates"))
+    if (checker.waitingCount > 0) parts.push(checker.waitingCount + " newer release, not in the recipe yet")
+    var failed = checker.errorCount
+    if (failed > 0) parts.push("check failed for " + failed + (failed === 1 ? " app" : " apps"))
+    return parts.join(", ")
   }
 
   function tooltipText() {
-    if (updateCount === 0) return "Agent apps up to date"
-    return "Agent apps: " + updateCount + (updateCount === 1 ? " update" : " updates")
+    var summary = summaryText()
+    return summary === "" ? "Agent apps up to date" : "Agent apps: " + summary
+  }
+
+  // openai-codex-desktop may be installed as the AUR's chatgpt-desktop.
+  function aliasText(app) {
+    if (!app || !app.installedName || app.installedName === app.pkg || app.source === "mise") return ""
+    return ", installed as " + app.installedName
   }
 
   function versionText(app) {
@@ -79,9 +99,16 @@ Panel {
   function statusText(app) {
     if (!app) return ""
     if (checker.checking) return "Checking…"
-    if (String(app.error || "") !== "") return "Feed error: " + app.error
-    if (app.updateAvailable === true) return "Update available"
-    return "Up to date"
+    var note = String(app.note || "")
+    if (String(app.error || "") !== "") return "Check failed: " + app.error
+    if (app.updateAvailable === true && app.installable !== true) return note !== "" ? note : "No update path"
+    if (note !== "") return note
+    if (app.updateAvailable === true) {
+      if (app.source === "omarchy") return "Update builds Omarchy's recipe at " + app.latest
+      if (app.source === "mise") return "Update runs mise up"
+      return "Update builds the AUR recipe at " + app.latest
+    }
+    return "Up to date" + aliasText(app)
   }
 
   function colorLuminance(c) {
@@ -192,8 +219,8 @@ Panel {
           PanelHero {
             width: parent.width
             title: "Agent apps"
-            meta: root.checkedText()
-            detail: root.updateCount > 0 ? root.updateCount + (root.updateCount === 1 ? " update" : " updates") : ""
+            meta: root.summaryText() !== "" ? root.summaryText() : (root.apps.length > 0 ? "Up to date" : "")
+            detail: ""
             foreground: root.foreground
             fontFamily: root.fontFamily
 
@@ -227,7 +254,7 @@ Panel {
             width: parent.width
             topPadding: Style.space(12)
             bottomPadding: Style.space(12)
-            text: checker.checking ? "Checking vendor feeds…" : "None of the tracked apps are installed."
+            text: checker.checking ? "Checking for new versions…" : "None of the tracked apps are installed."
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.body
@@ -254,6 +281,27 @@ Panel {
           }
 
           PanelSeparator { foreground: root.foreground }
+
+          Text {
+            textFormat: Text.PlainText
+            width: parent.width
+            text: root.footerText()
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            elide: Text.ElideRight
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            visible: checker.pkgsError !== ""
+            width: parent.width
+            text: checker.pkgsError
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
 
           RowLayout {
             width: parent.width
@@ -288,7 +336,8 @@ Panel {
     id: appRow
     property var app: null
     property int rowIndex: 0
-    readonly property bool updatable: !!app && app.updateAvailable === true
+    readonly property bool hasUpdate: !!app && app.updateAvailable === true
+    readonly property bool updatable: hasUpdate && app.installable === true
     readonly property bool failed: !!app && String(app.error || "") !== ""
 
     hasCursor: root.cursorActive && root.rowIndex === rowIndex
@@ -357,13 +406,33 @@ Panel {
             elide: Text.ElideRight
           }
 
+          Rectangle {
+            Layout.alignment: Qt.AlignVCenter
+            implicitWidth: badgeText.implicitWidth + Style.space(8)
+            implicitHeight: badgeText.implicitHeight + Style.space(2)
+            radius: Style.space(3)
+            color: "transparent"
+            border.width: 1
+            border.color: root.dim
+
+            Text {
+              id: badgeText
+              anchors.centerIn: parent
+              textFormat: Text.PlainText
+              text: appRow.app ? String(appRow.app.source || "") : ""
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+          }
+
           Text {
             textFormat: Text.PlainText
             text: root.versionText(appRow.app)
-            color: appRow.updatable ? root.urgent : root.dim
+            color: appRow.hasUpdate ? root.urgent : root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
-            font.bold: appRow.updatable
+            font.bold: appRow.hasUpdate
           }
         }
 
@@ -387,7 +456,9 @@ Panel {
         foreground: root.urgent
         fontFamily: root.fontFamily
         fontSize: Style.font.bodySmall
-        tooltipText: "Build " + (appRow.app ? appRow.app.latest : "") + " from the vendor release in a terminal"
+        tooltipText: !appRow.app ? "" : appRow.app.source === "mise"
+          ? "Run mise up in a terminal"
+          : "Build " + appRow.app.latest + " from the " + (appRow.app.source === "omarchy" ? "Omarchy" : "AUR") + " recipe in a terminal"
         onClicked: root.updateApp(appRow.app)
       }
     }

@@ -2,44 +2,65 @@
   {
     "pkg": "claude-desktop",
     "label": "Claude Desktop",
+    "source": "omarchy",
     "feed": {
       "type": "apt-index",
-      "url": "https://downloads.claude.ai/claude-desktop/apt/stable/dists/stable/main/binary-amd64/Packages"
+      "url": "https://downloads.claude.ai/claude-desktop/apt/stable/dists/stable/main/binary-amd64/Packages",
+      "package": "claude-desktop"
     },
-    "aur": "claude-desktop",
     "icon": "assets/claude.svg"
   },
   {
-    "pkg": "chatgpt-desktop",
+    "pkg": "openai-codex-desktop",
     "label": "Codex",
+    "source": "omarchy",
+    "installed": ["openai-codex-desktop", "chatgpt-desktop"],
     "feed": {
       "type": "apt-index",
-      "url": "https://persistent.oaistatic.com/codex-app-prod/linux/deb/dists/stable/main/binary-amd64/Packages"
+      "url": "https://persistent.oaistatic.com/codex-app-prod/linux/deb/dists/stable/main/binary-amd64/Packages",
+      "package": "chatgpt"
     },
-    "aur": "chatgpt-desktop",
     "icon": "assets/codex.svg",
     "iconLight": "assets/codex-light.svg"
   },
   {
+    "pkg": "t3code-bin",
+    "label": "T3 Code",
+    "source": "omarchy",
+    "checkWith": "feed",
+    "feed": { "type": "github-release", "repo": "pingdotgg/t3code" },
+    "icon": "assets/t3code.svg",
+    "iconLight": "assets/t3code-light.svg"
+  },
+  {
+    "pkg": "hermes-desktop",
+    "label": "Hermes",
+    "source": "omarchy",
+    "feed": { "type": "github-release", "repo": "NousResearch/hermes-agent" }
+  },
+  {
+    "pkg": "grok-bot",
+    "label": "Grok",
+    "source": "omarchy",
+    "feed": {
+      "type": "apt-index",
+      "url": "https://downloads.cursor.com/aptrepo/dists/grok-bot/main/binary-amd64/Packages",
+      "package": "grok-bot"
+    }
+  },
+  { "pkg": "lmstudio-bin", "label": "LM Studio", "source": "omarchy" },
+  { "pkg": "openclaw", "label": "OpenClaw", "source": "omarchy" },
+  { "pkg": "perplexity", "label": "Perplexity", "source": "omarchy" },
+  { "pkg": "voxtype-bin", "label": "Dictation (voxtype)", "source": "omarchy" },
+  {
     "pkg": "z-code-bin",
     "label": "ZCode",
+    "source": "aur",
     "feed": {
       "type": "zcode-manifest",
       "url": "https://zcode.z.ai/api/v1/releases/electron/manifest?platform=linux-x64&channel=1"
     },
-    "aur": "z-code-bin",
     "icon": "assets/zcode.svg",
     "iconLight": "assets/zcode-light.svg"
-  },
-  {
-    "pkg": "t3code-bin",
-    "label": "T3 Code",
-    "feed": {
-      "type": "github-release",
-      "repo": "pingdotgg/t3code"
-    },
-    "aur": "t3code-bin",
-    "icon": "assets/t3code.svg",
-    "iconLight": "assets/t3code-light.svg"
   }
 ]
