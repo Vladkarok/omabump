@@ -35,7 +35,7 @@ Keys: `j`/`k` or arrows select a row, `Enter` updates it, `r` checks now,
 | `chatgpt-desktop` | Codex (ChatGPT app) | OpenAI apt index |
 | `z-code-bin` | ZCode | ZCode's own updater manifest, stable channel |
 | `t3code-bin` | T3 Code | GitHub releases of `pingdotgg/t3code` |
-| `herdr` | herdr | GitHub releases of `herdrdev/herdr`, built from AUR `herdr-bin` |
+| `herdr` | herdr | GitHub releases of `herdrdev/herdr`; updated through mise when mise manages it, otherwise built from AUR `herdr-bin` |
 
 ## Settings
 
@@ -74,6 +74,9 @@ that file exists it replaces the shipped table. Each entry:
 }
 ```
 
+- `mise`: optional mise tool name. When mise has it installed, the installed
+  version comes from mise and Update runs `mise up <tool>`; `pkg`/`aur` are
+  then only a fallback for machines without the mise install.
 - `pkg`: the installed package name. `aur` is the AUR package to build when it
   differs.
 - `feed.type`:

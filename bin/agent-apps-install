@@ -1,7 +1,8 @@
 #!/bin/bash
 # Build and install the vendor's newest release of one agent desktop app.
 # Meant to run in a visible terminal: makepkg and pacman talk to the user and
-# sudo may ask for a password.
+# sudo may ask for a password. An app managed by mise is updated with mise
+# instead and never touches pacman.
 #
 # The AUR PKGBUILD repackages the vendor .deb; only its pkgver lags, so it is
 # re-targeted at the version the vendor feed advertises and rebuilt.
@@ -17,8 +18,17 @@ label=$(jq -r '.label // .pkg' <<<"$app")
 aur=$(jq -r '.aur // .pkg' <<<"$app")
 
 latest=$(latest_version "$app")
-read -r installed_name installed < <(installed_package "$pkg" "$aur") || true
+read -r installed_name installed < <(installed_app "$app") || true
 echo "$label: ${installed:-not installed} -> $latest"
+
+if [[ ${installed_name:-} == mise:* ]]; then
+  # mise withholds releases younger than its cooldown; omarchy-update-mise
+  # lifts it the same way.
+  MISE_MINIMUM_RELEASE_AGE=0 mise up "${installed_name#mise:}"
+  "$here/agent-apps-check" --no-notify || true
+  echo "$label is now $(mise ls --json "${installed_name#mise:}" | jq -r '[.[] | select(.installed)][0].version')."
+  exit
+fi
 
 dir=${XDG_CACHE_HOME:-$HOME/.cache}/agent-apps/$aur
 if [[ -d $dir/.git ]]; then

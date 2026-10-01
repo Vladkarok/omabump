@@ -21,7 +21,7 @@ rows=()
 while IFS= read -r app; do
   pkg=$(jq -r '.pkg' <<<"$app")
   label=$(jq -r '.label // .pkg' <<<"$app")
-  read -r _ installed < <(installed_package "$pkg" "$(jq -r '.aur // ""' <<<"$app")") || true
+  read -r _ installed < <(installed_app "$app") || true
   [[ -n ${installed:-} ]] || continue
 
   prev_latest=$(jq -r --arg pkg "$pkg" '.apps[] | select(.pkg == $pkg) | .latest // ""' <<<"$previous")

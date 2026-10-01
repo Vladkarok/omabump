@@ -31,6 +31,20 @@ installed_package() {
   done
 }
 
+# Prints "<installed name> <version>" for an app, preferring a mise-managed
+# install over a pacman one. A tool that mise tracks updates with `mise up`
+# the minute upstream tags it, so when both exist the mise copy is the one in
+# use (its shims sit ahead of /usr/bin in PATH) and the one worth reporting.
+installed_app() {
+  local app=$1 tool v
+  tool=$(jq -r '.mise // ""' <<<"$app")
+  if [[ -n $tool ]] && command -v mise >/dev/null; then
+    v=$(mise ls --json "$tool" 2>/dev/null | jq -r '[.[] | select(.installed)][0].version // ""')
+    [[ -n $v ]] && { echo "mise:$tool $v"; return 0; }
+  fi
+  installed_package "$(jq -r '.pkg' <<<"$app")" "$(jq -r '.aur // ""' <<<"$app")"
+}
+
 # Prints the newest version the app's feed advertises. The value ends up in a
 # sed expression and a package file name, so anything outside a plain version
 # alphabet is treated as a feed error.

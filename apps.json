@@ -49,6 +49,7 @@
       "type": "github-release",
       "repo": "herdrdev/herdr"
     },
-    "aur": "herdr-bin"
+    "aur": "herdr-bin",
+    "mise": "herdr"
   }
 ]
