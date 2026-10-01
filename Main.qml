@@ -10,6 +10,10 @@ Item {
   visible: false
 
   property var settings: ({})
+  // A check started at creation would run with the defaults (mise rows
+  // listed, notifications on): the bar injects the real settings later. The
+  // owner sets this once they have arrived; checks wait for it.
+  property bool settingsReady: false
 
   readonly property string home: Quickshell.env("HOME") || ""
   readonly property string statusPath: (Quickshell.env("XDG_STATE_HOME") || home + "/.local/state")
@@ -24,7 +28,7 @@ Item {
   readonly property int refreshIntervalSec: Math.max(60, Number(setting("refreshIntervalSec", 900)) || 900)
   readonly property bool notify: setting("notify", true) !== false
   readonly property bool showMise: setting("showMise", true) !== false
-  onShowMiseChanged: { parse(statusFile.text()); refresh() }
+  onShowMiseChanged: { parse(statusFile.text()); if (settingsReady) refresh() }
 
   property var apps: []
   property string checkedAt: ""
@@ -76,7 +80,7 @@ Item {
   }
 
   function refresh() {
-    if (checkProcess.running) return
+    if (!settingsReady || checkProcess.running) return
     var command = [checkScript]
     if (!notify) command.push("--no-notify")
     if (!showMise) command.push("--no-mise")
@@ -137,9 +141,16 @@ Item {
     onTriggered: root.nowMs = Date.now()
   }
 
+  // A host that never injects settings still gets checks, with the defaults.
+  Timer {
+    interval: 5000
+    running: !root.settingsReady
+    onTriggered: root.settingsReady = true
+  }
+
   Timer {
     interval: root.refreshIntervalSec * 1000
-    running: true
+    running: root.settingsReady
     repeat: true
     triggeredOnStart: true
     onTriggered: root.refresh()

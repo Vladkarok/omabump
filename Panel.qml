@@ -358,6 +358,10 @@ Panel {
     if (panelFlick) panelFlick.contentY = 0
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
+  // The plugin loader hands the widget an empty settings object while it is
+  // built; the bar later sets bar, then the entry's settings, with
+  // Qt.callLater. The first settings to arrive with a bar are the real ones.
+  onSettingsChanged: if (root.bar) checker.settingsReady = true
   onOrderedAppsChanged: rowIndex = clamp(rowIndex, 0, Math.max(0, orderedApps.length - 1))
 
   Main {
