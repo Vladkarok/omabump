@@ -189,14 +189,14 @@ show_switch() {
   if [[ $script == *.pkg.tar || $script == *.pkg.tar.* ]]; then
     if bsdtar -tf "$script" .INSTALL >/dev/null 2>&1; then
       echo "--- $pkg install script (.INSTALL), run as root:"
-      bsdtar -xOf "$script" .INSTALL
+      bsdtar -xOf "$script" .INSTALL | term_safe
       echo "---"
     else
       echo "$pkg has no install script."
     fi
   elif [[ -f $script ]]; then
     echo "--- $pkg install script (${script##*/} in the recipe), run as root:"
-    cat "$script"
+    term_safe <"$script"
     echo "---"
   else
     echo "$pkg's recipe has no install script."
@@ -204,7 +204,7 @@ show_switch() {
   old=/var/lib/pacman/local/$installed_name-$installed/install
   if [[ -f $old ]]; then
     echo "--- $installed_name's install script, its remove hooks run as root:"
-    cat "$old"
+    term_safe <"$old"
     echo "---"
   else
     echo "$installed_name has no install script."
@@ -368,7 +368,7 @@ install_omarchy() {
   if pgit diff --cached --quiet HEAD -- "pkgbuilds/$pkg"; then
     echo "(none, the recipe already holds the newest release)"
   else
-    pgit --no-pager diff --cached --color=auto HEAD -- "pkgbuilds/$pkg"
+    pgit --no-pager diff --cached --no-color HEAD -- "pkgbuilds/$pkg" | term_safe
   fi
   echo
 

@@ -44,6 +44,9 @@ same "clean_text drops control characters and replaces angle brackets" \
   'a‹b›cdé' "$(clean_text $'a<b>\x01\nc\x7fd\té')"
 x=$(clean_text 'ééé'); same "the locale counts characters, not bytes" 'éé' "${x:0:2}"
 
+same "term_safe: ESC shown, C0 and C1 controls neutralised, UTF-8 kept" \
+  $'a^[[31mr\tb é ?2J\nz' "$(printf 'a\x1b[31m\x07r\r\tb é \xc2\x9b2J\nz' | term_safe)"
+
 # --- vendor_checksum: feed ----------------------------------------------------
 
 url=https://cdn.example.com/1.2.3/app-1.2.3-x86_64.pkg.tar.zst

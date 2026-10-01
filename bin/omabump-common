@@ -121,6 +121,12 @@ app_json() {
 # characters dropped and < > replaced, since a tooltip may render rich text.
 clean_text() { printf '%s' "$1" | tr -d '\000-\037\177' | sed 's/</‹/g; s/>/›/g'; }
 
+# Text printed in the terminal for the user to read before pacman (install
+# scripts, the recipe diff), made unable to drive the terminal: ESC shown as
+# ^[, C1 controls (UTF-8 encoded) as ?, other C0 controls but tab and
+# newline dropped. UTF-8 text stays readable.
+term_safe() { LC_ALL=C sed 's/\x1b/^[/g; s/\xc2[\x80-\x9f]/?/g' | LC_ALL=C tr -d '\000-\010\013-\037\177'; }
+
 # vercmp is the only comparator: pacman, makepkg and omarchy-pkgs all use it.
 newer() { (( $(vercmp "$1" "$2") > 0 )); }
 
