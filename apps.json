@@ -14,7 +14,10 @@
     "pkg": "openai-codex-desktop",
     "label": "Codex",
     "source": "omarchy",
-    "installed": ["openai-codex-desktop", "chatgpt-desktop"],
+    "installed": [
+      "openai-codex-desktop",
+      "chatgpt-desktop"
+    ],
     "feed": {
       "type": "apt-index",
       "url": "https://persistent.oaistatic.com/codex-app-prod/linux/deb/dists/stable/main/binary-amd64/Packages",
@@ -28,7 +31,10 @@
     "label": "T3 Code",
     "source": "omarchy",
     "checkWith": "feed",
-    "feed": { "type": "github-release", "repo": "pingdotgg/t3code" },
+    "feed": {
+      "type": "github-release",
+      "repo": "pingdotgg/t3code"
+    },
     "icon": "assets/t3code.svg",
     "iconLight": "assets/t3code-light.svg"
   },
@@ -36,7 +42,10 @@
     "pkg": "hermes-desktop",
     "label": "Hermes",
     "source": "omarchy",
-    "feed": { "type": "github-release", "repo": "NousResearch/hermes-agent" }
+    "feed": {
+      "type": "github-release",
+      "repo": "NousResearch/hermes-agent"
+    }
   },
   {
     "pkg": "grok-bot",
@@ -46,12 +55,29 @@
       "type": "apt-index",
       "url": "https://downloads.cursor.com/aptrepo/dists/grok-bot/main/binary-amd64/Packages",
       "package": "grok-bot"
-    }
+    },
+    "recipeRef": "refs/pull/725/head"
   },
-  { "pkg": "lmstudio-bin", "label": "LM Studio", "source": "omarchy" },
-  { "pkg": "openclaw", "label": "OpenClaw", "source": "omarchy" },
-  { "pkg": "perplexity", "label": "Perplexity", "source": "omarchy" },
-  { "pkg": "voxtype-bin", "label": "Dictation (voxtype)", "source": "omarchy" },
+  {
+    "pkg": "lmstudio-bin",
+    "label": "LM Studio",
+    "source": "omarchy"
+  },
+  {
+    "pkg": "openclaw",
+    "label": "OpenClaw",
+    "source": "omarchy"
+  },
+  {
+    "pkg": "perplexity",
+    "label": "Perplexity",
+    "source": "omarchy"
+  },
+  {
+    "pkg": "voxtype-bin",
+    "label": "Dictation (voxtype)",
+    "source": "omarchy"
+  },
   {
     "pkg": "z-code-bin",
     "label": "ZCode",

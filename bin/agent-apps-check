@@ -71,8 +71,10 @@ while IFS= read -r app; do
     omarchy)
       sync_err=""
       if pkgs_ready; then
+        overlay=$(recipe_overlay "$pkg" "$app" 2>"$tmp/err") || { overlay=""; sync_err=$(<"$tmp/err"); }
         note=$(recipe_blocker "$pkg")
-        if [[ -z $note ]]; then
+        [[ -z $note && -n $overlay ]] && note="Recipe from unmerged $overlay"
+        if [[ -z $(recipe_blocker "$pkg") ]]; then
           installable=true
           # A recipe whose hook downloads the whole release to hash it is
           # checked through the plugin's own feed; the hook runs on install.

@@ -94,6 +94,8 @@ install_omarchy() {
   trap 'pkgs_restore "$pkg"' EXIT
   echo "omarchy-pkgs at ${commit:0:12}"
 
+  overlay=$(recipe_overlay "$pkg" "$app") || die "recipe overlay failed"
+  [[ -z $overlay ]] || echo "Recipe taken from unmerged $overlay"
   blocker=$(recipe_blocker "$pkg")
   [[ -z $blocker ]] || die "$blocker; wait for the [omarchy] repo"
 
@@ -101,10 +103,10 @@ install_omarchy() {
 
   echo
   echo "Changes to Omarchy's $pkg recipe:"
-  if git -C "$pkgs_dir" diff --quiet -- "pkgbuilds/$pkg"; then
+  if git -C "$pkgs_dir" diff --quiet HEAD -- "pkgbuilds/$pkg"; then
     echo "(none, origin/master already holds the newest release)"
   else
-    git -C "$pkgs_dir" --no-pager diff --color=auto -- "pkgbuilds/$pkg"
+    git -C "$pkgs_dir" --no-pager diff --color=auto HEAD -- "pkgbuilds/$pkg"
   fi
   echo
 

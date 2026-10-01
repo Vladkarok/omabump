@@ -154,6 +154,12 @@ Fields:
   reported and Update runs `mise up`.
 - `checkWith: "feed"` (optional, omarchy only): check with `feed` instead of
   running the recipe sync.
+- `recipeRef` (optional, omarchy only): an omarchy-pkgs ref whose recipe is
+  laid over origin/master before checking and building, for a package whose
+  upstream watch is still in an unmerged PR (Grok Bot uses
+  `refs/pull/725/head`). The panel row says so, and the install diff is shown
+  against master, so the PR's changes are visible too. Drop the field once
+  the PR merges.
 - `feed`: where the newest version comes from for `aur` and `mise` apps, and
   the fallback for `omarchy` apps whose recipe cannot sync:
   - `apt-index` with `url` and `package`: a Debian `Packages` file, newest

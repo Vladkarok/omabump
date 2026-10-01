@@ -154,10 +154,23 @@ pkgs_prepare() {
   git -C "$pkgs_dir" rev-parse HEAD
 }
 
-# Puts Omarchy's recipe back the way origin/master has it.
+# Puts Omarchy's recipe back the way origin/master has it. A hard reset,
+# because a recipe overlay (below) is staged into the index.
 pkgs_restore() {
-  git -C "$pkgs_dir" checkout -q -- . 2>/dev/null || true
+  git -C "$pkgs_dir" reset -q --hard origin/master 2>/dev/null || true
   git -C "$pkgs_dir" clean -qfdx -- "pkgbuilds/${1:?}" 2>/dev/null || true
+}
+
+# Lays an unmerged omarchy-pkgs ref's recipe over origin/master's. apps.json
+# sets "recipeRef" (e.g. refs/pull/725/head) when a pending PR gives a package
+# the upstream watch that master still lacks. Prints the ref when applied.
+recipe_overlay() {
+  local pkg=$1 ref
+  ref=$(jq -r '.recipeRef // ""' <<<"$2")
+  [[ -n $ref ]] || return 0
+  git -C "$pkgs_dir" fetch -q origin "$ref" </dev/null >&2 || { echo "could not fetch $ref" >&2; return 1; }
+  git -C "$pkgs_dir" checkout -q FETCH_HEAD -- "pkgbuilds/$pkg" >&2 || { echo "no $pkg recipe in $ref" >&2; return 1; }
+  echo "$ref"
 }
 
 # Why the recipe cannot follow its vendor, or nothing when it can.
