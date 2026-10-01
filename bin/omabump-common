@@ -1,13 +1,13 @@
-# Sourced by agent-apps-check and agent-apps-install; not run on its own.
+# Sourced by omabump-check and omabump-install; not run on its own.
 # shellcheck shell=bash
 
 plugin_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 shipped_apps=$plugin_dir/apps.json
-user_apps=${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/agent-apps/apps.json
-state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/plugins/io.github.vladkarok.agent-apps
+user_apps=${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/omabump/apps.json
+state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/plugins/io.github.vladkarok.omabump
 status_file=$state_dir/status.json
 notified_file=$state_dir/notified.json
-cache_dir=${XDG_CACHE_HOME:-$HOME/.cache}/agent-apps
+cache_dir=${XDG_CACHE_HOME:-$HOME/.cache}/omabump
 pkgs_dir=$cache_dir/omarchy-pkgs
 pkgs_url=https://github.com/omacom/omarchy-pkgs.git
 pkgs_lock=$cache_dir/omarchy-pkgs.lock
@@ -30,7 +30,7 @@ apps_table() {
 }
 
 # An app by its pkg, or else by one of its installed package or mise tool
-# names, so `agent-apps-install z-code-bin` finds ZCode.
+# names, so `omabump-install z-code-bin` finds ZCode.
 app_json() {
   apps_table | jq -ce --arg n "$1" '
     ([.[] | select(.pkg == $n)] + [.[] | select(((.installed // []) + ([.tool // empty] | flatten)) | index($n))])[0]
@@ -256,7 +256,7 @@ require_omarchy_tools() {
   local line
   line=$(missing_tools_line)
   [[ -z $line ]] && return 0
-  echo "agent-apps: building Omarchy's recipe needs tools that are missing." >&2
+  echo "omabump: building Omarchy's recipe needs tools that are missing." >&2
   echo "${line%%;*}" >&2
   echo "Install them with:${line#*;}" >&2
   exit 1

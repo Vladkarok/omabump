@@ -9,8 +9,8 @@ import qs.Ui
 
 Panel {
   id: root
-  moduleName: "io.github.vladkarok.agent-apps"
-  ipcTarget: "io.github.vladkarok.agent-apps"
+  moduleName: "io.github.vladkarok.omabump"
+  ipcTarget: "io.github.vladkarok.omabump"
   manageIpc: false
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
@@ -173,7 +173,7 @@ Panel {
   function promptFor(app, mode) {
     if (!askable(app) || promptProcess.running) return
     promptProcess.pkg = app.pkg
-    promptProcess.command = ["bash", "-c", promptProcess.script, "agent-apps-prompt", checker.promptScript, app.pkg, mode]
+    promptProcess.command = ["bash", "-c", promptProcess.script, "omabump-prompt", checker.promptScript, app.pkg, mode]
     promptProcess.running = true
   }
 
@@ -240,8 +240,9 @@ Panel {
 
   function tooltipText() {
     var summary = summaryText()
-    if (summary !== "") return "Agent apps: " + summary
-    return checker.checkedAt === "" ? "Agent apps: not checked yet" : "Agent apps: none installed"
+    if (summary === "All current") return "Omabump up to date"
+    if (summary !== "") return "Omabump: " + summary
+    return checker.checkedAt === "" ? "Omabump: not checked yet" : "Omabump: none installed"
   }
 
   // The package release (-1) says nothing next to an upstream version, so
@@ -448,7 +449,7 @@ Panel {
 
           PanelHero {
             width: parent.width
-            title: "Agent apps"
+            title: "Omabump"
             meta: root.heroMeta()
             foreground: root.foreground
             fontFamily: root.fontFamily
@@ -535,7 +536,7 @@ Panel {
               Text {
                 textFormat: Text.PlainText
                 width: parent.width
-                text: checker.checking ? "Checking for new versions…" : "No agent apps installed"
+                text: checker.checking ? "Checking for new versions…" : "No agent desktop apps or CLIs installed"
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.body

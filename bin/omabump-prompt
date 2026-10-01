@@ -5,17 +5,17 @@
 # omarchy-agent --prompt, "Copy prompt" puts it on the clipboard. Reads the
 # last check's status.json.
 #
-#   agent-apps-prompt <pkg>
+#   omabump-prompt <pkg>
 set -euo pipefail
 here=$(dirname "$(readlink -f "$0")")
-source "$here/agent-apps-common"
+source "$here/omabump-common"
 
-name=${1:?usage: agent-apps-prompt <pkg>}
-die() { echo "agent-apps-prompt: $*" >&2; exit 1; }
+name=${1:?usage: omabump-prompt <pkg>}
+die() { echo "omabump-prompt: $*" >&2; exit 1; }
 
 app=$(app_json "$name") || die "$name is not in the app table"
 pkg=$(jq -r .pkg <<<"$app")
-[[ -s $status_file ]] || die "no check has run yet; run $here/agent-apps-check"
+[[ -s $status_file ]] || die "no check has run yet; run $here/omabump-check"
 row=$(jq -ce --arg pkg "$pkg" '[.apps[] | select(.pkg == $pkg)][0]' "$status_file" 2>/dev/null) \
   || die "$pkg is not in the last check (not installed?)"
 IFS=$'\x1f' read -r label installed_name installed latest from update < <(jq -r \
@@ -28,7 +28,7 @@ case $from:$(jq -r '.feed.type // ""' <<<"$app") in
   *:zcode-manifest|*:latest-yml) where="according to the vendor's update feed, $url" ;;
   *:github-release) where="https://github.com/$(jq -r .feed.repo <<<"$app")/releases/latest" ;;
   *:aur-rpc) where="version taken from the AUR package https://aur.archlinux.org/packages/$(jq -r '.feed.name // .pkg' <<<"$app")" ;;
-  *) where="according to the feed in the Agent Apps app table" ;;
+  *) where="according to the feed in Omabump's app table" ;;
 esac
 
-echo "On this Omarchy (Arch Linux, Hyprland) machine, $label is installed as pacman package $installed_name $installed, and the vendor has published $latest ($where). First, without changing anything, find the vendor's official Linux build and write a plan to update the app to $latest in a way pacman can manage: the Omarchy recipe in omarchy-pkgs (https://github.com/omacom/omarchy-pkgs) if one exists, else the vendor's own Arch package. If neither exists, say so and stop. Show me the plan and wait for my approval before running anything that changes the system, with or without sudo. You run with whatever permissions omarchy-agent grants you, which may let you run commands without asking, so this approval step is up to you. Never edit /usr/share/omarchy, and leave user data under ~/.config untouched. When done, run \`$here/agent-apps-check --no-notify\` so the Agent Apps panel refreshes."
+echo "On this Omarchy (Arch Linux, Hyprland) machine, $label is installed as pacman package $installed_name $installed, and the vendor has published $latest ($where). First, without changing anything, find the vendor's official Linux build and write a plan to update the app to $latest in a way pacman can manage: the Omarchy recipe in omarchy-pkgs (https://github.com/omacom/omarchy-pkgs) if one exists, else the vendor's own Arch package. If neither exists, say so and stop. Show me the plan and wait for my approval before running anything that changes the system, with or without sudo. You run with whatever permissions omarchy-agent grants you, which may let you run commands without asking, so this approval step is up to you. Never edit /usr/share/omarchy, and leave user data under ~/.config untouched. When done, run \`$here/omabump-check --no-notify\` so the Omabump panel refreshes."

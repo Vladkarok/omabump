@@ -1,18 +1,18 @@
 {
   "schemaVersion": 1,
-  "id": "io.github.vladkarok.agent-apps",
-  "name": "Agent Apps",
+  "id": "io.github.vladkarok.omabump",
+  "name": "Omabump",
   "version": "0.1.0",
   "author": "vladkarok",
   "license": "MIT",
-  "description": "Installed and newest version of the AI desktop apps behind Omarchy's Install > AI menu, and of the agent CLIs mise manages, with one-click updates through Omarchy's recipe, the vendor's own package or mise.",
+  "description": "Agent desktop apps and CLIs at the version the vendor shipped, ahead of the Omarchy repo.",
   "kinds": ["bar-widget"],
   "entryPoints": {
     "barWidget": "Panel.qml"
   },
   "barWidget": {
-    "displayName": "Agent Apps",
-    "description": "Shows when a vendor has released a newer version of an installed AI app or agent CLI, and updates it in a terminal through Omarchy's recipe, the vendor's Arch package or mise when you press Update.",
+    "displayName": "Omabump",
+    "description": "Shows when a vendor has released a newer version of an installed agent desktop app or CLI, and updates it in a terminal through Omarchy's recipe, the vendor's Arch package or mise when you press Update.",
     "category": "AI",
     "allowMultiple": false,
     "defaultSection": "right",

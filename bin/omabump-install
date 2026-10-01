@@ -10,7 +10,7 @@
 #               app's feed advertises, installed with pacman -U.
 #   mise        mise up <tool>.
 #
-#   agent-apps-install [--prepare] [--switch] <pkg>
+#   omabump-install [--prepare] [--switch] <pkg>
 #
 # --switch replaces an app installed under another package name
 # (chatgpt-desktop, z-code-bin) with <pkg> at the same or a newer full
@@ -24,20 +24,20 @@
 # package and stops before pacman -U. Nothing is installed.
 set -euo pipefail
 here=$(dirname "$(readlink -f "$0")")
-source "$here/agent-apps-common"
+source "$here/omabump-common"
 
 prepare=0 switch=0
 while [[ ${1:-} == --* ]]; do
   case $1 in
     --prepare) prepare=1 ;;
     --switch) switch=1 ;;
-    *) echo "usage: agent-apps-install [--prepare] [--switch] <pkg>" >&2; exit 2 ;;
+    *) echo "usage: omabump-install [--prepare] [--switch] <pkg>" >&2; exit 2 ;;
   esac
   shift
 done
-pkg=${1:?usage: agent-apps-install [--prepare] [--switch] <pkg>}
+pkg=${1:?usage: omabump-install [--prepare] [--switch] <pkg>}
 
-die() { echo "agent-apps: $*" >&2; exit 1; }
+die() { echo "omabump: $*" >&2; exit 1; }
 command -v jq >/dev/null || die "jq is missing; install it with: sudo pacman -S --needed jq"
 
 app=$(app_json "$pkg") || die "$pkg is not in the app table"
@@ -65,7 +65,7 @@ fi
 export PKGDEST=$cache_dir/packages SRCDEST=$cache_dir/sources BUILDDIR=$cache_dir/build
 mkdir -p "$PKGDEST" "$SRCDEST" "$BUILDDIR"
 
-refresh_panel() { "$here/agent-apps-check" --no-notify || true; }
+refresh_panel() { "$here/omabump-check" --no-notify || true; }
 
 # Fails unless the full version $1 (epoch:pkgver-pkgrel) is newer than what
 # pacman has installed under the app's installed name right now, or with

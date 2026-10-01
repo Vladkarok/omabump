@@ -6,22 +6,22 @@
 #               recipe in a fetched omarchy-pkgs clone is only read (PKGBUILD
 #               and .omarchy/ as text) to see whether bin/sync-upstream could
 #               move it. Nothing fetched is run: sync-upstream runs only in
-#               agent-apps-install, after the user pressed Update.
+#               omabump-install, after the user pressed Update.
 #   vendor-pkg  the feed in apps.json; the vendor publishes the package.
 #   indicator   the feed in apps.json; no install path.
 #   mise        `mise outdated`: what `mise up` would reach under the
 #               configured request, and what lies outside it (a pin).
 #
-#   agent-apps-check [--no-notify] [--no-mise]
+#   omabump-check [--no-notify] [--no-mise]
 set -euo pipefail
-source "$(dirname "$(readlink -f "$0")")/agent-apps-common"
+source "$(dirname "$(readlink -f "$0")")/omabump-common"
 
 notify=1 with_mise=1
 for arg; do
   case $arg in
     --no-notify) notify=0 ;;
     --no-mise) with_mise=0 ;;
-    *) echo "usage: agent-apps-check [--no-notify] [--no-mise]" >&2; exit 2 ;;
+    *) echo "usage: omabump-check [--no-notify] [--no-mise]" >&2; exit 2 ;;
   esac
 done
 
@@ -217,9 +217,9 @@ while IFS= read -r app; do
   announced=$(jq -r --arg pkg "$pkg" '.[$pkg] // ""' <<<"$notified")
   if (( notify )) && [[ $update == true && -z $error ]] \
      && { [[ -z $announced ]] || newer "$latest" "$announced"; }; then
-    body="Installed: $installed. Open the Agent Apps panel to update."
+    body="Installed: $installed. Open the Omabump panel to update."
     [[ $installable == true ]] || body="Installed: $installed. ${note^}."
-    if notify-send -a "Agent Apps" "$label $latest available" "$body" 2>/dev/null; then
+    if notify-send -a Omabump "$label $latest available" "$body" 2>/dev/null; then
       notified=$(jq -c --arg pkg "$pkg" --arg v "$latest" '.[$pkg] = $v' <<<"$notified")
       save_notified
     fi

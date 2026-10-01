@@ -2,9 +2,9 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 
-// The display side of the plugin. bin/agent-apps-check does all the work and
+// The display side of the plugin. bin/omabump-check does all the work and
 // writes status.json; this file runs it on a timer and watches the result, so
-// a check started from a terminal (or by agent-apps-install) lands here too.
+// a check started from a terminal (or by omabump-install) lands here too.
 Item {
   id: root
   visible: false
@@ -13,13 +13,13 @@ Item {
 
   readonly property string home: Quickshell.env("HOME") || ""
   readonly property string statusPath: (Quickshell.env("XDG_STATE_HOME") || home + "/.local/state")
-    + "/omarchy/plugins/io.github.vladkarok.agent-apps/status.json"
+    + "/omarchy/plugins/io.github.vladkarok.omabump/status.json"
   // A file URL percent-encodes spaces and non-ASCII characters in the path.
   readonly property string binDir: decodeURIComponent(String(Qt.resolvedUrl("bin"))
     .replace(/^file:\/\//, "").replace(/[?#].*$/, ""))
-  readonly property string checkScript: binDir + "/agent-apps-check"
-  readonly property string installScript: binDir + "/agent-apps-install"
-  readonly property string promptScript: binDir + "/agent-apps-prompt"
+  readonly property string checkScript: binDir + "/omabump-check"
+  readonly property string installScript: binDir + "/omabump-install"
+  readonly property string promptScript: binDir + "/omabump-prompt"
 
   readonly property int refreshIntervalSec: Math.max(60, Number(setting("refreshIntervalSec", 900)) || 900)
   readonly property bool notify: setting("notify", true) !== false
@@ -101,7 +101,7 @@ Item {
       pkgsError = String(pkgs.error || "")
       pkgsNote = String(pkgs.note || "")
     } catch (e) {
-      console.warn("agent-apps", "Ignoring bad status file", statusPath, e)
+      console.warn("omabump", "Ignoring bad status file", statusPath, e)
     }
   }
 
@@ -126,7 +126,7 @@ Item {
 
     stderr: StdioCollector {
       waitForEnd: true
-      onStreamFinished: if (text.trim() !== "") console.warn("agent-apps", text.trim())
+      onStreamFinished: if (text.trim() !== "") console.warn("omabump", text.trim())
     }
   }
 

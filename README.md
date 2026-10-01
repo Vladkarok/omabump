@@ -1,6 +1,8 @@
-# Agent Apps
+# Omabump
 
-An Omarchy bar widget for AI desktop apps and the agent CLIs mise manages. It
+Agent desktop apps and CLIs at the version the vendor shipped, ahead of the Omarchy repo.
+
+An Omarchy bar widget for agent desktop apps and the agent CLIs mise manages. It
 shows the installed and the newest version of each one and, when you press
 Update, installs the newest version in a terminal.
 
@@ -9,15 +11,18 @@ else maintains: Omarchy's own recipe, the vendor's own Arch package, or mise.
 An app that none of these covers is still listed, as an indicator-only row. It
 never installs anything on its own.
 
-![Agent Apps panel](preview.png)
+![Omabump panel](preview.png)
 
 ## Install
 
 ```sh
-omarchy plugin add https://github.com/vladkarok/omarchy-agent-apps --enable
+omarchy plugin add https://github.com/vladkarok/omabump.git --enable
 ```
 
-Remove it with `omarchy plugin remove io.github.vladkarok.agent-apps`.
+(The repository is not published yet.) Remove it with
+`omarchy plugin remove io.github.vladkarok.omabump`.
+
+The project was previously called Agent Apps.
 
 ## Prerequisites
 
@@ -63,7 +68,7 @@ An app installed some other way, as an AppImage or with npm, is not listed.
 
 ## What Update runs
 
-Update opens a floating terminal and runs `bin/agent-apps-install <pkg>`.
+Update opens a floating terminal and runs `bin/omabump-install <pkg>`.
 Which of three mechanisms it uses depends on the app's `source` in
 `apps.json`; the row's tooltip names it.
 
@@ -83,7 +88,7 @@ record of what changed, and stop at the sudo prompt if it looks wrong.
 **vendor.** The vendor publishes a ready Arch package. `apps.json` gives its
 URL with `{version}` in it and a feed for the newest version. Update refuses
 unless the feed's version is newer than the installed one, downloads the file
-to `~/.cache/agent-apps/packages`, checks its name with `pacman -Qp`, and
+to `~/.cache/omabump/packages`, checks its name with `pacman -Qp`, and
 compares its full `epoch:pkgver-pkgrel` with the installed package's, read
 again at that moment. Only then does it run `sudo pacman -U` and confirm the
 result with `pacman -Q`. curl fetches the file because pacman checks a URL
@@ -108,7 +113,7 @@ Codex may be installed as the AUR's `chatgpt-desktop` and ZCode as
 `z-code-bin`. When the canonical package (`openai-codex-desktop`, `zcode`)
 has the same or a newer version, the row says "Installed as chatgpt-desktop,
 switch to openai-codex-desktop" and has a Switch button (`w`). It runs
-`agent-apps-install --switch <pkg>`, which allows an equal full version where
+`omabump-install --switch <pkg>`, which allows an equal full version where
 Update needs a newer one. Before pacman runs it checks that one of the two
 packages declares a conflict with the other (otherwise pacman would keep
 both), prints the new package's install script and the old one's, and names
@@ -130,7 +135,7 @@ alone. The agent runs with whatever permissions `omarchy-agent` grants it,
 which for some agents means running commands without asking, so the row says
 "Opens your default agent; it may change the system". With no default agent
 set it copies the prompt instead. The copy button (`c`) only copies it.
-`bin/agent-apps-prompt <pkg>` prints the same prompt from the last check's
+`bin/omabump-prompt <pkg>` prints the same prompt from the last check's
 results.
 
 ### Omarchy builds and the repo
@@ -197,9 +202,9 @@ header tells when the last check ran.
 
 Keys: `j`/`k` or arrows select a row, `Enter` updates it (or asks the agent
 on a row without Update), `w` switches the package, `c` copies the agent
-prompt, `r` checks now, `s` opens the settings, `Esc` closes. IPC: `qs ipc call
-io.github.vladkarok.agent-apps open` (also `close`, `toggle`, `refresh`,
-`status`, `settings`).
+prompt, `r` checks now, `s` opens the settings, `Esc` closes. IPC:
+`omarchy-shell io.github.vladkarok.omabump status|open|refresh|settings`
+(also `close` and `toggle`).
 
 | Package | App | Source |
 |---|---|---|
@@ -231,8 +236,8 @@ version schemes, so those rows ask the AUR.
 
 ## How it works
 
-`bin/agent-apps-check` writes
-`~/.local/state/omarchy/plugins/io.github.vladkarok.agent-apps/status.json`.
+`bin/omabump-check` writes
+`~/.local/state/omarchy/plugins/io.github.vladkarok.omabump/status.json`.
 The widget runs it on a timer and watches that file, so a run from a terminal
 updates the panel too. The file is rewritten after every app: rows not checked
 yet keep their last result marked `"checking": true` and say "Checking…" in
@@ -240,7 +245,7 @@ the panel. `startedAt` records when the run began; a "checking" mark older
 than 10 minutes counts as a dead run and Refresh comes back.
 
 For omarchy rows the check fetches the clone at
-`~/.cache/agent-apps/omarchy-pkgs` (data only, no checkout) and reads the
+`~/.cache/omabump/omarchy-pkgs` (data only, no checkout) and reads the
 recipe with `git show`. A row is installable when the recipe exists on master
 (or at the pinned commit), has an upstream watch or hook, and the build tools
 are present. The newest version comes from the feed and is compared with the
@@ -249,13 +254,13 @@ versions. Recipe policies such as openclaw's 24 h `min_release_age` are not
 in the feed, so a fresh release can show up a day before Update will build
 it; until then the installer stops with "not newer than the installed".
 
-`bin/agent-apps-install --prepare <pkg>` fetches, syncs and prepares the
+`bin/omabump-install --prepare <pkg>` fetches, syncs and prepares the
 recipe, and stops before makepkg builds. That runs `bin/sync-upstream` and
 the recipe's hook, and makepkg reads the PKGBUILD. On the vendor path it
 downloads and checks the package and stops before `pacman -U`. Add
 `--switch` to prepare a switch. `<pkg>` may also be an installed package name
 (`z-code-bin`) or a mise tool name (`claude`). Sources, build files and
-packages go to `~/.cache/agent-apps/{sources,build,packages}`, so the clone
+packages go to `~/.cache/omabump/{sources,build,packages}`, so the clone
 stays clean and downloads are reused.
 
 For mise rows the check runs `mise ls --json`, `mise outdated --json` and
@@ -268,13 +273,13 @@ Settings live in the panel behind the gear in its header (or press `s`):
 show mise tools, bar icon only when updates exist, notify on new releases
 (each version is announced once, saved to `notified.json` next to
 `status.json` right after the notification goes out), and the check interval. The scripted equivalent is
-`omarchy bar set io.github.vladkarok.agent-apps <key> <value>` with the keys
+`omarchy bar set io.github.vladkarok.omabump <key> <value>` with the keys
 `showMise`, `barIconOnlyWithUpdates`, `notify` and `refreshIntervalSec`
 (seconds).
 
 ## Adding or changing apps
 
-`~/.config/omarchy/agent-apps/apps.json` is merged over the shipped
+`~/.config/omarchy/omabump/apps.json` is merged over the shipped
 `apps.json` by `pkg`: an entry with a new `pkg` adds an app, an entry with an
 existing `pkg` overrides the fields it sets, and `"disabled": true` hides one.
 
