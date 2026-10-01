@@ -25,7 +25,8 @@ Item {
   readonly property string installScript: binDir + "/omabump-install"
   readonly property string promptScript: binDir + "/omabump-prompt"
 
-  readonly property int refreshIntervalSec: Math.max(60, Number(setting("refreshIntervalSec", 900)) || 900)
+  // Between a minute and a day, whatever shell.json holds.
+  readonly property int refreshIntervalSec: Math.min(86400, Math.max(60, Number(setting("refreshIntervalSec", 900)) || 900))
   readonly property bool notify: setting("notify", true) !== false
   readonly property bool showMise: setting("showMise", true) !== false
   onShowMiseChanged: { parse(statusFile.text()); if (settingsReady) refresh() }
@@ -38,6 +39,8 @@ Item {
   property string pkgsError: ""
   property string pkgsNote: ""
   property string checkError: ""
+  // When this shell's last check ended; IPC refresh is throttled on it.
+  property double lastCheckEndMs: 0
   // A run from a terminal marks status.json as in progress too. A run killed
   // half way leaves that mark behind, so one older than staleMs no longer
   // counts and Refresh comes back.
@@ -128,6 +131,7 @@ Item {
     // The checker replaces status.json with a rename, which a watch on the
     // old inode can miss; reading it back here covers that.
     onExited: function(exitCode) {
+      root.lastCheckEndMs = Date.now()
       root.checkError = exitCode === 0 ? "" : "Check failed (exit " + exitCode + "), see the shell log"
       statusFile.reload()
     }

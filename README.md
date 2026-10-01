@@ -252,6 +252,8 @@ row without Update), `w` switches the package, `c` copies the agent prompt,
 `r` checks now, `s` opens the settings, `Esc` closes.
 
 IPC: `omarchy-shell io.github.vladkarok.omabump status|open|close|toggle|refresh|settings`.
+`refresh` answers `throttled` and starts nothing when a check ended less
+than a minute ago. The check interval is kept between 60 seconds and a day.
 
 ## Adding an app
 
@@ -307,7 +309,9 @@ Fields:
     It runs during the background check, so it is accepted only when your
     own `~/.config/omarchy/omabump/apps.json` sets the entry's `feed`; a
     command feed from the shipped `apps.json` is refused.
-- `icon` and `iconLight` (optional): SVG marks for dark and light themes.
+- `icon` and `iconLight` (optional): SVG marks for dark and light themes,
+  as paths relative to the plugin directory. Absolute paths, URLs and `..`
+  are ignored.
 
 pacman versions are compared with `vercmp`; mise versions are left to mise.
 

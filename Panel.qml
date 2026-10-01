@@ -58,6 +58,14 @@ Panel {
 
   function refreshNow() { checker.refresh() }
 
+  // IPC refresh: anything on the session bus can call it, so a check that
+  // ended less than a minute ago is not started again.
+  function ipcRefresh() {
+    if (!checker.checking && Date.now() - checker.lastCheckEndMs < 60000) return "throttled"
+    checker.refresh()
+    return "ok"
+  }
+
   function selectedApp() {
     return orderedApps.length > 0 ? orderedApps[clamp(rowIndex, 0, orderedApps.length - 1)] : null
   }
@@ -335,15 +343,18 @@ Panel {
   }
 
   // White marks ship a dark twin for light themes, the same convention the
-  // first-party agents panel uses. Relative paths belong to this plugin;
-  // a user apps.json may also point at an absolute file.
+  // first-party agents panel uses. Only relative paths inside this plugin
+  // load: an absolute path, a URL or a ".." component shows the fallback.
+  function iconPathOk(path) {
+    return path !== "" && path.charAt(0) !== "/" && path.indexOf(":") === -1
+      && path.indexOf("\\") === -1 && path.split("/").indexOf("..") === -1
+  }
   function iconUrl(app) {
     if (!app) return ""
     var path = String(app.icon || "")
     var light = String(app.iconLight || "")
     if (light !== "" && colorLuminance(root.surface) >= 0.5) path = light
-    if (path === "") return ""
-    return path.charAt(0) === "/" ? "file://" + path : Qt.resolvedUrl(path)
+    return iconPathOk(path) ? Qt.resolvedUrl(path) : ""
   }
 
   // Like the system update icon, it can stay out of the bar until there is
@@ -408,7 +419,7 @@ Panel {
     function show(): void { root.open() }
     function hide(): void { root.close() }
     function toggle(): void { root.toggle() }
-    function refresh(): string { root.refreshNow(); return "ok" }
+    function refresh(): string { return root.ipcRefresh() }
     function status(): string { return root.tooltipText() }
     function settings(): void { root.open(); root.showSettings(true, false) }
   }
