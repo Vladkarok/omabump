@@ -162,7 +162,7 @@ while IFS= read -r app; do
           read -r _ recipe < <(recipe_file "$recipe_rev" "$pkg" PKGBUILD | recipe_version 2>/dev/null) || recipe=""
           [[ $recipe_rev == "$master" ]] || recipe_commit=$recipe_rev
         else
-          route_error="Pinned recipe: $(<"$tmp/err")"
+          route_error=$(<"$tmp/err")
         fi
       elif [[ $pkgs_state == busy ]]; then
         installable=$(jq -r '.installable // false' <<<"$prev")
