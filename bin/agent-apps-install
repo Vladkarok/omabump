@@ -180,7 +180,9 @@ install_mise() {
   now=${now#* }
   if [[ -z $latest ]]; then
     echo "$label is now ${now:-unknown}; mise latest did not answer, so it may not be the newest."
-  elif [[ $now == "$latest" ]]; then
+  elif [[ -n $now ]] && ! newer "$latest" "$now"; then
+    # mise latest honours the release-age cooldown that mise up was told to
+    # skip, so the installed version can be newer than it.
     echo "$label is now $now, the newest mise knows."
   else
     echo "$label is still ${now:-unknown} but mise latest says $latest. mise may pin an older version in its config (mise ls $tool)."
