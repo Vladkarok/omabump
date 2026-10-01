@@ -27,3 +27,19 @@ First release, formerly Agent Apps.
 - User overrides in `~/.config/omarchy/omabump/apps.json` and `pins.json`.
 - `--prepare` dry run, uncompressed local builds, and cache cleanup after a
   successful install.
+
+Hardening before release:
+
+- `command` feeds run only from the user's
+  `~/.config/omarchy/omabump/apps.json`; one in the shipped `apps.json` is
+  refused, and the tests assert the shipped file has none.
+- Text written to `status.json` and notifications has control characters
+  removed and `<`/`>` replaced. The scripts run under `LC_ALL=C.UTF-8`
+  (`C` without it).
+- The check holds the omarchy-pkgs clone lock only while it fetches; an
+  install in progress no longer blocks it, and the check still reports the
+  clone as busy when an install holds the lock at fetch time.
+- A feed listing the vendor package both by name and by exact url no longer
+  yields two digests and a failed checksum.
+- `tests/run.sh` (plain bash, no network) and a CI workflow running
+  `bash -n`, `jq`, shellcheck and the tests.
