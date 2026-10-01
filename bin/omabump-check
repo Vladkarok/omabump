@@ -13,6 +13,10 @@
 #               configured request, and what lies outside it (a pin).
 #
 #   omabump-check [--no-notify] [--no-mise]
+#
+# The shell runs it under `timeout -k 10 600` (Main.qml), so a hung feed or
+# tool cannot keep a check alive past ten minutes; the TERM trap below still
+# writes status.json as a failed run.
 set -euo pipefail
 # shellcheck source=omabump-common
 source "$(dirname "$(readlink -f "$0")")/omabump-common"
@@ -51,6 +55,7 @@ cleanup() {
   rm -rf "$tmp"
 }
 trap cleanup EXIT
+trap 'exit 143' TERM
 
 # The clone is fetched on first need, so a machine without any Omarchy-packaged
 # app never fetches it. The check only reads it: no checkout, nothing run. The

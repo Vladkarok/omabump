@@ -93,9 +93,24 @@ newer() { (( $(vercmp "$1" "$2") > 0 )); }
 # The upstream part of a pacman version: no epoch, no pkgrel.
 upstream_part() { local v=${1#*:}; echo "${v%-*}"; }
 
-# What Arch allows in pkgver, plus ":" for an epoch. Versions end up in sed
-# expressions, URLs and file names, so anything else is a feed error.
-version_ok() { [[ $1 =~ ^[A-Za-z0-9._+~:]+$ ]]; }
+# An upstream version as a feed gives it: what Arch allows in pkgver, starting
+# with a letter or digit, no ".." anywhere (so never a "." or ".." path
+# component in a {version} URL) and at most 64 characters. Versions end up in
+# sed expressions, URLs and file names, so anything else is a feed error.
+# Feed versions never carry an epoch; full_version_ok takes pacman's.
+version_ok() { [[ ${#1} -le 64 && $1 =~ ^[0-9A-Za-z][A-Za-z0-9._+~]*$ && $1 != *..* ]]; }
+
+# A full pacman version: [epoch:]pkgver-pkgrel, pkgver as version_ok has it.
+full_version_ok() {
+  local v=$1 rel
+  if [[ $v == *:* ]]; then
+    [[ ${v%%:*} =~ ^[0-9]{1,9}$ ]] || return 1
+    v=${v#*:}
+  fi
+  [[ $v == *-* ]] || return 1
+  rel=${v##*-}
+  [[ $rel =~ ^[0-9]+(\.[0-9]+)?$ ]] && version_ok "${v%-*}"
+}
 
 # Prints "<name> <full version>" for the first of the given names pacman has
 # installed. Only exact names count: a provide could be an unrelated package.
@@ -179,9 +194,13 @@ per_arch() {
   jq -r --arg arch "$(uname -m)" "($1) as \$v | if (\$v | type) == \"object\" then \$v[\$arch] // \"\" else \$v // \"\" end" <<<"$2"
 }
 
-# Every download: HTTPS only, redirects included, and bounded. $max_time
-# overrides the 30 s default for the vendor package itself.
-fetch() { curl --proto =https --proto-redir =https --connect-timeout 15 --max-time "${max_time:-30}" "$@"; }
+# Every download: HTTPS only, redirects included, and bounded in time and
+# size. $max_time and $max_size override the 30 s and 8 MB defaults for the
+# vendor package itself.
+fetch() {
+  curl --proto =https --proto-redir =https --connect-timeout 15 --max-time "${max_time:-30}" \
+    --max-filesize "${max_size:-8M}" "$@"
+}
 
 # The vendor package URL for this machine's architecture with {version}
 # filled in, or nothing when the vendor builds none for it.
@@ -239,17 +258,21 @@ vendor_checksum() {
   echo "$algo $hex"
 }
 
-# Newest version in a Debian Packages index for one exact package name.
+# Newest version in a Debian Packages index for one exact package name. Each
+# version must pass version_ok before vercmp sees it, and only the first 500
+# matching stanzas count: every comparison is a vercmp process, and a real
+# index lists a few dozen releases of one package.
 apt_newest() {
   local index=$1 want=$2 v best=""
   while read -r v; do
+    version_ok "$v" || continue
     if [[ -z $best ]] || newer "$v" "$best"; then best=$v; fi
-  done < <(awk -v want="$want" '
+  done < <(awk -v want="$want" -v max=500 '
     { sub(/\r$/, "") }
     /^Package:/ { p = $2 }
     /^Version:/ { v = $2 }
-    /^$/        { if (p == want && v != "") print v; p = v = "" }
-    END         { if (p == want && v != "") print v }' <<<"$index")
+    /^$/        { if (p == want && v != "") { print v; if (++n >= max) { done = 1; exit } } p = v = "" }
+    END         { if (!done && p == want && v != "") print v }' <<<"$index")
   [[ -n $best ]] && echo "$best"
 }
 
@@ -510,7 +533,7 @@ recipe_version() {
   name=$(pkgbuild_field pkgname <<<"$text") ver=$(pkgbuild_field pkgver <<<"$text")
   rel=$(pkgbuild_field pkgrel <<<"$text") epoch=$(pkgbuild_field epoch <<<"$text")
   [[ $name =~ ^[a-z0-9@._+-]+$ ]] || { echo "unreadable pkgname in the recipe" >&2; return 1; }
-  [[ $ver =~ ^[A-Za-z0-9._+~]+$ ]] || { echo "unreadable pkgver in the recipe" >&2; return 1; }
+  version_ok "$ver" || { echo "unreadable pkgver in the recipe" >&2; return 1; }
   [[ $rel =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "unreadable pkgrel in the recipe" >&2; return 1; }
   [[ -z $epoch || $epoch =~ ^[0-9]+$ ]] || { echo "unreadable epoch in the recipe" >&2; return 1; }
   [[ $epoch == 0 ]] && epoch=""

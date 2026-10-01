@@ -134,7 +134,20 @@ refuse "recipe_version: no pkgrel" recipe_version <<<$'pkgname=foo\npkgver=1.0'
 # --- version_ok, upstream_part ------------------------------------------------
 
 check "version_ok: 1.2.3" version_ok 1.2.3
-check "version_ok: 2:1.0+git~r1_x" version_ok 2:1.0+git~r1_x
+check "version_ok: 1.0+git~r1_x" version_ok 1.0+git~r1_x
+refuse "version_ok: an epoch" version_ok 2:1.0
+refuse "version_ok: a leading dot" version_ok .1
+refuse "version_ok: a leading dash" version_ok -1
+refuse "version_ok: a dot segment" version_ok ..
+refuse "version_ok: .. inside" version_ok 1..2
+check "version_ok: 64 characters" version_ok "$(printf '1%.0s' {1..64})"
+refuse "version_ok: 65 characters" version_ok "$(printf '1%.0s' {1..65})"
+check "full_version_ok: 2:1.0+git~r1_x-1" full_version_ok 2:1.0+git~r1_x-1
+check "full_version_ok: no epoch, pkgrel 1.1" full_version_ok 1.2.3-1.1
+refuse "full_version_ok: no pkgrel" full_version_ok 1.2.3
+refuse "full_version_ok: a letter epoch" full_version_ok a:1.2.3-1
+refuse "full_version_ok: a dot segment" full_version_ok 1:..-1
+refuse "full_version_ok: a space" full_version_ok '1.2 3-1'
 refuse "version_ok: a space" version_ok '1.2 3'
 refuse "version_ok: a slash" version_ok 1.2/3
 # The literal text, not its expansion, is what version_ok must refuse.
@@ -149,6 +162,10 @@ same "upstream_part: pkgrel cut" 1.2.3 "$(upstream_part 1.2.3-1)"
 index=$'Package: claude-desktop\nVersion: 1.9.0\n\nPackage: claude-desktop-beta\nVersion: 9.9.9\n\nPackage: claude-desktop\r\nVersion: 1.10.0\r\n\r\nPackage: claude-desktop\nVersion: 1.2.0'
 same "apt_newest: vercmp order, exact package name, CRLF stanzas" 1.10.0 "$(apt_newest "$index" claude-desktop)"
 refuse "apt_newest: a package the index lacks" apt_newest "$index" claude
+index=$'Package: app\nVersion: 9.9.9/../x\n\nPackage: app\nVersion: 1.0\n\nPackage: app\nVersion: $(id)'
+same "apt_newest: versions version_ok refuses are skipped" 1.0 "$(apt_newest "$index" app)"
+index=$(for i in $(seq 1 600); do printf 'Package: app\nVersion: %s.0\n\n' "$i"; done)
+same "apt_newest: only the first 500 matching stanzas count" 500.0 "$(apt_newest "$index" app)"
 
 # --- pkgs_pin -----------------------------------------------------------------
 

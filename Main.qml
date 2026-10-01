@@ -83,7 +83,8 @@ Item {
 
   function refresh() {
     if (!settingsReady || checkProcess.running) return
-    var command = [checkScript]
+    // An overall deadline: ten minutes, then TERM, then KILL ten seconds later.
+    var command = ["timeout", "-k", "10", "600", checkScript]
     if (!notify) command.push("--no-notify")
     if (!showMise) command.push("--no-mise")
     checkProcess.command = command
