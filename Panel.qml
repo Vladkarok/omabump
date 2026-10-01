@@ -167,8 +167,12 @@ Panel {
 
   // An update exists but the plugin cannot install it: an indicator row, a
   // recipe without a watch, or a feed that failed with a newer version known.
+  // Or a mise tool whose request holds it below a newer release.
   function askable(app) {
-    return !!app && app.updateAvailable === true && app.installable !== true
+    if (!app || app.installable === true) return false
+    if (app.updateAvailable === true) return true
+    return app.source === "mise" && String(app.error || "") === ""
+      && String(app.latest || "") !== "" && app.latest !== app.installed
   }
 
   function setActionNote(pkg, text) {

@@ -138,6 +138,10 @@ set it copies the prompt instead. The copy button (`c`) only copies it.
 `bin/omabump-prompt <pkg>` prints the same prompt from the last check's
 results.
 
+A mise tool held below a newer release ("Pinned to 0.96.1, 0.97.1 exists")
+has Ask agent too. Its prompt names the tool and the request that holds it
+and asks for a plan to adjust the request, or a reason it should stay.
+
 ### Omarchy builds and the repo
 
 A locally built package says `Packager: Unknown Packager` in `pacman -Qi`.

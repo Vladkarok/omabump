@@ -115,7 +115,7 @@ while IFS= read -r app; do
 
   prev=$(jq -c --arg pkg "$pkg" '[.apps[] | select(.pkg == $pkg)][0] // {}' <<<"$previous")
   latest="" from="" note="" installable=false stale=false
-  route_error="" feed_error="" recipe="" recipe_commit="" mise_update=false
+  route_error="" feed_error="" recipe="" recipe_commit="" mise_update=false request=""
 
   case $source in
     mise)
@@ -230,11 +230,13 @@ while IFS= read -r app; do
     --arg latest "$latest" --arg versionFrom "$from" --argjson update "$update" \
     --argjson installable "$installable" --arg error "$error" --arg note "$note" \
     --argjson stale "$stale" --argjson switchable "$switchable" --arg recipe "$recipe" --arg recipeCommit "$recipe_commit" \
+    --arg request "$request" \
     --arg icon "$(jq -r '.icon // ""' <<<"$app")" --arg iconLight "$(jq -r '.iconLight // ""' <<<"$app")" \
     '{pkg: $pkg, label: $label, source: $source, installedName: $installedName,
       installed: $installed, latest: $latest, versionFrom: $versionFrom,
       updateAvailable: $update, installable: $installable, error: $error, note: $note,
       stale: $stale, switchable: $switchable, recipe: $recipe, recipeCommit: $recipeCommit,
+      request: $request,
       icon: $icon, iconLight: $iconLight}')")
   write_status 0
 done < <(jq -c '.[]' <<<"$table")
