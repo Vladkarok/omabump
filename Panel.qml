@@ -225,11 +225,14 @@ Panel {
     return app.installed
   }
 
-  function statusText(app) {
+  // A selected Ask agent row says what the button does instead of its note:
+  // omarchy-agent may run the agent with permission to act on its own.
+  function statusText(app, selected) {
     if (!app) return ""
     if (app.checking === true) return "Checking…"
     var action = actionNotes[app.pkg]
     if (action) return action
+    if (selected && askable(app)) return "Opens your default agent; it may change the system"
     var text = statusLine(app)
     return askable(app) ? versionText(app) + " · " + text : text
   }
@@ -730,7 +733,7 @@ Panel {
         Text {
           textFormat: Text.PlainText
           Layout.fillWidth: true
-          text: root.statusText(appRow.app)
+          text: root.statusText(appRow.app, appRow.hasCursor)
           color: appRow.failed ? root.urgent : root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
@@ -762,7 +765,7 @@ Panel {
         foreground: root.urgent
         fontFamily: root.fontFamily
         fontSize: Style.font.bodySmall
-        tooltipText: "Open your default coding agent with a prompt to update " + (appRow.app ? appRow.app.label : "") + "  Enter"
+        tooltipText: "Open your default agent with a prompt to plan an update of " + (appRow.app ? appRow.app.label : "") + "; it may change the system  Enter"
         onClicked: root.promptFor(appRow.app, "ask")
       }
 
