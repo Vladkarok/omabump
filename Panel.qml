@@ -31,8 +31,10 @@ Panel {
   // status line until the panel closes.
   property var actionNotes: ({})
 
-  // The settings view swaps in for the app list. Its rows are the toggles in
-  // settingRows, then the check interval dropdown.
+  // The settings view swaps in for the app list. Its rows are the check
+  // interval dropdown, then the toggles in settingRows. The dropdown comes
+  // first because the stock Dropdown always opens downward: here its list
+  // falls over the toggles, inside the card, instead of past its bottom.
   property bool settingsOpen: false
   property int settingIndex: 0
   readonly property var settingRows: [
@@ -40,7 +42,7 @@ Panel {
     { key: "barIconOnlyWithUpdates", fallback: false, label: "Bar icon only when updates exist", description: "" },
     { key: "notify", fallback: true, label: "Notify on new releases", description: "" }
   ]
-  readonly property int intervalRow: settingRows.length
+  readonly property int intervalRow: 0
   readonly property var intervalChoices: [300, 900, 1800, 3600, 21600, 86400]
 
   // "checked 3 min ago" reads this instead of Date.now() so it keeps moving
@@ -57,7 +59,7 @@ Panel {
 
   function moveCursor(dy) {
     if (settingsOpen) {
-      settingIndex = clamp(settingIndex + dy, 0, intervalRow)
+      settingIndex = clamp(settingIndex + dy, 0, settingRows.length)
       return
     }
     if (apps.length === 0) return
@@ -99,7 +101,7 @@ Panel {
       intervalDropdown.open()
       return
     }
-    var row = settingRows[settingIndex]
+    var row = settingRows[settingIndex - 1]
     setSetting(row.key, !settingOn(row))
   }
 
@@ -483,28 +485,6 @@ Panel {
               width: parent.width
               spacing: Style.space(6)
 
-              Repeater {
-                model: root.settingRows
-
-                Toggle {
-                  required property var modelData
-                  required property int index
-                  width: parent.width
-                  label: modelData.label
-                  description: modelData.description
-                  checked: root.settingOn(modelData)
-                  hasCursor: root.cursorActive && root.settingIndex === index
-                  foreground: root.foreground
-                  fontFamily: root.fontFamily
-                  onHovered: function(on) {
-                    if (!on) return
-                    root.cursorActive = true
-                    root.settingIndex = index
-                  }
-                  onClicked: root.setSetting(modelData.key, !root.settingOn(modelData))
-                }
-              }
-
               // Laid out like a Toggle row, with the stock dropdown where the
               // switch would be.
               BorderSurface {
@@ -552,6 +532,28 @@ Panel {
                   fontFamily: root.fontFamily
                   onChanged: function(v) { root.setSetting("refreshIntervalSec", Number(v)) }
                   onPopupOpenChanged: if (!popupOpen) Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+                }
+              }
+
+              Repeater {
+                model: root.settingRows
+
+                Toggle {
+                  required property var modelData
+                  required property int index
+                  width: parent.width
+                  label: modelData.label
+                  description: modelData.description
+                  checked: root.settingOn(modelData)
+                  hasCursor: root.cursorActive && root.settingIndex === index + 1
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  onHovered: function(on) {
+                    if (!on) return
+                    root.cursorActive = true
+                    root.settingIndex = index + 1
+                  }
+                  onClicked: root.setSetting(modelData.key, !root.settingOn(modelData))
                 }
               }
             }
