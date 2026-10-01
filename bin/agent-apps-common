@@ -11,6 +11,7 @@ cache_dir=${XDG_CACHE_HOME:-$HOME/.cache}/agent-apps
 pkgs_dir=$cache_dir/omarchy-pkgs
 pkgs_url=https://github.com/omacom/omarchy-pkgs.git
 pkgs_lock=$cache_dir/omarchy-pkgs.lock
+master=origin/master
 
 # The app table: the shipped one, with the user's file merged over it by pkg.
 # A user entry adds an app or overrides fields of a shipped one; "disabled":
@@ -113,13 +114,23 @@ mise_latest() {
   return 1
 }
 
+# A value that may be given per architecture: a string, or an object keyed by
+# `uname -m`. Prints nothing when this machine's architecture is missing.
+per_arch() {
+  jq -r --arg arch "$(uname -m)" "($1) as \$v | if (\$v | type) == \"object\" then \$v[\$arch] // \"\" else \$v // \"\" end" <<<"$2"
+}
+
+# Every download: HTTPS only, redirects included, and bounded. $max_time
+# overrides the 30 s default for the vendor package itself.
+fetch() { curl --proto =https --proto-redir =https --connect-timeout 15 --max-time "${max_time:-30}" "$@"; }
+
 # The vendor package URL for this machine's architecture with {version}
 # filled in, or nothing when the vendor builds none for it.
 vendor_pkg_url() {
-  local app=$1 version=$2 url
-  url=$(jq -r --arg arch "$(uname -m)" '.vendorPkg[$arch] // ""' <<<"$app")
-  [[ -n $url ]] || return 1
-  echo "${url//\{version\}/$version}"
+  local url
+  url=$(per_arch .vendorPkg "$1")
+  [[ $url == https://* ]] || return 1
+  echo "${url//\{version\}/$2}"
 }
 
 # Newest version in a Debian Packages index for one exact package name.
@@ -136,23 +147,47 @@ apt_newest() {
   [[ -n $best ]] && echo "$best"
 }
 
-# Prints the newest version the app's own feed advertises. Every fetch is
-# checked on its own: a failed or cut-off download is an error, never a version.
+# First capture group of a Python regex over a page. Pages that embed JSON in
+# a JS string escape its quotes, so the pattern is also tried with \" as ".
+regex_first() {
+  python3 -c '
+import re, sys
+body = sys.stdin.read()
+for text in (body, body.replace("\\\"", "\"")):
+    m = re.search(sys.argv[1], text)
+    if m:
+        print(m.group(1))
+        break
+' "$1"
+}
+
+# Prints the newest version the app's own feed advertises. Feeds are data:
+# nothing fetched is ever run. Every fetch is checked on its own: a failed or
+# cut-off download is an error, never a version.
 feed_version() {
   local app=$1 type url body v repo cmd want
   type=$(jq -r '.feed.type // ""' <<<"$app")
-  url=$(jq -r '.feed.url // ""' <<<"$app")
+  url=$(per_arch .feed.url "$app")
+  case $type in
+    apt-index|zcode-manifest|latest-yml|regex|json)
+      [[ $url == https://* ]] || { echo "no https feed url for $(uname -m)" >&2; return 1; }
+      body=$(fetch -fsSL "$url" 2>/dev/null) || { echo "could not fetch $url (curl exit $?)" >&2; return 1; } ;;
+  esac
   case $type in
     apt-index)
       want=$(jq -r '.feed.package // .pkg' <<<"$app")
-      body=$(curl -fsSL --max-time 30 "$url" 2>/dev/null) || { echo "could not fetch $url (curl exit $?)" >&2; return 1; }
       v=$(apt_newest "$body" "$want") || { echo "no $want in the apt index" >&2; return 1; } ;;
     zcode-manifest|latest-yml)
-      body=$(curl -fsSL --max-time 30 "$url" 2>/dev/null) || { echo "could not fetch $url (curl exit $?)" >&2; return 1; }
       v=$(sed -n 's/^version: *//p' <<<"$body" | head -1) ;;
+    regex)
+      v=$(regex_first "$(jq -r '.feed.pattern // ""' <<<"$app")" <<<"$body" 2>/dev/null) \
+        || { echo "bad feed pattern" >&2; return 1; } ;;
+    json)
+      v=$(jq -r "$(jq -r '.feed.path // ".version"' <<<"$app") // empty" <<<"$body" 2>/dev/null) \
+        || { echo "feed is not JSON" >&2; return 1; } ;;
     aur-rpc)
       want=$(jq -r '.feed.name // .pkg' <<<"$app")
-      body=$(curl -fsSL --max-time 30 "https://aur.archlinux.org/rpc/v5/info?arg%5B%5D=$want" 2>/dev/null) \
+      body=$(fetch -fsSL "https://aur.archlinux.org/rpc/v5/info?arg%5B%5D=$want" 2>/dev/null) \
         || { echo "could not reach the AUR (curl exit $?)" >&2; return 1; }
       v=$(jq -r '.results[0].Version // ""' <<<"$body" 2>/dev/null) || v=""
       [[ -n $v ]] || { echo "the AUR has no $want" >&2; return 1; }
@@ -161,14 +196,15 @@ feed_version() {
       # The /releases/latest redirect names the tag; the REST API would do the
       # same but allows only 60 unauthenticated calls an hour.
       repo=$(jq -r '.feed.repo // ""' <<<"$app")
-      body=$(curl -sS -o /dev/null --max-time 30 -w '%{http_code} %{redirect_url}' \
+      body=$(fetch -sS -o /dev/null -w '%{http_code} %{redirect_url}' \
         "https://github.com/$repo/releases/latest" 2>/dev/null) || { echo "could not reach github.com/$repo (curl exit $?)" >&2; return 1; }
-      [[ $body == 302\ */releases/tag/* ]] || { echo "github.com/$repo has no latest release (${body%% *})" >&2; return 1; }
+      [[ $body == 302\ https://github.com/*/releases/tag/* ]] || { echo "github.com/$repo has no latest release (${body%% *})" >&2; return 1; }
       v=${body##*/releases/tag/}
       v=${v#v} ;;
     command)
+      # Only from apps.json, which is local config: the command is not data.
       cmd=$(jq -r '.feed.command // ""' <<<"$app")
-      body=$(timeout 60 bash -c "$cmd" </dev/null) || { echo "feed command failed" >&2; return 1; }
+      body=$(timeout -k 10 60 bash -c "$cmd" </dev/null) || { echo "feed command failed" >&2; return 1; }
       v=$(head -1 <<<"$body") ;;
     "")
       echo "no feed declared" >&2; return 1 ;;
@@ -196,25 +232,32 @@ missing_tools() {
   done
 }
 
-# Exits with the pacman line that installs what is missing, including a
-# python3 older than omarchy-pkgs' bin/sync-upstream needs (3.11).
-require_omarchy_tools() {
-  local missing=() pkgs=() entry tool pkg
+# "Missing: <tools>; sudo pacman -S --needed <packages>" for what building a
+# recipe lacks, a python3 older than bin/sync-upstream needs (3.11) included.
+# Prints nothing when everything is there.
+missing_tools_line() {
+  local missing=() pkgs=() entry tool
   mapfile -t missing < <(missing_tools)
   if command -v python3 >/dev/null && ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
-    missing+=("python3 ($(python3 -c 'import platform; print(platform.python_version())' 2>/dev/null || echo unknown), needs 3.11 or newer)")
+    missing+=(python3)
   fi
   (( ${#missing[@]} )) || return 0
   for tool in "${missing[@]}"; do
     for entry in "${omarchy_tools[@]}"; do
-      [[ ${tool%% *} == "${entry%%:*}" ]] || continue
-      pkg=${entry#*:}
-      [[ " ${pkgs[*]} " == *" $pkg "* ]] || pkgs+=("$pkg")
+      [[ $tool == "${entry%%:*}" && " ${pkgs[*]} " != *" ${entry#*:} "* ]] && pkgs+=("${entry#*:}")
     done
   done
-  echo "agent-apps: building Omarchy's recipe needs tools that are missing: $(printf '%s, ' "${missing[@]}" | sed 's/, $//')" >&2
-  echo "Install them with:" >&2
-  echo "  sudo pacman -S --needed ${pkgs[*]}" >&2
+  echo "Missing: $(printf '%s, ' "${missing[@]}" | sed 's/, $//'); sudo pacman -S --needed ${pkgs[*]}"
+}
+
+# Exits with that line when something is missing.
+require_omarchy_tools() {
+  local line
+  line=$(missing_tools_line)
+  [[ -z $line ]] && return 0
+  echo "agent-apps: building Omarchy's recipe needs tools that are missing." >&2
+  echo "${line%%;*}" >&2
+  echo "Install them with:${line#*;}" >&2
   exit 1
 }
 
@@ -225,71 +268,106 @@ pkgs_take_lock() {
   flock -w "${1:-0}" 8
 }
 
-# Brings the clone to origin/master and prints the commit. Needs the lock.
-pkgs_prepare() {
+# git for the clone: HTTPS only, never a credential prompt. Network calls go
+# through pgit_net, which also bounds them and kills what they leave behind.
+pgit() { GIT_ALLOW_PROTOCOL=https GIT_TERMINAL_PROMPT=0 git -C "$pkgs_dir" "$@" </dev/null; }
+pgit_net() { timeout -k 10 300 env GIT_ALLOW_PROTOCOL=https GIT_TERMINAL_PROMPT=0 git "$@" </dev/null; }
+
+# Fetches origin into the clone (cloning it first) and prints origin/master's
+# commit. Only data moves: the work tree is not touched. Needs the lock.
+pkgs_fetch() {
   if [[ ! -d $pkgs_dir/.git ]]; then
     rm -rf "$pkgs_dir"
-    git clone -q --filter=blob:none "$pkgs_url" "$pkgs_dir" </dev/null >&2 || return 1
+    pgit_net clone -q --no-checkout --filter=blob:none "$pkgs_url" "$pkgs_dir" >&2 || return 1
   fi
-  git -C "$pkgs_dir" fetch -q origin </dev/null >&2 || return 1
-  git -C "$pkgs_dir" reset -q --hard origin/master >&2 || return 1
-  git -C "$pkgs_dir" clean -qfdx >&2 || return 1
-  git -C "$pkgs_dir" rev-parse HEAD
+  pgit_net -C "$pkgs_dir" fetch -q origin >&2 || return 1
+  pgit rev-parse "$master"
 }
 
-# Puts Omarchy's recipe back the way origin/master has it. A hard reset,
-# because a recipe overlay (below) is staged into the index.
+# Puts the work tree at origin/master for a build. Needs the lock.
+pkgs_checkout() {
+  pgit reset -q --hard "$master" >&2 && pgit clean -qfdx >&2
+}
+
+# Puts Omarchy's recipe back the way origin/master has it.
 pkgs_restore() {
-  git -C "$pkgs_dir" reset -q --hard origin/master 2>/dev/null || true
-  git -C "$pkgs_dir" clean -qfdx -- "pkgbuilds/${1:?}" 2>/dev/null || true
+  pgit reset -q --hard "$master" 2>/dev/null || true
+  pgit clean -qfdx -- "pkgbuilds/${1:?}" 2>/dev/null || true
 }
 
-# Lays an unmerged omarchy-pkgs ref's recipe over origin/master's. apps.json
-# sets "recipeRef" (e.g. refs/pull/725/head) when a pending PR gives a package
-# the upstream watch that master still lacks. Prints the ref when applied.
-recipe_overlay() {
-  local pkg=$1 ref
-  ref=$(jq -r '.recipeRef // ""' <<<"$2")
-  [[ -n $ref ]] || return 0
-  git -C "$pkgs_dir" fetch -q origin "$ref" </dev/null >&2 || { echo "could not fetch $ref" >&2; return 1; }
-  git -C "$pkgs_dir" checkout -q FETCH_HEAD -- "pkgbuilds/$pkg" >&2 || { echo "no $pkg recipe in $ref" >&2; return 1; }
-  echo "$ref"
-}
+# A file of a recipe at a commit, read from git without a checkout.
+recipe_file() { pgit show "$1:pkgbuilds/$2/$3" 2>/dev/null; }
+recipe_has() { pgit cat-file -e "$1:pkgbuilds/$2/$3" 2>/dev/null; }
 
-# Why the recipe cannot follow its vendor, or nothing when it can.
+# Why the recipe at commit $1 cannot follow its vendor, or nothing when it
+# can: bin/sync-upstream needs an upstream watch (package.json "upstream") or
+# hook (.omarchy/upstream.sh) to move it.
 recipe_blocker() {
-  local dir=$pkgs_dir/pkgbuilds/$1 meta
-  meta=$dir/.omarchy/package.json
-  [[ -f $dir/PKGBUILD ]] || { echo "No $1 recipe in omarchy-pkgs"; return; }
-  if [[ -f $meta ]] && jq -e '.sync == false' "$meta" >/dev/null 2>&1; then
+  local rev=$1 pkg=$2 meta
+  recipe_has "$rev" "$pkg" PKGBUILD || { echo "No $pkg recipe in omarchy-pkgs"; return; }
+  meta=$(recipe_file "$rev" "$pkg" .omarchy/package.json) || meta='{}'
+  if jq -e '.sync == false' >/dev/null 2>&1 <<<"$meta"; then
     echo "Repo recipe has no upstream watch yet (sync: false)"; return
   fi
-  if [[ -f $dir/.omarchy/upstream.sh ]] || { [[ -f $meta ]] && jq -e '.upstream' "$meta" >/dev/null 2>&1; }; then
-    return
-  fi
+  recipe_has "$rev" "$pkg" .omarchy/upstream.sh && return
+  jq -e '.upstream' >/dev/null 2>&1 <<<"$meta" && return
   echo "Repo recipe has no upstream watch yet"
 }
 
-# Prints "<pkgname> <full version>" from a PKGBUILD without running it. Only
-# plain assignments are accepted, the form omarchy-pkgs' own tools rewrite.
-recipe_version() {
-  local pb=$1/PKGBUILD name ver rel epoch
-  name=$(pkgbuild_field "$pb" pkgname) ver=$(pkgbuild_field "$pb" pkgver)
-  rel=$(pkgbuild_field "$pb" pkgrel) epoch=$(pkgbuild_field "$pb" epoch)
-  [[ $name =~ ^[a-z0-9@._+-]+$ ]] || { echo "unreadable pkgname in $pb" >&2; return 1; }
-  [[ $ver =~ ^[A-Za-z0-9._+~]+$ ]] || { echo "unreadable pkgver in $pb" >&2; return 1; }
-  [[ $rel =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "unreadable pkgrel in $pb" >&2; return 1; }
-  [[ -z $epoch || $epoch =~ ^[0-9]+$ ]] || { echo "unreadable epoch in $pb" >&2; return 1; }
-  echo "$name ${epoch:+$epoch:}$ver-$rel"
+# Which commit's recipe an app uses. apps.json may pin one with
+# "recipeCommit", a 40-hex SHA from an unmerged omarchy-pkgs PR that gives the
+# package the watch master lacks ("recipeFetch" names a ref to fetch when the
+# server will not hand out the bare SHA). Sets recipe_rev and recipe_note.
+# Fails closed with the reason on stderr and never falls back to master. Once
+# master's own recipe has a watch, the pin is ignored.
+recipe_source() {
+  local pkg=$1 app=$2 sha ref
+  recipe_rev=$master recipe_note=""
+  sha=$(jq -r '.recipeCommit // ""' <<<"$app")
+  [[ -n $sha ]] || return 0
+  if [[ -z $(recipe_blocker "$master" "$pkg") ]]; then
+    recipe_note="Pinned recipe no longer needed, master has a watch"
+    return 0
+  fi
+  [[ $sha =~ ^[0-9a-f]{40}$ ]] || { echo "recipeCommit '$sha' is not a 40-hex commit" >&2; return 1; }
+  if ! pgit cat-file -e "$sha^{commit}" 2>/dev/null; then
+    if ! pgit_net -C "$pkgs_dir" fetch -q origin "$sha" 2>/dev/null; then
+      ref=$(jq -r '.recipeFetch // ""' <<<"$app")
+      [[ -n $ref ]] && pgit_net -C "$pkgs_dir" fetch -q origin "$ref" 2>/dev/null
+    fi
+    pgit cat-file -e "$sha^{commit}" 2>/dev/null || { echo "pinned recipe ${sha:0:12} is unreachable" >&2; return 1; }
+  fi
+  recipe_has "$sha" "$pkg" PKGBUILD || { echo "pinned commit ${sha:0:12} has no $pkg recipe" >&2; return 1; }
+  recipe_rev=$sha
+  recipe_note=$(jq -r '.recipeNote // ""' <<<"$app")
+  [[ -n $recipe_note ]] || recipe_note="Recipe from omarchy-pkgs ${sha:0:12}"
 }
 
-pkgbuild_field() { sed -n "s/^$2=//p" "$1" | head -1 | tr -d "\"'"; }
+# Replaces the work tree's recipe with the exact tree at commit $2, so no
+# master-only file survives next to it. Needs the lock and pkgs_checkout.
+recipe_materialise() {
+  local pkg=$1 rev=$2
+  [[ $rev == "$master" ]] && return 0
+  rm -rf "${pkgs_dir:?}/pkgbuilds/$pkg"
+  pgit archive "$rev" "pkgbuilds/$pkg" | tar -x -C "$pkgs_dir" || return 1
+  [[ -f $pkgs_dir/pkgbuilds/$pkg/PKGBUILD ]]
+}
 
-# The last error line of a sync-upstream log, without colour codes.
-sync_error() {
-  local line
-  line=$(sed 's/\x1b\[[0-9;]*m//g' "$1" | grep '^✗' | grep -v 'sync completed with failures' | tail -1) || true
-  [[ -n $line ]] || line=$(grep -v '^[[:space:]]*$' "$1" | tail -1) || true
-  line=${line#✗ }
-  echo "${line:0:200}"
+# A plain assignment in PKGBUILD text on stdin, the form omarchy-pkgs' own
+# tools rewrite. The text is parsed, never sourced.
+pkgbuild_field() { sed -n "s/^$1=//p" | head -1 | tr -d "\"'"; }
+
+# Prints "<pkgname> <full version>" from PKGBUILD text on stdin. epoch=0 is
+# no epoch, as makepkg writes it.
+recipe_version() {
+  local text name ver rel epoch
+  text=$(cat)
+  name=$(pkgbuild_field pkgname <<<"$text") ver=$(pkgbuild_field pkgver <<<"$text")
+  rel=$(pkgbuild_field pkgrel <<<"$text") epoch=$(pkgbuild_field epoch <<<"$text")
+  [[ $name =~ ^[a-z0-9@._+-]+$ ]] || { echo "unreadable pkgname in the recipe" >&2; return 1; }
+  [[ $ver =~ ^[A-Za-z0-9._+~]+$ ]] || { echo "unreadable pkgver in the recipe" >&2; return 1; }
+  [[ $rel =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "unreadable pkgrel in the recipe" >&2; return 1; }
+  [[ -z $epoch || $epoch =~ ^[0-9]+$ ]] || { echo "unreadable epoch in the recipe" >&2; return 1; }
+  [[ $epoch == 0 ]] && epoch=""
+  echo "$name ${epoch:+$epoch:}$ver-$rel"
 }

@@ -2,9 +2,11 @@
 # Compare each installed agent app with the newest version it could be updated
 # to and record the result for the bar panel. Never installs anything.
 #
-#   omarchy     omarchy-pkgs' own bin/sync-upstream moves the recipe to the
-#               vendor's newest release in a local clone, the resulting version
-#               is read back, and the recipe is restored.
+#   omarchy     the feed in apps.json gives the vendor's newest version; the
+#               recipe in a fetched omarchy-pkgs clone is only read (PKGBUILD
+#               and .omarchy/ as text) to see whether bin/sync-upstream could
+#               move it. Nothing fetched is run: sync-upstream runs only in
+#               agent-apps-install, after the user pressed Update.
 #   vendor-pkg  the feed in apps.json; the vendor publishes the package.
 #   indicator   the feed in apps.json; no install path.
 #   mise        `mise latest <tool>`.
@@ -36,28 +38,28 @@ tmp=$(mktemp -d)
 pkgs_state=""
 pkgs_commit=$(jq -r '.omarchyPkgs.commit // ""' <<<"$previous")
 pkgs_error=""
-missing=$(missing_tools | paste -sd, - | sed 's/,/, /g')
+missing=$(missing_tools_line)
 rows=() order='[]' status_done=0
 cleanup() {
   (( status_done )) || write_status 2 || true
-  [[ $pkgs_state == ready ]] && pkgs_restore .
   rm -rf "$tmp"
 }
 trap cleanup EXIT
 
-# The clone is set up on first need, so a machine without any Omarchy-packaged
-# app never fetches it. An install holds the lock for its whole build; the
-# check then keeps what it knew instead of waiting.
+# The clone is fetched on first need, so a machine without any Omarchy-packaged
+# app never fetches it. The check only reads it: no checkout, nothing run. An
+# install holds the lock for its whole build; the check then keeps what it
+# knew about the install route instead of waiting.
 pkgs_ready() {
   if [[ -z $pkgs_state ]]; then
     if ! pkgs_take_lock 20; then
       pkgs_state=busy
       pkgs_error="The omarchy-pkgs clone is busy with an update, showing the last result"
-    elif pkgs_commit=$(pkgs_prepare 2>"$tmp/git.err"); then
+    elif pkgs_commit=$(pkgs_fetch 2>"$tmp/git.err"); then
       pkgs_state=ready
     else
       pkgs_state=failed
-      pkgs_error="Could not update the omarchy-pkgs clone: $(tail -1 "$tmp/git.err")"
+      pkgs_error="Could not fetch omarchy-pkgs: $(tail -1 "$tmp/git.err")"
     fi
   fi
   [[ $pkgs_state == ready ]]
@@ -94,8 +96,8 @@ while IFS= read -r app; do
   read -r source installed_name installed < <(installed_app "$app") || continue
 
   prev=$(jq -c --arg pkg "$pkg" '[.apps[] | select(.pkg == $pkg)][0] // {}' <<<"$previous")
-  latest="" from="" error="" note="" installable=false keep=false
-  feed_err=""
+  latest="" from="" note="" installable=false stale=false
+  route_error="" feed_error="" recipe="" recipe_commit=""
 
   case $source in
     mise)
@@ -105,7 +107,7 @@ while IFS= read -r app; do
       case $rc in
         0) from=mise ;;
         2) continue ;;  # not in mise's registry, so nothing to compare with
-        *) latest="" error=$(<"$tmp/err") ;;
+        *) latest="" feed_error=$(<"$tmp/err") ;;
       esac ;;
     vendor-pkg)
       if vendor_pkg_url "$app" x >/dev/null; then
@@ -113,68 +115,56 @@ while IFS= read -r app; do
         [[ $installed_name != "$pkg" ]] && note="Installed as $installed_name, Update switches to $pkg"
       else
         note="No vendor package for $(uname -m)"
-      fi
-      latest=$(feed_version "$app" 2>"$tmp/err") && from=feed || error=$(<"$tmp/err") ;;
+      fi ;;
     indicator)
       note="No supported install path"
-      [[ $(jq -r '.feed.type // ""' <<<"$app") == aur-rpc ]] && note+=", version from AUR"
-      latest=$(feed_version "$app" 2>"$tmp/err") && from=feed || error=$(<"$tmp/err") ;;
+      [[ $(jq -r '.feed.type // ""' <<<"$app") == aur-rpc ]] && note+=", version from AUR" ;;
     omarchy)
-      sync_err=""
+      # Installable means bin/sync-upstream could move the recipe: it exists
+      # on master (or at the pinned commit) and has a watch or hook.
       if pkgs_ready; then
-        overlay=$(recipe_overlay "$pkg" "$app" 2>"$tmp/err") || { overlay=""; sync_err=$(<"$tmp/err"); }
-        note=$(recipe_blocker "$pkg")
-        [[ -z $note && -n $overlay ]] && note="Recipe from unmerged $overlay"
-        if [[ -z $(recipe_blocker "$pkg") ]]; then
-          installable=true
-          # A recipe whose hook downloads the whole release to hash it is
-          # checked through the plugin's own feed; the hook runs on install.
-          if [[ $(jq -r '.checkWith // ""' <<<"$app") != feed ]]; then
-            if (cd "$pkgs_dir" && timeout 300 bin/sync-upstream "$pkg") >"$tmp/sync.log" 2>&1 </dev/null \
-               && read -r _ latest < <(recipe_version "$pkgs_dir/pkgbuilds/$pkg" 2>"$tmp/err"); then
-              from=recipe
-            else
-              latest=""
-              sync_err=$(sync_error "$tmp/sync.log")
-              [[ -n $sync_err ]] || sync_err=$(<"$tmp/err")
-            fi
-            pkgs_restore "$pkg"
+        if recipe_source "$pkg" "$app" 2>"$tmp/err"; then
+          note=$(recipe_blocker "$recipe_rev" "$pkg")
+          if [[ -z $note ]]; then
+            installable=true
+            note=$recipe_note
           fi
+          read -r _ recipe < <(recipe_file "$recipe_rev" "$pkg" PKGBUILD | recipe_version 2>/dev/null) || recipe=""
+          [[ $recipe_rev == "$master" ]] || recipe_commit=$recipe_rev
+        else
+          route_error="Pinned recipe: $(<"$tmp/err")"
         fi
       elif [[ $pkgs_state == busy ]]; then
-        keep=true
+        installable=$(jq -r '.installable // false' <<<"$prev")
         note=$pkgs_error
       else
-        sync_err=$pkgs_error
+        route_error=$pkgs_error
       fi
-      if [[ -z $latest && $keep == false ]]; then
-        if [[ $(jq -r '.feed.type // ""' <<<"$app") != "" ]]; then
-          if latest=$(feed_version "$app" 2>"$tmp/err"); then
-            from=feed
-            [[ -n $sync_err ]] && note="Recipe sync failed ($sync_err), version from the vendor feed"
-          else
-            feed_err=$(<"$tmp/err")
-            error="feed unavailable: ${sync_err:+$sync_err; }$feed_err"
-          fi
-        else
-          error="feed unavailable: ${sync_err:-no vendor feed declared}"
-        fi
-      fi
-      [[ -n $missing ]] && note="Missing: $missing${note:+; $note}" ;;
+      if [[ -n $missing ]]; then
+        installable=false
+        note="$missing${note:+; $note}"
+      fi ;;
     *)
-      error="unknown source '$source'" ;;
+      route_error="unknown source '$source'" ;;
   esac
+
+  # Everything but mise reads its newest version from the feed in apps.json.
+  if [[ $source != mise ]]; then
+    latest=$(feed_version "$app" 2>"$tmp/err") && from=feed || { latest=""; feed_error=$(<"$tmp/err"); }
+  fi
 
   # Keep the last known version so a flaky feed neither hides a pending
   # update nor re-announces it once the feed comes back.
-  if [[ -n $error || $keep == true ]]; then
+  if [[ -n $feed_error ]]; then
     latest=$(jq -r '.latest // ""' <<<"$prev")
     from=$(jq -r '.versionFrom // ""' <<<"$prev")
-    [[ $keep == true ]] && installable=$(jq -r '.installable // false' <<<"$prev")
+    stale=true
   fi
+  error=$(printf '%s\n' "$route_error" "$feed_error" | sed '/^$/d' | paste -sd';' - | sed 's/;/; /g')
   error=${error:0:240}
 
-  # A recipe version is a full pacman version; a feed only knows upstream's.
+  # A feed knows only upstream's version, so it is compared with the
+  # installed one less epoch and pkgrel. The installer compares full versions.
   update=false
   if [[ -n $latest ]]; then
     have=$installed
@@ -196,10 +186,12 @@ while IFS= read -r app; do
     --arg installedName "$installed_name" --arg installed "$installed" \
     --arg latest "$latest" --arg versionFrom "$from" --argjson update "$update" \
     --argjson installable "$installable" --arg error "$error" --arg note "$note" \
+    --argjson stale "$stale" --arg recipe "$recipe" --arg recipeCommit "$recipe_commit" \
     --arg icon "$(jq -r '.icon // ""' <<<"$app")" --arg iconLight "$(jq -r '.iconLight // ""' <<<"$app")" \
     '{pkg: $pkg, label: $label, source: $source, installedName: $installedName,
       installed: $installed, latest: $latest, versionFrom: $versionFrom,
       updateAvailable: $update, installable: $installable, error: $error, note: $note,
+      stale: $stale, recipe: $recipe, recipeCommit: $recipeCommit,
       icon: $icon, iconLight: $iconLight}')")
   write_status 0
 done < <(jq -c '.[]' <<<"$table")

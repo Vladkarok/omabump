@@ -50,7 +50,7 @@ refresh_panel() { "$here/agent-apps-check" --no-notify || true; }
 # what is installed right now. Sets target_version.
 check_target() {
   local dir=$1 want=$2 name now_line
-  read -r name target_version < <(recipe_version "$dir") || die "cannot read the recipe version"
+  read -r name target_version < <(recipe_version <"$dir/PKGBUILD") || die "cannot read the recipe version"
   [[ $name == "$want" ]] || die "recipe builds '$name', expected '$want'"
   echo "Recipe builds $name $target_version"
   now_line=$(installed_package "$installed_name") || now_line=""
@@ -93,23 +93,31 @@ install_omarchy() {
   local blocker commit
   echo "Waiting for the omarchy-pkgs clone..."
   pkgs_take_lock 600 || die "the omarchy-pkgs clone stayed locked"
-  commit=$(pkgs_prepare) || die "could not update the omarchy-pkgs clone"
+  commit=$(pkgs_fetch) || die "could not fetch omarchy-pkgs"
+  pkgs_checkout || die "could not reset the omarchy-pkgs clone"
   trap 'pkgs_restore "$pkg"' EXIT
-  echo "omarchy-pkgs at ${commit:0:12}"
+  echo "omarchy-pkgs master at ${commit:0:12}"
 
-  overlay=$(recipe_overlay "$pkg" "$app") || die "recipe overlay failed"
-  [[ -z $overlay ]] || echo "Recipe taken from unmerged $overlay"
-  blocker=$(recipe_blocker "$pkg")
+  recipe_source "$pkg" "$app" || die "the pinned recipe is not usable"
+  [[ -n $recipe_note ]] && echo "$recipe_note"
+  if [[ $recipe_rev != "$master" ]]; then
+    recipe_materialise "$pkg" "$recipe_rev" || die "could not lay out the recipe from $recipe_rev"
+    echo "Recipe tree taken whole from $recipe_rev"
+  fi
+  blocker=$(recipe_blocker "$recipe_rev" "$pkg")
   [[ -z $blocker ]] || die "$blocker; wait for the [omarchy] repo"
 
-  (cd "$pkgs_dir" && bin/sync-upstream "$pkg") </dev/null || die "bin/sync-upstream $pkg failed"
+  # The first fetched code that runs: omarchy-pkgs' sync tool and the
+  # recipe's upstream hook, as you, after you pressed Update.
+  (cd "$pkgs_dir" && timeout -k 10 900 bin/sync-upstream "$pkg") </dev/null || die "bin/sync-upstream $pkg failed"
 
   echo
-  echo "Changes to Omarchy's $pkg recipe:"
-  if git -C "$pkgs_dir" diff --quiet HEAD -- "pkgbuilds/$pkg"; then
+  echo "Changes to Omarchy's $pkg recipe against origin/master:"
+  pgit add -A -- "pkgbuilds/$pkg"
+  if pgit diff --cached --quiet HEAD -- "pkgbuilds/$pkg"; then
     echo "(none, origin/master already holds the newest release)"
   else
-    git -C "$pkgs_dir" --no-pager diff --color=auto HEAD -- "pkgbuilds/$pkg"
+    pgit --no-pager diff --cached --color=auto HEAD -- "pkgbuilds/$pkg"
   fi
   echo
 
@@ -117,7 +125,7 @@ install_omarchy() {
   cd "$pkgs_dir/pkgbuilds/$pkg"
   build_and_install "$pkg"
   cd /
-  # Leave the clone as origin/master has it and let the panel check use it.
+  # Leave the clone as origin/master has it.
   pkgs_restore "$pkg"
   trap - EXIT
   exec 8>&-

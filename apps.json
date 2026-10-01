@@ -30,7 +30,6 @@
     "pkg": "t3code-bin",
     "label": "T3 Code",
     "source": "omarchy",
-    "checkWith": "feed",
     "feed": {
       "type": "github-release",
       "repo": "pingdotgg/t3code"
@@ -56,27 +55,48 @@
       "url": "https://downloads.cursor.com/aptrepo/dists/grok-bot/main/binary-amd64/Packages",
       "package": "grok-bot"
     },
-    "recipeRef": "refs/pull/725/head"
+    "recipeCommit": "c6576fa7f51966cc6f9d6fed574adec123741a16",
+    "recipeFetch": "refs/pull/725/head",
+    "recipeNote": "Recipe from omarchy-pkgs PR #725"
   },
   {
     "pkg": "lmstudio-bin",
     "label": "LM Studio",
-    "source": "omarchy"
+    "source": "omarchy",
+    "feed": {
+      "type": "regex",
+      "url": "https://lmstudio.ai/download",
+      "pattern": "\"linux\":\\{\"x64\":\\{\"version\":\"([0-9.]+)\""
+    }
   },
   {
     "pkg": "openclaw",
     "label": "OpenClaw",
-    "source": "omarchy"
+    "source": "omarchy",
+    "feed": {
+      "type": "json",
+      "url": "https://registry.npmjs.org/openclaw/latest",
+      "path": ".version"
+    }
   },
   {
     "pkg": "perplexity",
     "label": "Perplexity",
-    "source": "omarchy"
+    "source": "omarchy",
+    "feed": {
+      "type": "apt-index",
+      "url": "https://packages.perplexity.ai/deb/dists/stable/main/binary-amd64/Packages",
+      "package": "perplexity"
+    }
   },
   {
     "pkg": "voxtype-bin",
     "label": "Dictation (voxtype)",
-    "source": "omarchy"
+    "source": "omarchy",
+    "feed": {
+      "type": "github-release",
+      "repo": "peteonrails/voxtype"
+    }
   },
   {
     "pkg": "zcode",
