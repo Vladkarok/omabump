@@ -35,6 +35,7 @@ exec 7>"$cache_dir/locks/$pkg.lock"
 flock -n 7 || die "another update of $label is already running"
 
 installed_name="" installed=""
+[[ $(jq -r '.source' <<<"$app") == mise ]] && mise_load 0
 if read -r source installed_name installed < <(installed_app "$app"); then :; else
   source=$(jq -r '.source // ""' <<<"$app")
 fi
@@ -185,29 +186,37 @@ install_vendor_pkg() {
   target_version=$ver
 }
 
+# mise up keeps the configured request (an exact pin or a range) and the
+# release-age cooldown, the same policy the check used through mise outdated,
+# so the target shown in the panel is the one installed here.
 install_mise() {
-  local tool=$installed_name latest now
+  local tool=$installed_name target request now
   [[ -n $tool ]] || die "mise has no active $label"
-  latest=$(mise_latest "$tool" 2>/dev/null) || latest=""
+  mise_load 1
+  [[ -z $mise_error ]] || die "$mise_error"
+  target=$(mise_field "$mise_outdated_json" "$tool" latest)
+  if [[ -z $target ]]; then
+    request=$(mise_field "$mise_bump_json" "$tool" requested)
+    now=$(mise_field "$mise_bump_json" "$tool" bump)
+    [[ -n $now ]] && die "$label is held at $installed by its mise request '$request' ($now exists); mise up would not move it. Change the request with mise use."
+    echo "$label $installed is the newest mise up can install."
+    exit 0
+  fi
+  echo "mise up $tool would install $target"
   if (( dry_run )); then
-    echo "Newest: ${latest:-unknown}"
-    echo "Would run: MISE_MINIMUM_RELEASE_AGE=0 mise up $tool"
+    echo "Would run: mise up $tool (in $HOME)"
     return 0
   fi
-  # mise withholds releases younger than its cooldown; omarchy-update-mise
-  # lifts it the same way.
-  MISE_MINIMUM_RELEASE_AGE=0 mise up "$tool"
+  mise_timeout=900 mise_run up "$tool"
+  mise_load 0
   now=$(mise_active "$app") || now=""
   now=${now#* }
-  if [[ -z $latest ]]; then
-    echo "$label is now ${now:-unknown}; mise latest did not answer, so it may not be the newest."
-  elif [[ -n $now ]] && ! newer "$latest" "$now"; then
-    # mise latest honours the release-age cooldown that mise up was told to
-    # skip, so the installed version can be newer than it.
-    echo "$label is now $now, the newest mise knows."
+  if [[ $now == "$target" ]]; then
+    echo "$label is now $now."
   else
-    echo "$label is still ${now:-unknown} but mise latest says $latest. mise may pin an older version in its config (mise ls $tool)."
+    echo "$label is ${now:-not active} after mise up, expected $target. See mise ls $tool."
   fi
+  target_version=$now
 }
 
 case $source in

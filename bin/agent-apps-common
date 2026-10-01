@@ -61,27 +61,44 @@ installed_package() {
   return 1
 }
 
-# `mise ls --json` for every tool, read once per process. Empty without mise.
-mise_ls_cache=""
-mise_ls() {
-  if [[ -z $mise_ls_cache ]]; then
-    mise_ls_cache='{}'
-    if command -v mise >/dev/null; then
-      mise_ls_cache=$(timeout 60 mise ls --json </dev/null 2>/dev/null | jq -ce 'if type == "object" then . else {} end' 2>/dev/null) \
-        || mise_ls_cache='{}'
-    fi
+# mise answers depend on the config files of the current directory, so every
+# mise call runs in $HOME, in the check and the installer alike.
+mise_run() { (cd "$HOME" && timeout -k 10 "${mise_timeout:-120}" mise "$@" </dev/null); }
+
+# mise_load fills these once, in the calling shell (never call it in a
+# subshell, the values would be lost there): `mise ls --json`, and with $1=1
+# `mise outdated --json` (what `mise up` reaches under the configured request
+# and release-age cooldown) and `mise outdated --bump --json` (newer releases
+# outside the request). All keyed by tool name. mise versions are kept as
+# mise prints them and never compared with vercmp: mise decides.
+mise_ls_json='{}' mise_outdated_json='{}' mise_bump_json='{}' mise_error=""
+mise_load() {
+  local out err
+  command -v mise >/dev/null || return 0
+  mise_ls_json=$(mise_run ls --json 2>/dev/null | jq -ce 'if type == "object" then . else {} end' 2>/dev/null) || mise_ls_json='{}'
+  (( ${1:-0} )) || return 0
+  err=$(mktemp)
+  if out=$(mise_run outdated --json 2>"$err") && out=$(jq -ce 'if type == "object" then . else error("bad") end' <<<"$out" 2>/dev/null); then
+    mise_outdated_json=$out
+  else
+    mise_error="mise outdated failed: $(sed 's/\x1b\[[0-9;]*m//g' "$err" | grep -v 'WARN' | grep -v '^[[:space:]]*$' | head -1)"
   fi
-  echo "$mise_ls_cache"
+  if out=$(mise_run outdated --bump --json 2>/dev/null) && out=$(jq -ce 'if type == "object" then . else error("bad") end' <<<"$out" 2>/dev/null); then
+    mise_bump_json=$out
+  fi
+  rm -f "$err"
 }
+
+# A field of a tool's entry in one of the outdated tables, or nothing.
+mise_field() { jq -r --arg t "$2" --arg f "$3" '.[$t][$f] // empty | tostring' <<<"$1"; }
 
 # Prints "<tool> <active version>" for the first of the app's tool names that
 # mise has installed and active. The key is whatever the user's mise config
 # uses, e.g. claude or npm:@anthropic-ai/claude-code.
 mise_active() {
-  local app=$1
-  mise_ls | jq -re --argjson tools "$(jq -c '[.tool // empty] | flatten' <<<"$app")" '
+  jq -re --argjson tools "$(jq -c '[.tool // empty] | flatten' <<<"$1")" '
     . as $ls | [$tools[] as $t | ($ls[$t] // [])[] | select(.active == true and .installed != false)
-      | "\($t) \(.version)"][0] // empty'
+      | "\($t) \(.version)"][0] // empty' <<<"$mise_ls_json"
 }
 
 # Prints "<source> <installed name> <version>" for an app, or fails when it is
@@ -96,22 +113,6 @@ installed_app() {
     line=$(installed_package "${names[@]}") || return 1
   fi
   echo "$source $line"
-}
-
-# Newest version of a mise tool as mise itself resolves it, so the user's
-# prerelease and release-age settings apply. Exit 2 when mise's registry does
-# not know the tool, 1 on any other failure.
-mise_latest() {
-  local out rc
-  out=$(timeout 60 mise latest "$1" </dev/null 2>&1) && rc=0 || rc=$?
-  out=$(sed 's/\x1b\[[0-9;]*m//g' <<<"$out")
-  if (( rc == 0 )) && version_ok "$(tail -1 <<<"$out")"; then
-    tail -1 <<<"$out"
-    return 0
-  fi
-  grep -q 'not found in mise tool registry' <<<"$out" && return 2
-  echo "mise latest $1: $(grep -v '^[[:space:]]*$' <<<"$out" | head -1 || echo 'no version')" >&2
-  return 1
 }
 
 # A value that may be given per architecture: a string, or an object keyed by

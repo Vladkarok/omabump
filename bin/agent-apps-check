@@ -9,7 +9,8 @@
 #               agent-apps-install, after the user pressed Update.
 #   vendor-pkg  the feed in apps.json; the vendor publishes the package.
 #   indicator   the feed in apps.json; no install path.
-#   mise        `mise latest <tool>`.
+#   mise        `mise outdated`: what `mise up` would reach under the
+#               configured request, and what lies outside it (a pin).
 #
 #   agent-apps-check [--no-notify] [--no-mise]
 set -euo pipefail
@@ -66,6 +67,8 @@ pkgs_ready() {
 }
 
 table=$(apps_table)
+# Loaded here, in this shell, so every row reads the same answers.
+(( with_mise )) && mise_load 1
 order=$(jq -c 'map(.pkg)' <<<"$table")
 
 # Replaces status.json in one rename. $1 is 0 while checking, 1 for the final
@@ -97,18 +100,29 @@ while IFS= read -r app; do
 
   prev=$(jq -c --arg pkg "$pkg" '[.apps[] | select(.pkg == $pkg)][0] // {}' <<<"$previous")
   latest="" from="" note="" installable=false stale=false
-  route_error="" feed_error="" recipe="" recipe_commit=""
+  route_error="" feed_error="" recipe="" recipe_commit="" mise_update=false
 
   case $source in
     mise)
-      installable=true
-      rc=0
-      latest=$(mise_latest "$installed_name" 2>"$tmp/err") || rc=$?
-      case $rc in
-        0) from=mise ;;
-        2) continue ;;  # not in mise's registry, so nothing to compare with
-        *) latest="" feed_error=$(<"$tmp/err") ;;
-      esac ;;
+      # mise decides: an entry in `mise outdated` is a version `mise up` will
+      # install; one only in the --bump table lies outside the request.
+      installable=true from=mise
+      if [[ -n $mise_error ]]; then
+        feed_error=$mise_error
+      elif latest=$(mise_field "$mise_outdated_json" "$installed_name" latest) && [[ -n $latest ]]; then
+        mise_update=true
+      else
+        latest=$(mise_field "$mise_bump_json" "$installed_name" bump)
+        [[ -n $latest ]] || latest=$(mise_field "$mise_bump_json" "$installed_name" latest)
+        if [[ -n $latest && $latest != "$installed" ]]; then
+          installable=false
+          request=$(mise_field "$mise_bump_json" "$installed_name" requested)
+          if [[ $request == latest ]]; then note="Held back by your mise settings, $latest exists"
+          else note="Pinned to $request, $latest exists"; fi
+        else
+          latest=$installed
+        fi
+      fi ;;
     vendor-pkg)
       if vendor_pkg_url "$app" x >/dev/null; then
         installable=true
@@ -165,8 +179,8 @@ while IFS= read -r app; do
 
   # A feed knows only upstream's version, so it is compared with the
   # installed one less epoch and pkgrel. The installer compares full versions.
-  update=false
-  if [[ -n $latest ]]; then
+  update=$mise_update
+  if [[ -n $latest && $source != mise ]]; then
     have=$installed
     [[ $from == feed ]] && have=$(upstream_part "$installed")
     newer "$latest" "$have" && update=true
