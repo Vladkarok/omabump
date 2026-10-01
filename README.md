@@ -120,8 +120,9 @@ plugin can install it. Desktop apps come first, mise tools after them. The
 footer shows the omarchy-pkgs commit used and when the last check ran.
 
 Keys: `j`/`k` or arrows select a row, `Enter` updates it, `r` checks now,
-`Esc` closes. IPC: `qs ipc call io.github.vladkarok.agent-apps open` (also
-`close`, `toggle`, `refresh`, `status`).
+`s` opens the settings, `Esc` closes. IPC: `qs ipc call
+io.github.vladkarok.agent-apps open` (also `close`, `toggle`, `refresh`,
+`status`, `settings`).
 
 | Package | App | Source |
 |---|---|---|
@@ -175,14 +176,13 @@ as newest.
 
 ## Settings
 
-- `refreshIntervalSec`: how often to check, default 900.
-- `notify`: send a desktop notification when a newer version shows up,
-  default on. Each version is announced once; announced versions are kept in
-  `notified.json` next to `status.json`.
-- `showMise`: list mise tools, default on.
-- `barIconOnlyWithUpdates`: hide the bar icon unless an installable update
-  exists, default off. IPC `open` and `toggle` still open the panel, and the
-  icon shows while it is open.
+Settings live in the panel behind the gear in its header (or press `s`):
+show mise tools, bar icon only when updates exist, notify on new releases
+(each version is announced once, tracked in `notified.json` next to
+`status.json`), and the check interval. The scripted equivalent is
+`omarchy bar set io.github.vladkarok.agent-apps <key> <value>` with the keys
+`showMise`, `barIconOnlyWithUpdates`, `notify` and `refreshIntervalSec`
+(seconds).
 
 ## Adding or changing apps
 
