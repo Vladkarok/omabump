@@ -315,7 +315,11 @@ Panel {
     onTriggered: root.nowMs = Date.now()
   }
 
-  ShellIpc {
+  // Quickshell's own IpcHandler rather than Omarchy's ShellIpc, which older
+  // shells (r2083) lack: a missing type stops the whole file from loading.
+  // qs ipc and omarchy-shell ipc both reach it; omarchy-shell just takes its
+  // qs ipc fallback instead of the shell socket.
+  IpcHandler {
     target: root.ipcTarget
     function open(): void { root.open() }
     function close(): void { root.close() }
