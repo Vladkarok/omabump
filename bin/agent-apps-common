@@ -1,0 +1,63 @@
+# Sourced by agent-apps-check and agent-apps-install; not run on its own.
+
+plugin_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+user_apps=${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/agent-apps/apps.json
+state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/plugins/io.github.vladkarok.agent-apps
+status_file=$state_dir/status.json
+
+# The user copy replaces the shipped table outright, so removing an app from
+# it hides that app instead of merging it back in.
+apps_file() {
+  if [[ -f $user_apps ]]; then echo "$user_apps"; else echo "$plugin_dir/apps.json"; fi
+}
+
+app_json() {
+  jq -ce --arg pkg "$1" '.[] | select(.pkg == $pkg)' "$(apps_file)"
+}
+
+# Prints "<installed package name> <version>" for the first of the given names
+# that pacman knows. pacman -Q also resolves a provided name, but trying the
+# AUR name too keeps that from being load-bearing. Epoch and pkgrel are Arch
+# packaging details; vendor feeds only know the upstream version.
+installed_package() {
+  local name line v
+  for name in "$@"; do
+    [[ -n $name ]] || continue
+    line=$(pacman -Q "$name" 2>/dev/null) || continue
+    v=${line#* }
+    v=${v#*:}
+    echo "${line%% *} ${v%-*}"
+    return 0
+  done
+}
+
+# Prints the newest version the app's feed advertises. The value ends up in a
+# sed expression and a package file name, so anything outside a plain version
+# alphabet is treated as a feed error.
+latest_version() {
+  local app=$1 type url cmd repo v
+  type=$(jq -r '.feed.type // ""' <<<"$app")
+  url=$(jq -r '.feed.url // ""' <<<"$app")
+  case $type in
+    apt-index)
+      # One index can list several releases, newest not necessarily last.
+      v=$(curl -fsSL --max-time 30 "$url" | sed -n 's/^Version: *//p' | sort -V | tail -1) ;;
+    zcode-manifest)
+      v=$(curl -fsSL --max-time 30 "$url" | sed -n 's/^version: *//p' | head -1) ;;
+    github-release)
+      # The /releases/latest redirect names the tag; the REST API would do the
+      # same but allows only 60 unauthenticated calls an hour.
+      repo=$(jq -r '.feed.repo // ""' <<<"$app")
+      v=$(curl -sSI --max-time 30 "https://github.com/$repo/releases/latest" \
+        | tr -d '\r' | sed -n 's|^[Ll]ocation: .*/releases/tag/v\{0,1\}||p' | head -1) ;;
+    command)
+      cmd=$(jq -r '.feed.command // ""' <<<"$app")
+      v=$(timeout 60 bash -c "$cmd" </dev/null | head -1) ;;
+    *)
+      echo "unknown feed type '$type'" >&2; return 1 ;;
+  esac
+  v=$(tr -d '[:space:]' <<<"$v")
+  [[ -n $v ]] || { echo "feed returned no version" >&2; return 1; }
+  [[ $v =~ ^[A-Za-z0-9._+~]+$ ]] || { echo "feed returned an odd version '$v'" >&2; return 1; }
+  echo "$v"
+}

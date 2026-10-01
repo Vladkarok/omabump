@@ -1,0 +1,55 @@
+#!/bin/bash
+# Compare each installed agent desktop app with its vendor feed and record the
+# result for the bar panel. Never installs anything.
+#
+#   agent-apps-check [--no-notify]
+set -euo pipefail
+source "$(dirname "$(readlink -f "$0")")/agent-apps-common"
+
+notify=1
+[[ ${1:-} == --no-notify ]] && notify=0
+
+mkdir -p "$state_dir"
+# The shell timer and a hand run can overlap; the second one has nothing to add.
+exec 9>"$state_dir/.check.lock"
+flock -n 9 || exit 0
+
+previous='{"apps":[]}'
+[[ -s $status_file ]] && jq -e . "$status_file" >/dev/null 2>&1 && previous=$(<"$status_file")
+
+rows=()
+while IFS= read -r app; do
+  pkg=$(jq -r '.pkg' <<<"$app")
+  label=$(jq -r '.label // .pkg' <<<"$app")
+  read -r _ installed < <(installed_package "$pkg" "$(jq -r '.aur // ""' <<<"$app")") || true
+  [[ -n ${installed:-} ]] || continue
+
+  prev_latest=$(jq -r --arg pkg "$pkg" '.apps[] | select(.pkg == $pkg) | .latest // ""' <<<"$previous")
+  error=""
+  if ! latest=$(latest_version "$app" 2>"$state_dir/.feed-error"); then
+    error=$(head -c 200 "$state_dir/.feed-error")
+    [[ -n $error ]] || error="feed unreachable"
+    # Keep the last known version so a flaky feed neither hides a pending
+    # update nor re-announces it once the feed comes back.
+    latest=$prev_latest
+  fi
+
+  update=false
+  [[ -n $latest ]] && (( $(vercmp "$latest" "$installed") > 0 )) && update=true
+
+  if (( notify )) && [[ $update == true && -z $error ]] \
+     && { [[ -z $prev_latest ]] || (( $(vercmp "$latest" "$prev_latest") > 0 )); }; then
+    notify-send -a "Agent Apps" "$label $latest available" "Installed: $installed. Open the Agent Apps panel to update." || true
+  fi
+
+  rows+=("$(jq -cn --arg pkg "$pkg" --arg label "$label" --arg installed "$installed" \
+    --arg latest "$latest" --argjson update "$update" --arg error "$error" \
+    --arg icon "$(jq -r '.icon // ""' <<<"$app")" --arg iconLight "$(jq -r '.iconLight // ""' <<<"$app")" \
+    '{pkg: $pkg, label: $label, installed: $installed, latest: $latest, updateAvailable: $update,
+      error: $error, icon: $icon, iconLight: $iconLight}')")
+done < <(jq -c '.[]' "$(apps_file)")
+rm -f "$state_dir/.feed-error"
+
+tmp=$(mktemp "$state_dir/.status.XXXXXX")
+printf '%s\n' "${rows[@]}" | jq -s --arg at "$(date -Iseconds)" '{checkedAt: $at, apps: .}' >"$tmp"
+mv -f "$tmp" "$status_file"

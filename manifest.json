@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.vladkarok.agent-apps",
+  "name": "Agent Apps",
+  "version": "0.1.0",
+  "author": "vladkarok",
+  "license": "MIT",
+  "description": "Installed and newest vendor version of the Claude Desktop, Codex and ZCode apps in the Omarchy bar, with a one-click update from the vendor .deb.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Agent Apps",
+    "description": "Compares each installed AI agent desktop app against its vendor's release feed and builds the new version in a terminal when you press Update.",
+    "category": "AI",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 900,
+      "notify": true
+    },
+    "schema": [
+      { "key": "refreshIntervalSec", "type": "integer", "label": "Check interval (seconds)", "min": 60, "max": 86400, "step": 60, "defaultValue": 900 },
+      { "key": "notify", "type": "boolean", "label": "Notify on new versions", "defaultValue": true, "description": "Send a desktop notification when a vendor publishes a version newer than the installed one." }
+    ]
+  }
+}

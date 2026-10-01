@@ -1,0 +1,43 @@
+#!/bin/bash
+# Build and install the vendor's newest release of one agent desktop app.
+# Meant to run in a visible terminal: makepkg and pacman talk to the user and
+# sudo may ask for a password.
+#
+# The AUR PKGBUILD repackages the vendor .deb; only its pkgver lags, so it is
+# re-targeted at the version the vendor feed advertises and rebuilt.
+#
+#   agent-apps-install <pkg>
+set -euo pipefail
+here=$(dirname "$(readlink -f "$0")")
+source "$here/agent-apps-common"
+
+pkg=${1:?usage: agent-apps-install <pkg>}
+app=$(app_json "$pkg") || { echo "$pkg is not in $(apps_file)" >&2; exit 1; }
+label=$(jq -r '.label // .pkg' <<<"$app")
+aur=$(jq -r '.aur // .pkg' <<<"$app")
+
+latest=$(latest_version "$app")
+read -r installed_name installed < <(installed_package "$pkg" "$aur") || true
+echo "$label: ${installed:-not installed} -> $latest"
+
+dir=${XDG_CACHE_HOME:-$HOME/.cache}/agent-apps/$aur
+if [[ -d $dir/.git ]]; then
+  git -C "$dir" fetch -q && git -C "$dir" reset -q --hard origin/HEAD
+else
+  mkdir -p "$(dirname "$dir")"
+  git clone -q "https://aur.archlinux.org/$aur.git" "$dir"
+fi
+cd "$dir"
+sed -i "s/^pkgver=.*/pkgver=$latest/; s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+updpkgsums
+makepkg -sfC --noconfirm
+# Replacing a differently named package (herdr from a repo by herdr-bin from
+# the AUR) is a conflict prompt whose default answer is No, so --noconfirm
+# would abort. Let the user answer it in this terminal instead.
+confirm=(--noconfirm)
+[[ -n ${installed_name:-} && $installed_name != "$aur" ]] && confirm=()
+sudo pacman -U "${confirm[@]}" "$aur-$latest-1-"*.pkg.tar.zst
+
+# Refresh the panel now instead of at the next timer tick.
+"$here/agent-apps-check" --no-notify || true
+echo "Restart $label to use $latest."
