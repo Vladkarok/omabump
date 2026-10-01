@@ -12,6 +12,12 @@ else
   export LC_ALL=C
 fi
 
+# The lock files sit on fds 7 (one update per app), 8 (the omarchy-pkgs
+# clone) and 9 (one check at a time). A child that inherited one would hold
+# the lock after this process ends, so git, mise, sync-upstream, makepkg,
+# sudo and command feeds run without them; the parent keeps its locks.
+run_unlocked() { "$@" 7>&- 8>&- 9>&-; }
+
 plugin_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 shipped_apps=$plugin_dir/apps.json
 user_apps=${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/omabump/apps.json
@@ -156,7 +162,7 @@ installed_package() {
 
 # mise answers depend on the config files of the current directory, so every
 # mise call runs in $HOME, in the check and the installer alike.
-mise_run() { (cd "$HOME" && MISE_HIDE_UPDATE_WARNING=1 timeout -k 10 "${mise_timeout:-120}" mise "$@" </dev/null); }
+mise_run() { (cd "$HOME" && run_unlocked env MISE_HIDE_UPDATE_WARNING=1 timeout -k 10 "${mise_timeout:-120}" mise "$@" </dev/null); }
 
 # mise_load fills these once, in the calling shell (never call it in a
 # subshell, the values would be lost there): `mise ls --json`, and with $1=1
@@ -318,12 +324,25 @@ for text in (body, body.replace("\\\"", "\"")):
 ' "$1"
 }
 
+# The first line a "command" feed prints. Such a feed is local code, not
+# data: it is accepted only from the user's own apps.json (feed_version's
+# other types never run anything), and the shipped table never runs one in
+# the background.
+user_command_version() {
+  local cmd body
+  jq -e '._userFeed == true' >/dev/null 2>&1 <<<"$1" \
+    || { echo "command feeds are allowed only from ~/.config/omarchy/omabump/apps.json" >&2; return 1; }
+  cmd=$(jq -r '.feed.command // ""' <<<"$1")
+  body=$(run_unlocked timeout -k 10 60 bash -c "$cmd" </dev/null) || { echo "feed command failed" >&2; return 1; }
+  head -1 <<<"$body"
+}
+
 # Prints the newest version the app's own feed advertises. Feeds are data:
 # nothing fetched is ever run. Every fetch is checked on its own: a failed or
 # cut-off download is an error, never a version. With $feed_save set, the
 # fetched document is also written to that file (vendor_checksum reads it).
 feed_version() {
-  local app=$1 type url body v repo cmd want
+  local app=$1 type url body v repo want
   type=$(jq -r '.feed.type // ""' <<<"$app")
   url=$(per_arch .feed.url "$app")
   case $type in
@@ -361,13 +380,7 @@ feed_version() {
       v=${body##*/releases/tag/}
       v=${v#v} ;;
     command)
-      # Only from the user's own apps.json: the command is local config, not
-      # data, and the shipped table must never run one in the background.
-      jq -e '._userFeed == true' >/dev/null 2>&1 <<<"$app" \
-        || { echo "command feeds are allowed only from ~/.config/omarchy/omabump/apps.json" >&2; return 1; }
-      cmd=$(jq -r '.feed.command // ""' <<<"$app")
-      body=$(timeout -k 10 60 bash -c "$cmd" </dev/null) || { echo "feed command failed" >&2; return 1; }
-      v=$(head -1 <<<"$body") ;;
+      v=$(user_command_version "$app") || return 1 ;;
     "")
       echo "no feed declared" >&2; return 1 ;;
     *)
@@ -444,29 +457,40 @@ pkgs_with_lock() {
 
 # git for the clone: HTTPS only, never a credential prompt, and always bounded:
 # the clone is blob-less, so even show, checkout and archive can fetch from
-# GitHub on demand. Explicit network calls go through pgit_net.
-pgit() { timeout -k 10 300 env GIT_ALLOW_PROTOCOL=https GIT_TERMINAL_PROMPT=0 git -C "$pkgs_dir" "$@" </dev/null; }
-pgit_net() { timeout -k 10 300 env GIT_ALLOW_PROTOCOL=https GIT_TERMINAL_PROMPT=0 git "$@" </dev/null; }
+# GitHub on demand. No hooks, no fsmonitor, no automatic gc or maintenance,
+# whatever the clone's or the user's config says. Explicit network calls go
+# through pgit_net.
+git_safe=(-c core.hooksPath=/dev/null -c core.fsmonitor=false -c protocol.allow=never
+  -c protocol.https.allow=always -c gc.auto=0 -c maintenance.auto=false)
+pgit() { run_unlocked timeout -k 10 300 env GIT_ALLOW_PROTOCOL=https GIT_TERMINAL_PROMPT=0 git "${git_safe[@]}" -C "$pkgs_dir" "$@" </dev/null; }
+pgit_net() { run_unlocked timeout -k 10 300 env GIT_ALLOW_PROTOCOL=https GIT_TERMINAL_PROMPT=0 git "${git_safe[@]}" "$@" </dev/null; }
 
 # Makes the pinned commit (or, when following, origin/master's) present in
-# the clone, cloning it first, and prints that commit. The caller sets
+# the clone, creating it first, and prints that commit. The caller sets
 # pkgs_base to it. Only data moves: the work tree is not touched. A pinned
-# commit already in the clone needs no network. Needs the lock.
+# commit already in the clone needs no network. The clone is an empty repo
+# with origin set and every fetch names the pinned commit, never a branch
+# clone. A clone whose origin is not $pkgs_url is made again. Needs the lock.
 pkgs_fetch() {
+  if [[ -d $pkgs_dir/.git && $(pgit remote get-url origin 2>/dev/null) != "$pkgs_url" ]]; then
+    echo "the omarchy-pkgs clone's origin is not $pkgs_url; making it again" >&2
+    rm -rf "$pkgs_dir"
+  fi
   if [[ ! -d $pkgs_dir/.git ]]; then
     rm -rf "$pkgs_dir"
-    pgit_net clone -q --no-checkout --filter=blob:none "$pkgs_url" "$pkgs_dir" >&2 || return 1
+    { pgit_net init -q -- "$pkgs_dir" && pgit remote add origin "$pkgs_url"; } >&2 \
+      || { rm -rf "$pkgs_dir"; return 1; }
   fi
   if (( pkgs_follow )); then
-    pgit_net -C "$pkgs_dir" fetch -q origin >&2 || return 1
-    pgit rev-parse origin/master
+    pgit_net -C "$pkgs_dir" fetch -q --filter=blob:none origin -- '+refs/heads/master:refs/remotes/origin/master' >&2 || return 1
+    pgit rev-parse --verify -q 'refs/remotes/origin/master^{commit}'
     return
   fi
   [[ -n $pkgs_base ]] || { echo "$pkgs_pin_error" >&2; return 1; }
   if ! pgit cat-file -e "$pkgs_base^{commit}" 2>/dev/null; then
     local why
-    why=$(pgit_net -C "$pkgs_dir" fetch -q origin -- "$pkgs_base" 2>&1) \
-      || why=$(pgit_net -C "$pkgs_dir" fetch -q origin -- "$pkgs_pin_ref" 2>&1) || true
+    why=$(pgit_net -C "$pkgs_dir" fetch -q --filter=blob:none origin -- "$pkgs_base" 2>&1) \
+      || why=$(pgit_net -C "$pkgs_dir" fetch -q --filter=blob:none origin -- "$pkgs_pin_ref" 2>&1) || true
     pgit cat-file -e "$pkgs_base^{commit}" 2>/dev/null \
       || { echo "pinned omarchy-pkgs commit ${pkgs_base:0:12} is unreachable${why:+: $(tail -1 <<<"$why")}" >&2; return 1; }
   fi
@@ -505,11 +529,11 @@ recipe_blocker() {
 # Fetches the recipeCommit $1 of app $2, or the ref its recipeFetch names.
 recipe_fetch() {
   local ref
-  pgit_net -C "$pkgs_dir" fetch -q origin -- "$1" 2>/dev/null && return 0
+  pgit_net -C "$pkgs_dir" fetch -q --filter=blob:none origin -- "$1" 2>/dev/null && return 0
   ref=$(jq -r '.recipeFetch // ""' <<<"$2")
   [[ -n $ref ]] || return 1
   ref_ok "$ref" || { echo "recipeFetch '$ref' is not a refs/ name" >&2; return 1; }
-  pgit_net -C "$pkgs_dir" fetch -q origin -- "$ref" 2>/dev/null
+  pgit_net -C "$pkgs_dir" fetch -q --filter=blob:none origin -- "$ref" 2>/dev/null
 }
 
 # Which commit's recipe an app uses. apps.json may pin one with

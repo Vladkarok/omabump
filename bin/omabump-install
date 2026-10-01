@@ -111,7 +111,7 @@ EOF
 }
 
 # makepkg under the configuration above.
-mkpkg() { makepkg --config "$cache_dir/makepkg.conf" "$@"; }
+mkpkg() { run_unlocked makepkg --config "$cache_dir/makepkg.conf" "$@"; }
 
 # A failed build or install keeps its files for a look; a successful one
 # removes them (clean_after_install).
@@ -251,7 +251,7 @@ stage_and_install() {
     echo "Would run: sudo rm -f -- $staged"
     return 0
   fi
-  sudo install -o root -g root -m 0644 -D -- "$file" "$staged" || die "could not copy $file to $staged"
+  run_unlocked sudo install -o root -g root -m 0644 -D -- "$file" "$staged" || die "could not copy $file to $staged"
   if [[ -n $algo ]]; then
     got=$("${algo}sum" -- "$staged" | cut -d' ' -f1)
     [[ $got == "$want" ]] || die "$algo of the staged copy is $got, expected $want; not installing (the copy stays in $staged)"
@@ -261,8 +261,8 @@ stage_and_install() {
   echo "Staged copy checked: $staged"
   # pacman asks "Proceed with installation?": that prompt is where you can
   # still stop. sudo need not ask for a password, makepkg -s may have used it.
-  sudo pacman -U -- "$staged" || die "pacman -U failed; the staged copy stays in $staged"
-  sudo rm -f -- "$staged"
+  run_unlocked sudo pacman -U -- "$staged" || die "pacman -U failed; the staged copy stays in $staged"
+  run_unlocked sudo rm -f -- "$staged"
 }
 
 # Builds the recipe in the current directory, checks the result and installs it.
@@ -358,7 +358,7 @@ install_omarchy() {
   # read the .curlrc above, its temporary files go under the cache, and the
   # maintainer-only release-age bypass never reaches it.
   write_download_policy
-  (cd "$pkgs_dir" && env -u BYPASS_MIN_RELEASE_AGE -u MIN_RELEASE_AGE_SECONDS \
+  (cd "$pkgs_dir" && run_unlocked env -u BYPASS_MIN_RELEASE_AGE -u MIN_RELEASE_AGE_SECONDS \
      CURL_HOME="$cache_dir/curl" TMPDIR="$cache_dir/tmp" \
      timeout -k 10 900 bin/sync-upstream "$pkg") </dev/null || die "bin/sync-upstream $pkg failed"
 
