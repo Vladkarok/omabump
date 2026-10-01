@@ -51,6 +51,8 @@ OpenCode, Amp, herdr, Grok CLI.
 omarchy plugin add https://github.com/vladkarok/omabump.git --enable
 ```
 
+`omarchy plugin add` asks for confirmation; from a script pass `--yes`.
+
 The widget lands in the bar's right section. Move it with
 `omarchy bar move io.github.vladkarok.omabump --section center --index 0`
 (sections: left, center, right).

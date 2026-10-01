@@ -492,4 +492,6 @@ esac
 
 (( prepare )) && exit 0
 refresh_panel
-[[ $source == mise ]] || echo "Restart $label to use $target_version."
+if [[ $source != mise ]]; then
+  if [[ -n $installed ]]; then echo "Restart $label to use $target_version."; else echo "$label $target_version is installed."; fi
+fi

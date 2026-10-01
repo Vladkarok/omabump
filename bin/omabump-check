@@ -160,7 +160,7 @@ while IFS= read -r app; do
       if ! command -v sudo >/dev/null || ! command -v curl >/dev/null; then
         note="Missing: sudo or curl; sudo pacman -S --needed base-devel curl"
       elif ! vendor_pkg_url "$app" x >/dev/null; then
-        note="No vendor package for $(uname -m)"
+        note="No https vendor package for $(uname -m)"
       elif ! vendor_checksum_declared "$app"; then
         note="No published checksum for the vendor package"
       else
