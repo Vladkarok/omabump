@@ -23,6 +23,7 @@ dry_run=0
 pkg=${1:?usage: agent-apps-install [--dry-run] <pkg>}
 
 die() { echo "agent-apps: $*" >&2; exit 1; }
+command -v jq >/dev/null || die "jq is missing; install it with: sudo pacman -S --needed jq"
 
 app=$(app_json "$pkg") || die "$pkg is not in the app table"
 pkg=$(jq -r .pkg <<<"$app")
@@ -37,6 +38,7 @@ installed_name="" installed=""
 if read -r source installed_name installed < <(installed_app "$app"); then :; else
   source=$(jq -r '.source // ""' <<<"$app")
 fi
+[[ $source == omarchy ]] && require_omarchy_tools
 echo "$label: installed ${installed:-nothing} (${installed_name:-$pkg}, $source)"
 
 export PKGDEST=$cache_dir/packages SRCDEST=$cache_dir/sources BUILDDIR=$cache_dir/build

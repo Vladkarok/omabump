@@ -183,6 +183,41 @@ feed_version() {
 
 # --- omarchy-pkgs ----------------------------------------------------------
 
+# What building an Omarchy recipe needs, as tool:package. makepkg and sudo
+# come with base-devel, vercmp with pacman, bsdtar with libarchive.
+omarchy_tools=(makepkg:base-devel git:git jq:jq python3:python bsdtar:libarchive vercmp:pacman curl:curl sudo:base-devel)
+
+# Names of the tools above that are not on PATH. Only command -v, so the
+# check can call it on every run.
+missing_tools() {
+  local entry
+  for entry in "${omarchy_tools[@]}"; do
+    command -v "${entry%%:*}" >/dev/null || echo "${entry%%:*}"
+  done
+}
+
+# Exits with the pacman line that installs what is missing, including a
+# python3 older than omarchy-pkgs' bin/sync-upstream needs (3.11).
+require_omarchy_tools() {
+  local missing=() pkgs=() entry tool pkg
+  mapfile -t missing < <(missing_tools)
+  if command -v python3 >/dev/null && ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
+    missing+=("python3 ($(python3 -c 'import platform; print(platform.python_version())' 2>/dev/null || echo unknown), needs 3.11 or newer)")
+  fi
+  (( ${#missing[@]} )) || return 0
+  for tool in "${missing[@]}"; do
+    for entry in "${omarchy_tools[@]}"; do
+      [[ ${tool%% *} == "${entry%%:*}" ]] || continue
+      pkg=${entry#*:}
+      [[ " ${pkgs[*]} " == *" $pkg "* ]] || pkgs+=("$pkg")
+    done
+  done
+  echo "agent-apps: building Omarchy's recipe needs tools that are missing: $(printf '%s, ' "${missing[@]}" | sed 's/, $//')" >&2
+  echo "Install them with:" >&2
+  echo "  sudo pacman -S --needed ${pkgs[*]}" >&2
+  exit 1
+}
+
 # Takes the clone lock on fd 8 for the rest of the process, waiting up to $1 s.
 pkgs_take_lock() {
   mkdir -p "$cache_dir"

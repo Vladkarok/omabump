@@ -27,6 +27,10 @@ Remove it with `omarchy plugin remove io.github.vladkarok.agent-apps`.
 - sudo rights for `pacman -U`
 - `mise`, optional, for the agent CLIs
 
+Update on an omarchy row checks these first and, when something is missing,
+prints the `sudo pacman -S --needed ...` line that installs it and stops. The
+panel says "Missing: makepkg, jq" on those rows.
+
 ## What Update runs
 
 Update opens a floating terminal and runs `bin/agent-apps-install <pkg>`.
