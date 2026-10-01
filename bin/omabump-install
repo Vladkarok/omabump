@@ -62,7 +62,10 @@ if (( switch )); then
   echo "Switching from $installed_name to $pkg at the same or a newer version."
 fi
 
-export PKGDEST=$cache_dir/packages SRCDEST=$cache_dir/sources BUILDDIR=$cache_dir/build
+# PKGEXT without a compressor: the package is installed seconds after the
+# build, and zstd -22 on a 1.5 GB Electron app takes minutes. pacman -U reads
+# a plain .pkg.tar.
+export PKGDEST=$cache_dir/packages SRCDEST=$cache_dir/sources BUILDDIR=$cache_dir/build PKGEXT=.pkg.tar
 mkdir -p "$PKGDEST" "$SRCDEST" "$BUILDDIR"
 
 refresh_panel() { "$here/omabump-check" --no-notify || true; }
@@ -122,7 +125,7 @@ show_switch() {
   switch_conflicts "${2:-$script}" \
     || die "neither $pkg nor $installed_name declares a conflict with the other, so pacman would keep both; not switching"
   echo "pacman will ask to remove $installed_name for $pkg (declared conflict); answer y to switch."
-  if [[ $script == *.pkg.tar.* ]]; then
+  if [[ $script == *.pkg.tar || $script == *.pkg.tar.* ]]; then
     if bsdtar -tf "$script" .INSTALL >/dev/null 2>&1; then
       echo "--- $pkg install script (.INSTALL), run as root:"
       bsdtar -xOf "$script" .INSTALL
