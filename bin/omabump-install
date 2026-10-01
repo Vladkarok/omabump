@@ -25,6 +25,7 @@
 # package and stops before pacman -U. Nothing is installed.
 set -euo pipefail
 here=$(dirname "$(readlink -f "$0")")
+# shellcheck source=omabump-common
 source "$here/omabump-common"
 
 prepare=0 switch=0
@@ -121,7 +122,11 @@ switch_conflicts() {
   fi
   info=$(pacman -Qi -- "$installed_name")
   old_c=$(qi_names 'Conflicts With' <<<"$info") old_p=$(qi_names Provides <<<"$info")
+  # $old_p and $new_p are newline lists of package names, split on purpose:
+  # quoted, an empty list would add an empty pattern that matches anything.
+  # shellcheck disable=SC2086
   grep -qxF -f <(printf '%s\n' "$installed_name" $old_p) <<<"$new_c" && return 0
+  # shellcheck disable=SC2086
   grep -qxF -f <(printf '%s\n' "$pkg" $new_p) <<<"$old_c" && return 0
   return 1
 }

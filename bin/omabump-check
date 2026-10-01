@@ -14,6 +14,7 @@
 #
 #   omabump-check [--no-notify] [--no-mise]
 set -euo pipefail
+# shellcheck source=omabump-common
 source "$(dirname "$(readlink -f "$0")")/omabump-common"
 
 notify=1 with_mise=1
@@ -43,7 +44,7 @@ pkgs_state=""
 pkgs_commit=$(jq -r '.omarchyPkgs.commit // ""' <<<"$previous")
 pkgs_error="" pkgs_note=""
 started=$(date -Iseconds)
-missing=$(missing_tools_line)
+missing_line=$(missing_tools_line)
 rows=() order='[]' status_done=0
 cleanup() {
   (( status_done )) || write_status 2 || true
@@ -184,9 +185,9 @@ while IFS= read -r app; do
       elif [[ $pkgs_state != ready ]]; then
         route_error=$pkgs_error
       fi
-      if [[ -n $missing ]]; then
+      if [[ -n $missing_line ]]; then
         installable=false
-        note="$missing${note:+; $note}"
+        note="$missing_line${note:+; $note}"
       fi ;;
     *)
       route_error="unknown source '$source'" ;;

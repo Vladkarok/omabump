@@ -9,6 +9,7 @@
 #   omabump-prompt <pkg>
 set -euo pipefail
 here=$(dirname "$(readlink -f "$0")")
+# shellcheck source=omabump-common
 source "$here/omabump-common"
 
 name=${1:?usage: omabump-prompt <pkg>}

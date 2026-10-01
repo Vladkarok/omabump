@@ -1,0 +1,3 @@
+# Follow `source` into bin/omabump-common, resolved from each script's own directory.
+external-sources=true
+source-path=SCRIPTDIR

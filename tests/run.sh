@@ -13,7 +13,7 @@ trap 'rm -rf "$scratch"' EXIT
 export XDG_CONFIG_HOME=$scratch/config XDG_STATE_HOME=$scratch/state XDG_CACHE_HOME=$scratch/cache
 mkdir -p "$XDG_CONFIG_HOME/omarchy/omabump" "$scratch/served"
 
-# shellcheck source=bin/omabump-common
+# shellcheck source=../bin/omabump-common
 source "$root/bin/omabump-common"
 
 # Stubs. fetch serves $scratch/served/<basename of the last argument>.
@@ -72,7 +72,7 @@ refuse "feed checksum: a digest of the wrong length" vendor_checksum "$feed_app"
 
 # --- vendor_checksum: list ----------------------------------------------------
 
-name=app-1.2.3-x86_64.pkg.tar.zst
+name='app-1.2.3-x86_64.pkg.tar.zst'
 printf '%s  other.pkg.tar.zst\n%s  %s\n' "$(hexsum sha256 other)" "$(hexsum sha256 pkg)" "$name" >"$scratch/served/SHA256SUMS"
 printf '%s *%s\n' "$(hexsum sha512 pkg)" "$name" >"$scratch/served/SHA512SUMS"
 list_app() { jq -cn --arg url "$1" --arg algo "$2" '{pkg: "app", checksum: {url: $url, algo: $algo}}'; }
@@ -137,6 +137,8 @@ check "version_ok: 1.2.3" version_ok 1.2.3
 check "version_ok: 2:1.0+git~r1_x" version_ok 2:1.0+git~r1_x
 refuse "version_ok: a space" version_ok '1.2 3'
 refuse "version_ok: a slash" version_ok 1.2/3
+# The literal text, not its expansion, is what version_ok must refuse.
+# shellcheck disable=SC2016
 refuse "version_ok: a command substitution" version_ok '$(id)'
 refuse "version_ok: empty" version_ok ''
 same "upstream_part: epoch and pkgrel cut" 1.2.3 "$(upstream_part 2:1.2.3-4)"

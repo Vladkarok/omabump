@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: bash -n
+        run: for f in bin/* tests/run.sh; do bash -n "$f"; done
+      - name: JSON
+        run: for f in manifest.json apps.json pins.json; do jq . "$f" >/dev/null; done
+      - name: shellcheck
+        run: docker run --rm -v "$PWD":/mnt koalaman/shellcheck:stable bin/omabump-common bin/omabump-check bin/omabump-install bin/omabump-prompt tests/run.sh
+
+  test:
+    # The suite compares versions with vercmp, which comes with pacman.
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Dependencies
+        run: pacman -Syu --noconfirm --needed git jq python
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: tests/run.sh
+        run: tests/run.sh

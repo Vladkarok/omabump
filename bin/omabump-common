@@ -1,5 +1,8 @@
 # Sourced by omabump-check and omabump-install; not run on its own.
 # shellcheck shell=bash
+# The paths and state variables below are read by the scripts that source
+# this file, which shellcheck cannot see from here:
+# shellcheck disable=SC2034
 
 # One locale for every script: ${var:0:N} counts characters, and regexes,
 # sorting and tool output (pacman -Qi fields) do not depend on the user's.
