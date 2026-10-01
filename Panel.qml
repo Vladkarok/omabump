@@ -194,18 +194,24 @@ Panel {
     return commit + checkedText()
   }
 
+  // Four states, never mixed up: all current, N updates, check failed, and
+  // last known (rows from an earlier run because this one failed for them).
   function summaryText() {
     var parts = []
     if (updateCount > 0) parts.push(updateCount + (updateCount === 1 ? " update" : " updates"))
     if (checker.waitingCount > 0) parts.push(checker.waitingCount + " newer without an install path")
     var failed = checker.errorCount
-    if (failed > 0) parts.push("check failed for " + failed + (failed === 1 ? " app" : " apps"))
+    if (checker.checkFailed) parts.push("check failed")
+    else if (failed > 0) parts.push("check failed for " + failed + (failed === 1 ? " app" : " apps"))
+    if (checker.staleCount > 0) parts.push("last known for " + checker.staleCount + (checker.staleCount === 1 ? " app" : " apps"))
+    if (parts.length === 0 && checker.checkedAt !== "" && apps.length > 0) return "All current"
     return parts.join(", ")
   }
 
   function tooltipText() {
     var summary = summaryText()
-    return summary === "" ? "Agent apps up to date" : "Agent apps: " + summary
+    if (summary !== "") return "Agent apps: " + summary
+    return checker.checkedAt === "" ? "Agent apps: not checked yet" : "Agent apps: none installed"
   }
 
   function badgeText(app) {
@@ -395,7 +401,7 @@ Panel {
             width: parent.width
             title: "Agent apps"
             meta: root.settingsOpen ? "Settings"
-              : root.summaryText() !== "" ? root.summaryText() : (root.apps.length > 0 ? "Up to date" : "")
+              : root.summaryText()
             detail: ""
             foreground: root.foreground
             fontFamily: root.fontFamily
@@ -587,9 +593,9 @@ Panel {
 
           Text {
             textFormat: Text.PlainText
-            visible: !root.settingsOpen && checker.pkgsError !== ""
+            visible: !root.settingsOpen && (checker.pkgsError !== "" || checker.pkgsNote !== "")
             width: parent.width
-            text: checker.pkgsError
+            text: checker.pkgsError !== "" ? checker.pkgsError : checker.pkgsNote
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption

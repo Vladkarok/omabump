@@ -30,15 +30,19 @@ mkdir -p "$state_dir"
 exec 9>"$state_dir/.check.lock"
 flock -n 9 || exit 0
 
+# Last run's results, used only when they have the shape this script writes.
 previous='{"apps":[]}'
-[[ -s $status_file ]] && jq -e . "$status_file" >/dev/null 2>&1 && previous=$(<"$status_file")
+[[ -s $status_file ]] && jq -e 'type == "object" and (.apps | type == "array")
+  and all(.apps[]; type == "object" and (.pkg | type == "string"))' "$status_file" >/dev/null 2>&1 \
+  && previous=$(<"$status_file")
 notified='{}'
 [[ -s $notified_file ]] && jq -e 'type == "object"' "$notified_file" >/dev/null 2>&1 && notified=$(<"$notified_file")
 
 tmp=$(mktemp -d)
 pkgs_state=""
 pkgs_commit=$(jq -r '.omarchyPkgs.commit // ""' <<<"$previous")
-pkgs_error=""
+pkgs_error="" pkgs_note=""
+started=$(date -Iseconds)
 missing=$(missing_tools_line)
 rows=() order='[]' status_done=0
 cleanup() {
@@ -55,7 +59,7 @@ pkgs_ready() {
   if [[ -z $pkgs_state ]]; then
     if ! pkgs_take_lock 20; then
       pkgs_state=busy
-      pkgs_error="The omarchy-pkgs clone is busy with an update, showing the last result"
+      pkgs_note="The omarchy-pkgs clone is busy with an update, showing the last result"
     elif pkgs_commit=$(pkgs_fetch 2>"$tmp/git.err"); then
       pkgs_state=ready
     else
@@ -67,12 +71,11 @@ pkgs_ready() {
 }
 
 table=$(apps_table)
-# Loaded here, in this shell, so every row reads the same answers.
-(( with_mise )) && mise_load 1
 order=$(jq -c 'map(.pkg)' <<<"$table")
 
 # Replaces status.json in one rename. $1 is 0 while checking, 1 for the final
-# write, 2 when the run dies half way. Until the final write, rows not checked
+# write, 2 when the run dies half way. startedAt lets the panel treat a run
+# that was killed while "checking" as stale. Until the final write, rows not checked
 # yet keep their previous entry, flagged "checking": true while the run lasts,
 # so the panel shows progress row by row; the check time stays the old one.
 write_status() {
@@ -82,16 +85,28 @@ write_status() {
   out=$(mktemp "$state_dir/.status.XXXXXX")
   # Desktop apps first, mise tools after them, each in table order.
   printf '%s\n' "${rows[@]}" | jq -s --argjson prev "$previous" --argjson order "$order" \
-    --argjson final "$final" --arg at "$at" --arg commit "$pkgs_commit" --arg perr "$pkgs_error" '
+    --argjson final "$final" --arg at "$at" --arg started "$started" \
+    --arg commit "$pkgs_commit" --arg perr "$pkgs_error" --arg pnote "$pkgs_note" '
     (map(.pkg)) as $done
     | (if $final == 1 then .
        else . + [$prev.apps[] | select(.pkg as $p | $done | index($p) | not) | .checking = ($final == 0)] end)
     | sort_by([.source == "mise", (.pkg as $p | $order | index($p) // 1e9)])
-    | {checkedAt: $at, checking: ($final == 0), omarchyPkgs: {commit: $commit, error: $perr}, apps: .}' >"$out"
+    | {checkedAt: $at, checking: ($final == 0), startedAt: $started,
+       omarchyPkgs: {commit: $commit, error: $perr, note: $pnote}, apps: .}' >"$out"
   mv -f "$out" "$status_file"
 }
 
+# Each announcement is saved as soon as it is sent, so a run that dies later
+# does not announce it again.
+save_notified() {
+  local out
+  out=$(mktemp "$state_dir/.notified.XXXXXX")
+  jq . <<<"$notified" >"$out" && mv -f "$out" "$notified_file"
+}
+
 write_status 0
+# Loaded here, in this shell, so every row reads the same answers.
+(( with_mise )) && mise_load 1
 while IFS= read -r app; do
   pkg=$(jq -r '.pkg' <<<"$app")
   label=$(jq -r '.label // .pkg' <<<"$app")
@@ -124,7 +139,9 @@ while IFS= read -r app; do
         fi
       fi ;;
     vendor-pkg)
-      if vendor_pkg_url "$app" x >/dev/null; then
+      if ! command -v sudo >/dev/null || ! command -v curl >/dev/null; then
+        note="Missing: sudo or curl; sudo pacman -S --needed base-devel curl"
+      elif vendor_pkg_url "$app" x >/dev/null; then
         installable=true
         [[ $installed_name != "$pkg" ]] && note="Installed as $installed_name, Update switches to $pkg"
       else
@@ -150,7 +167,7 @@ while IFS= read -r app; do
         fi
       elif [[ $pkgs_state == busy ]]; then
         installable=$(jq -r '.installable // false' <<<"$prev")
-        note=$pkgs_error
+        note=$pkgs_note
       else
         route_error=$pkgs_error
       fi
@@ -193,6 +210,7 @@ while IFS= read -r app; do
     [[ $installable == true ]] || body="Installed: $installed. ${note^}."
     if notify-send -a "Agent Apps" "$label $latest available" "$body" 2>/dev/null; then
       notified=$(jq -c --arg pkg "$pkg" --arg v "$latest" '.[$pkg] = $v' <<<"$notified")
+      save_notified
     fi
   fi
 
@@ -212,7 +230,3 @@ done < <(jq -c '.[]' <<<"$table")
 
 write_status 1
 status_done=1
-
-out=$(mktemp "$state_dir/.notified.XXXXXX")
-jq . <<<"$notified" >"$out"
-mv -f "$out" "$notified_file"

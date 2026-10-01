@@ -30,10 +30,20 @@ Item {
   property string checkedAt: ""
   property string pkgsCommit: ""
   property string pkgsError: ""
+  property string pkgsNote: ""
   property string checkError: ""
-  // A run from a terminal marks status.json as in progress too.
-  property bool fileChecking: false
+  // A run from a terminal marks status.json as in progress too. A run killed
+  // half way leaves that mark behind, so one older than staleMs no longer
+  // counts and Refresh comes back.
+  readonly property double staleMs: 10 * 60 * 1000
+  property bool fileCheckingRaw: false
+  property double fileStartedMs: 0
+  property double nowMs: Date.now()
+  readonly property bool fileChecking: fileCheckingRaw && nowMs - fileStartedMs < staleMs
   readonly property bool checking: checkProcess.running || fileChecking
+  // The checker itself failed, or omarchy-pkgs could not be fetched: no
+  // summary may then read as up to date.
+  readonly property bool checkFailed: checkError !== "" || pkgsError !== ""
   readonly property int updateCount: {
     var count = 0
     for (var i = 0; i < apps.length; i++)
@@ -51,6 +61,12 @@ Item {
   readonly property int errorCount: {
     var count = 0
     for (var i = 0; i < apps.length; i++) if (String(apps[i].error || "") !== "") count++
+    return count
+  }
+  // Rows showing the version from an earlier run because this one failed.
+  readonly property int staleCount: {
+    var count = 0
+    for (var i = 0; i < apps.length; i++) if (apps[i].stale === true) count++
     return count
   }
 
@@ -76,10 +92,14 @@ Item {
       // A check run from a terminal lists mise tools whatever the setting says.
       apps = showMise ? all : all.filter(function(app) { return app.source !== "mise" })
       checkedAt = parsed && parsed.checkedAt ? String(parsed.checkedAt) : ""
-      fileChecking = !!parsed && parsed.checking === true
+      fileCheckingRaw = !!parsed && parsed.checking === true
+      var started = parsed && parsed.startedAt ? new Date(parsed.startedAt).getTime() : NaN
+      fileStartedMs = isFinite(started) ? started : 0
+      nowMs = Date.now()
       var pkgs = parsed && parsed.omarchyPkgs ? parsed.omarchyPkgs : {}
       pkgsCommit = String(pkgs.commit || "")
       pkgsError = String(pkgs.error || "")
+      pkgsNote = String(pkgs.note || "")
     } catch (e) {
       console.warn("agent-apps", "Ignoring bad status file", statusPath, e)
     }
@@ -108,6 +128,13 @@ Item {
       waitForEnd: true
       onStreamFinished: if (text.trim() !== "") console.warn("agent-apps", text.trim())
     }
+  }
+
+  Timer {
+    interval: 60000
+    running: root.fileCheckingRaw
+    repeat: true
+    onTriggered: root.nowMs = Date.now()
   }
 
   Timer {
