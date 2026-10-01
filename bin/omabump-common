@@ -362,11 +362,23 @@ require_omarchy_tools() {
   exit 1
 }
 
-# Takes the clone lock on fd 8 for the rest of the process, waiting up to $1 s.
+# Takes the clone lock on fd 8, waiting up to $1 s, until pkgs_drop_lock or
+# the end of the process. The lock covers what writes the clone: fetches,
+# checkout, sync and build. Reads through git show need no lock.
+pkgs_locked=0
 pkgs_take_lock() {
   mkdir -p "$cache_dir"
   exec 8>"$pkgs_lock"
-  flock -w "${1:-0}" 8
+  flock -w "${1:-0}" 8 && pkgs_locked=1
+}
+pkgs_drop_lock() { exec 8>&-; pkgs_locked=0; }
+
+# Runs "$@" under the clone lock: directly when this process holds it, else
+# in a subshell that takes it for that call only. Fails with 75 when another
+# process holds it.
+pkgs_with_lock() {
+  if (( pkgs_locked )); then "$@"; return; fi
+  (exec 8>"$pkgs_lock"; flock -n 8 || exit 75; "$@")
 }
 
 # git for the clone: HTTPS only, never a credential prompt, and always bounded:
@@ -409,7 +421,8 @@ pkgs_checkout() { pkgs_detach; }
 # Puts Omarchy's recipe back the way pkgs_base has it; never fails.
 pkgs_restore() { pkgs_detach "pkgbuilds/${1:?}" 2>/dev/null || true; }
 
-# A file of a recipe at a commit, read from git without a checkout.
+# A file of a recipe at a commit, read from the object store without a
+# checkout, so it is safe while an install holds the lock.
 recipe_file() { pgit show "$1:pkgbuilds/$2/$3" 2>/dev/null; }
 recipe_has() { pgit cat-file -e "$1:pkgbuilds/$2/$3" 2>/dev/null; }
 
@@ -428,15 +441,24 @@ recipe_blocker() {
   echo "Repo recipe has no upstream watch yet"
 }
 
+# Fetches the recipeCommit $1 of app $2, or the ref its recipeFetch names.
+recipe_fetch() {
+  local ref
+  pgit_net -C "$pkgs_dir" fetch -q origin "$1" 2>/dev/null && return 0
+  ref=$(jq -r '.recipeFetch // ""' <<<"$2")
+  [[ -n $ref ]] && pgit_net -C "$pkgs_dir" fetch -q origin "$ref" 2>/dev/null
+}
+
 # Which commit's recipe an app uses. apps.json may pin one with
 # "recipeCommit", a 40-hex SHA from an unmerged omarchy-pkgs PR that gives the
 # package the watch the pinned omarchy-pkgs commit lacks ("recipeFetch" names
 # a ref to fetch when the server will not hand out the bare SHA). Sets
 # recipe_rev and recipe_note. Fails closed with the reason on stderr and never
-# falls back to pkgs_base. Once pkgs_base's own recipe has a watch, the
-# recipeCommit is ignored.
+# falls back to pkgs_base; fails with 75 when the clone is busy and the
+# commit still has to be fetched. Once pkgs_base's own recipe has a watch,
+# the recipeCommit is ignored.
 recipe_source() {
-  local pkg=$1 app=$2 sha ref
+  local pkg=$1 app=$2 sha rc=0
   recipe_rev=$pkgs_base recipe_note=""
   sha=$(jq -r '.recipeCommit // ""' <<<"$app")
   [[ -n $sha ]] || return 0
@@ -446,10 +468,8 @@ recipe_source() {
   fi
   [[ $sha =~ ^[0-9a-f]{40}$ ]] || { echo "recipeCommit '$sha' is not a 40-hex commit" >&2; return 1; }
   if ! pgit cat-file -e "$sha^{commit}" 2>/dev/null; then
-    if ! pgit_net -C "$pkgs_dir" fetch -q origin "$sha" 2>/dev/null; then
-      ref=$(jq -r '.recipeFetch // ""' <<<"$app")
-      [[ -n $ref ]] && pgit_net -C "$pkgs_dir" fetch -q origin "$ref" 2>/dev/null
-    fi
+    pkgs_with_lock recipe_fetch "$sha" "$app" || rc=$?
+    (( rc != 75 )) || { echo "the omarchy-pkgs clone is busy with an update" >&2; return 75; }
     pgit cat-file -e "$sha^{commit}" 2>/dev/null || { echo "pinned recipe ${sha:0:12} is unreachable" >&2; return 1; }
   fi
   recipe_has "$sha" "$pkg" PKGBUILD || { echo "pinned commit ${sha:0:12} has no $pkg recipe" >&2; return 1; }

@@ -52,19 +52,25 @@ cleanup() {
 trap cleanup EXIT
 
 # The clone is fetched on first need, so a machine without any Omarchy-packaged
-# app never fetches it. The check only reads it: no checkout, nothing run. An
-# install holds the lock for its whole build; the check then keeps what it
-# knew about the install route instead of waiting.
+# app never fetches it. The check only reads it: no checkout, nothing run. The
+# lock is held for the fetch alone; recipes are then read with git show from
+# the object store, which an install's checkout and build do not touch. An
+# install holds the lock for its whole build; a check that finds it taken
+# keeps what it knew about the install route instead of waiting.
+pkgs_busy_note="The omarchy-pkgs clone is busy with an update, showing the last result"
 pkgs_ready() {
   if [[ -z $pkgs_state ]]; then
-    if ! pkgs_take_lock 20; then
+    if ! pkgs_take_lock 0; then
       pkgs_state=busy
-      pkgs_note="The omarchy-pkgs clone is busy with an update, showing the last result"
-    elif pkgs_commit=$(pkgs_fetch 2>"$tmp/git.err"); then
-      pkgs_state=ready pkgs_base=$pkgs_commit
+      pkgs_note=$pkgs_busy_note
     else
-      pkgs_state=failed
-      pkgs_error="Could not fetch omarchy-pkgs: $(tail -1 "$tmp/git.err")"
+      if pkgs_commit=$(pkgs_fetch 2>"$tmp/git.err"); then
+        pkgs_state=ready pkgs_base=$pkgs_commit
+      else
+        pkgs_state=failed
+        pkgs_error="Could not fetch omarchy-pkgs: $(tail -1 "$tmp/git.err")"
+      fi
+      pkgs_drop_lock
     fi
   fi
   [[ $pkgs_state == ready ]]
@@ -157,8 +163,10 @@ while IFS= read -r app; do
       # Installable means bin/sync-upstream could move the recipe: it exists
       # at the pinned omarchy-pkgs commit (or the app's recipeCommit) and has
       # a watch or hook.
+      recipe_rc=0
       if pkgs_ready; then
-        if recipe_source "$pkg" "$app" 2>"$tmp/err"; then
+        recipe_source "$pkg" "$app" 2>"$tmp/err" || recipe_rc=$?
+        if (( recipe_rc == 0 )); then
           note=$(recipe_blocker "$recipe_rev" "$pkg")
           if [[ -z $note ]]; then
             installable=true
@@ -166,13 +174,14 @@ while IFS= read -r app; do
           fi
           read -r _ recipe < <(recipe_file "$recipe_rev" "$pkg" PKGBUILD | recipe_version 2>/dev/null) || recipe=""
           [[ $recipe_rev == "$pkgs_base" ]] || recipe_commit=$recipe_rev
-        else
+        elif (( recipe_rc != 75 )); then
           route_error=$(<"$tmp/err")
         fi
-      elif [[ $pkgs_state == busy ]]; then
+      fi
+      if [[ $pkgs_state == busy ]] || (( recipe_rc == 75 )); then
         installable=$(jq -r '.installable // false' <<<"$prev")
-        note=$pkgs_note
-      else
+        note=$pkgs_busy_note
+      elif [[ $pkgs_state != ready ]]; then
         route_error=$pkgs_error
       fi
       if [[ -n $missing ]]; then
