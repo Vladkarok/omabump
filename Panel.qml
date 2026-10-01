@@ -484,23 +484,45 @@ Panel {
               Row {
                 spacing: Style.spacing.xs
 
+                // The header buttons sit at the card's right edge, and a
+                // centred tooltip would run past it (and off a screen the
+                // panel hugs), so these two keep their tooltip's right edge
+                // on the button instead of using PanelActionButton's own.
                 PanelActionButton {
+                  id: refreshButton
+                  property bool hot: false
                   visible: !root.settingsOpen
                   enabled: !checker.checking
                   iconText: "󰑐"
-                  tooltipText: root.checkedText() + " · Refresh  r"
                   foreground: root.foreground
                   fontFamily: root.fontFamily
+                  onHovered: function(isHovered) { hot = isHovered }
                   onClicked: root.refreshNow()
+
+                  PanelToolTip {
+                    visible: refreshButton.hot
+                    text: root.checkedText() + " · Refresh  r"
+                    fontFamily: root.fontFamily
+                    x: refreshButton.width - width
+                  }
                 }
 
                 PanelActionButton {
+                  id: gearButton
+                  property bool hot: false
                   iconText: "󰒓"
-                  tooltipText: root.settingsOpen ? "Back to the apps  Esc" : "Settings  s"
                   bordered: root.settingsOpen
                   foreground: root.foreground
                   fontFamily: root.fontFamily
+                  onHovered: function(isHovered) { hot = isHovered }
                   onClicked: root.showSettings(!root.settingsOpen, false)
+
+                  PanelToolTip {
+                    visible: gearButton.hot
+                    text: root.settingsOpen ? "Back to the apps  Esc" : "Settings  s"
+                    fontFamily: root.fontFamily
+                    x: gearButton.width - width
+                  }
                 }
               }
             }
