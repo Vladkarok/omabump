@@ -207,8 +207,8 @@ vendor_checksum() {
       # list the file under a mirror host.
       b64=$(awk -v url="$url" -v name="$name" '
         /^[[:space:]]*-[[:space:]]+url:/ { u = $NF; next }
-        /^[[:space:]]+sha512:/ && u != "" { if (u == url) { print $2; exit } if (u == name && byname == "") byname = $2; u = "" }
-        END { if (byname != "") print byname }' "$feed_file")
+        /^[[:space:]]+sha512:/ && u != "" { if (u == url) { exact = $2; exit } if (u == name && byname == "") byname = $2; u = "" }
+        END { if (exact != "") print exact; else if (byname != "") print byname }' "$feed_file")
       [[ $b64 =~ ^[A-Za-z0-9+/]+=*$ ]] || { echo "the feed lists no sha512 for $name" >&2; return 1; }
       hex=$(base64 -d <<<"$b64" 2>/dev/null | od -An -v -tx1 | tr -d ' \n') ;;
     @list)
