@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.vladkarok.agent-apps",
   "name": "Agent Apps",
-  "version": "0.3.0",
+  "version": "0.1.0",
   "author": "vladkarok",
   "license": "MIT",
   "description": "Installed and newest version of the AI desktop apps behind Omarchy's Install > AI menu, and of the agent CLIs mise manages, with one-click updates through Omarchy's recipe, the vendor's own package or mise.",
