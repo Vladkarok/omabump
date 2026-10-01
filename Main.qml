@@ -30,7 +30,9 @@ Item {
   property string pkgsCommit: ""
   property string pkgsError: ""
   property string checkError: ""
-  readonly property bool checking: checkProcess.running
+  // A run from a terminal marks status.json as in progress too.
+  property bool fileChecking: false
+  readonly property bool checking: checkProcess.running || fileChecking
   readonly property int updateCount: {
     var count = 0
     for (var i = 0; i < apps.length; i++)
@@ -73,6 +75,7 @@ Item {
       // A check run from a terminal lists mise tools whatever the setting says.
       apps = showMise ? all : all.filter(function(app) { return app.source !== "mise" })
       checkedAt = parsed && parsed.checkedAt ? String(parsed.checkedAt) : ""
+      fileChecking = !!parsed && parsed.checking === true
       var pkgs = parsed && parsed.omarchyPkgs ? parsed.omarchyPkgs : {}
       pkgsCommit = String(pkgs.commit || "")
       pkgsError = String(pkgs.error || "")

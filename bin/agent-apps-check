@@ -36,7 +36,9 @@ tmp=$(mktemp -d)
 pkgs_state=""
 pkgs_commit=$(jq -r '.omarchyPkgs.commit // ""' <<<"$previous")
 pkgs_error=""
+rows=() order='[]' status_done=0
 cleanup() {
+  (( status_done )) || write_status 2 || true
   [[ $pkgs_state == ready ]] && pkgs_restore .
   rm -rf "$tmp"
 }
@@ -60,7 +62,30 @@ pkgs_ready() {
   [[ $pkgs_state == ready ]]
 }
 
-rows=()
+table=$(apps_table)
+order=$(jq -c 'map(.pkg)' <<<"$table")
+
+# Replaces status.json in one rename. $1 is 0 while checking, 1 for the final
+# write, 2 when the run dies half way. Until the final write, rows not checked
+# yet keep their previous entry, flagged "checking": true while the run lasts,
+# so the panel shows progress row by row; the check time stays the old one.
+write_status() {
+  local final=$1 out at
+  at=$(jq -r '.checkedAt // ""' <<<"$previous")
+  (( final == 1 )) && at=$(date -Iseconds)
+  out=$(mktemp "$state_dir/.status.XXXXXX")
+  # Desktop apps first, mise tools after them, each in table order.
+  printf '%s\n' "${rows[@]}" | jq -s --argjson prev "$previous" --argjson order "$order" \
+    --argjson final "$final" --arg at "$at" --arg commit "$pkgs_commit" --arg perr "$pkgs_error" '
+    (map(.pkg)) as $done
+    | (if $final == 1 then .
+       else . + [$prev.apps[] | select(.pkg as $p | $done | index($p) | not) | .checking = ($final == 0)] end)
+    | sort_by([.source == "mise", (.pkg as $p | $order | index($p) // 1e9)])
+    | {checkedAt: $at, checking: ($final == 0), omarchyPkgs: {commit: $commit, error: $perr}, apps: .}' >"$out"
+  mv -f "$out" "$status_file"
+}
+
+write_status 0
 while IFS= read -r app; do
   pkg=$(jq -r '.pkg' <<<"$app")
   label=$(jq -r '.label // .pkg' <<<"$app")
@@ -174,14 +199,11 @@ while IFS= read -r app; do
       installed: $installed, latest: $latest, versionFrom: $versionFrom,
       updateAvailable: $update, installable: $installable, error: $error, note: $note,
       icon: $icon, iconLight: $iconLight}')")
-done < <(apps_table | jq -c '.[]')
+  write_status 0
+done < <(jq -c '.[]' <<<"$table")
 
-out=$(mktemp "$state_dir/.status.XXXXXX")
-# Desktop apps first, mise tools after them, each in table order.
-printf '%s\n' "${rows[@]}" | jq -s 'sort_by(.source == "mise")' | jq --arg at "$(date -Iseconds)" \
-  --arg commit "$pkgs_commit" --arg perr "$pkgs_error" \
-  '{checkedAt: $at, omarchyPkgs: {commit: $commit, error: $perr}, apps: .}' >"$out"
-mv -f "$out" "$status_file"
+write_status 1
+status_done=1
 
 out=$(mktemp "$state_dir/.notified.XXXXXX")
 jq . <<<"$notified" >"$out"

@@ -157,7 +157,9 @@ version schemes, so those rows ask the AUR.
 `bin/agent-apps-check` writes
 `~/.local/state/omarchy/plugins/io.github.vladkarok.agent-apps/status.json`.
 The widget runs it on a timer and watches that file, so a run from a terminal
-updates the panel too. `bin/agent-apps-install --dry-run <pkg>` prints what
+updates the panel too. The file is rewritten after every app: rows not checked
+yet keep their last result marked `"checking": true` and say "Checking…" in
+the panel. `bin/agent-apps-install --dry-run <pkg>` prints what
 Update would run and stops before building, downloading or installing.
 `<pkg>` may also be an installed package name (`z-code-bin`) or a mise tool
 name (`claude`).

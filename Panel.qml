@@ -175,7 +175,7 @@ Panel {
 
   function statusText(app) {
     if (!app) return ""
-    if (checker.checking) return "Checking…"
+    if (app.checking === true) return "Checking…"
     var note = String(app.note || "")
     if (String(app.error || "") !== "") return "Check failed: " + app.error
     if (app.updateAvailable === true && app.installable !== true) return note !== "" ? note : "No update path"
