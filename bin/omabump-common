@@ -353,7 +353,8 @@ user_command_version() {
 }
 
 # Prints the newest version the app's own feed advertises. Feeds are data:
-# nothing fetched is ever run. Every fetch is checked on its own: a failed or
+# nothing fetched is ever run (a command feed is the user's own code, see
+# user_command_version). Every fetch is checked on its own: a failed or
 # cut-off download is an error, never a version. With $feed_save set, the
 # fetched document is also written to that file (vendor_checksum reads it).
 feed_version() {

@@ -8,8 +8,10 @@
 set -uo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-scratch=$(mktemp -d)
-trap 'rm -rf "$scratch"' EXIT
+# Scratch space inside the checkout, never the system temp directory.
+mkdir -p "$root/.tests"
+scratch=$(mktemp -d -p "$root/.tests")
+trap 'rm -rf "$scratch"; rmdir "$root/.tests" 2>/dev/null' EXIT
 export XDG_CONFIG_HOME=$scratch/config XDG_STATE_HOME=$scratch/state XDG_CACHE_HOME=$scratch/cache
 mkdir -p "$XDG_CONFIG_HOME/omarchy/omabump" "$scratch/served"
 

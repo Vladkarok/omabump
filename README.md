@@ -69,6 +69,7 @@ were announced). Remove them with:
 rm -rf ~/.cache/omabump
 rm -rf ~/.local/state/omarchy/plugins/io.github.vladkarok.omabump
 rm -rf ~/.config/omarchy/omabump   # only if you created overrides
+sudo rm -rf /var/cache/omabump     # only after a failed install left a staged package
 ```
 
 Packages Omabump installed stay installed; pacman manages them like any other.
@@ -138,9 +139,10 @@ over HTTPS, and verifies it against the sha512 the vendor lists for that exact
 file in its update manifest. It refuses if the manifest has no checksum for
 the file, and deletes a file that does not match. Then `pacman -Qp` checks the
 package name and full version, the installed version is read again, and only
-then does `sudo pacman -U` run, after pacman asks. pacman does not fetch the URL itself because
-it would check a remote file against `SigLevel = Required`, and the vendor
-does not sign the package.
+then is the file staged and installed with `sudo pacman -U`, after pacman
+asks. pacman does not fetch the URL itself because it would check a remote
+file against `SigLevel = Required`, and the vendor does not sign the
+package.
 
 **mise.** Update runs `mise up <tool>` in `$HOME`. The check asked
 `mise outdated` what that command can reach, so the configured request and
@@ -175,17 +177,54 @@ builds; on vendor rows it downloads and verifies the package and stops before
 
 | Step | What runs | As whom |
 |---|---|---|
-| Background check (timer, Refresh) | curl of the feeds above; git fetch of the pinned omarchy-pkgs commit; recipes read as text with `git show` | you; nothing fetched executes |
+| Background check (timer, Refresh) | curl of the feeds above; git fetch of the pinned omarchy-pkgs commit; recipes read as text with `git show`; `mise ls` and `mise outdated` for the listed tools; your own `command` feeds | you |
 | Update, omarchy row | `bin/sync-upstream` and the recipe's upstream hook from the pinned commit, then makepkg and the PKGBUILD | you; sudo for missing build dependencies |
-| Update, vendor row | download, sha512 check against the vendor manifest, `pacman -Qp` | you |
-| Install of any built or vendor package | `pacman -U`, the package's install script, pacman hooks | root |
+| Update, vendor row | download, digest check against the vendor's published list, `pacman -Qp` | you |
+| Install of any built or vendor package | `sudo install` into `/var/cache/omabump`, `pacman -U` on that copy, the package's install script, pacman hooks | root |
 | Update, mise row | `mise up` and the tool's backend | you |
 | Ask agent | whatever your default agent decides to run | the permissions `omarchy-agent` gives it |
 
-Every download is HTTPS only, redirects included, with connect and total time
-limits. git fetches, `bin/sync-upstream` and mise calls run under
-`timeout -k`. Locks and temporary files live under `~/.cache/omabump` and
-`~/.local/state`, never in `/tmp`.
+What each guarantee covers, exactly:
+
+- **No fetched code in the background check.** Feeds and recipes are parsed
+  as text; nothing Omabump downloads is executed. Two things in the check do
+  run code that is not Omabump's: `mise outdated` may run a tool backend's
+  own scripts (asdf and vfox plugins) while it resolves versions, and a
+  `command` feed in your own `apps.json` is your code. The shipped table has
+  no command feeds. The whole check runs under `timeout -k 10 600`.
+- **HTTPS only.** Omabump's own downloads allow only HTTPS, redirects
+  included, with connect, total-time and size limits (8 MB for a feed, 4 GB
+  for a package). Code from omarchy-pkgs that Update runs is held to the same
+  rule from outside: `bin/sync-upstream` and its hooks run with `CURL_HOME`
+  pointing at a generated `.curlrc` (`proto = "=https"`,
+  `proto-redir = "=https"`, time and size limits), and makepkg runs with a
+  generated `--config` that sources your makepkg configuration and replaces
+  `DLAGENTS` with an HTTPS-only curl (`http`, `ftp`, `scp` and `rsync`
+  sources fail). A hook that bypasses curl is not covered.
+  `bin/sync-upstream` gets `TMPDIR` under `~/.cache/omabump/scratch` and runs
+  without the maintainer-only `BYPASS_MIN_RELEASE_AGE`.
+- **Checksums are integrity, not authenticity.** The vendor package's digest
+  comes from the vendor's own unsigned manifest or list over HTTPS. It
+  catches a corrupted or swapped download on the way (transport, CDN), not a
+  compromised vendor. The omarchy route likewise takes its hashes from the
+  vendor's unsigned index through `bin/sync-upstream`; voxtype is the
+  exception, its recipe checks a signed `.asc`.
+- **pacman asks before it installs.** Both installs run plain
+  `sudo pacman -U`, so pacman shows the package and asks "Proceed with
+  installation?". sudo may not ask for a password at all (a cached
+  credential, or makepkg's own `sudo pacman -S` a moment earlier), so the
+  pacman prompt is the point where you can still stop.
+- **What is printed before pacman is inert.** Install scripts and the recipe
+  diff go through a filter that shows ESC as `^[` and drops other control
+  characters, so they cannot drive the terminal.
+- **git and limits.** git runs with hooks, fsmonitor, automatic gc and
+  maintenance off and only the `https` protocol allowed; git fetches,
+  `bin/sync-upstream` and mise calls run under `timeout -k`. Names from
+  `apps.json` and `pins.json` (packages, mise tools, git refs) are checked
+  before any of them reaches pacman, git, mise or a file name.
+- **Temporary files.** Locks and temporary files live under
+  `~/.cache/omabump` and `~/.local/state`, never in the system temp
+  directory.
 
 Before `pacman -U`, the verified package (the vendor download or the
 makepkg output) is copied with `sudo install` into the root-owned
@@ -203,16 +242,20 @@ replaces it with the repo package once the repo's full version is higher, and
 
 Omabump uses sudo for one thing: installing a package after you pressed
 Update or Switch, in a visible terminal. It copies the verified file into
-`/var/cache/omabump` (`sudo install`), runs `sudo pacman -U` on that copy and
-removes it (`sudo rm`). sudo may not ask for a password (a cached
-credential, or makepkg's own `sudo pacman -S` a moment earlier), but pacman
-always asks before it installs.
+`/var/cache/omabump` (`sudo install`), runs `sudo pacman -U` on that copy,
+where pacman asks before it installs, and removes the copy (`sudo rm`).
 makepkg also calls `sudo pacman -S --asdeps` when a recipe's build
 dependencies are missing. What runs as root is pacman, the package's install
-script and pacman's hooks. Omabump never edits sudoers, never installs from
-the background check, and writes nothing outside `~/.cache/omabump`,
-`~/.local/state/omarchy/plugins/io.github.vladkarok.omabump` and the
-packages pacman installs.
+script and pacman's hooks. Omabump never changes sudo configuration and
+never installs from the background check.
+
+Omabump itself writes to `~/.cache/omabump`,
+`~/.local/state/omarchy/plugins/io.github.vladkarok.omabump`,
+`/var/cache/omabump` (the staged package, through sudo) and, when you change
+a setting, Omarchy's `~/.config/omarchy/shell.json`. Beyond that, pacman
+installs packages, `mise up` (and `mise outdated`) may write under
+`~/.local/share/mise`, and `bin/sync-upstream`, its hooks and your own
+`command` feeds can write wherever your user can.
 
 The marketplace's static security baseline will report these capabilities,
 all expected:
@@ -223,9 +266,12 @@ all expected:
 - `remote-build`: makepkg builds the omarchy-pkgs recipe at the pinned commit
 
 The two baseline findings that apply to this kind of plugin are addressed:
-omarchy-pkgs code runs only from a pinned 40-hex commit checked out detached,
-and the vendor package is verified against the vendor's published sha512
-before pacman sees it.
+omarchy-pkgs code runs only from a pinned 40-hex commit checked out detached
+(the clone fetches that commit by its SHA, never a branch), and the vendor
+package is verified against the vendor's published digest before pacman
+sees it. Following master instead is an explicit opt-in (Pinned snapshots),
+and pinning the recipe code does not authenticate the vendor payload it
+downloads; see the checksum note above.
 
 ## Settings
 

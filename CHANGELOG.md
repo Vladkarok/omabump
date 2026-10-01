@@ -43,3 +43,37 @@ Hardening before release:
   yields two digests and a failed checksum.
 - `tests/run.sh` (plain bash, no network) and a CI workflow running
   `bash -n`, `jq`, shellcheck and the tests.
+- pacman always asks before it installs: neither `pacman -U` passes
+  `--noconfirm`. The verified package is copied into the root-owned
+  `/var/cache/omabump`, checked again there and installed from that copy, so
+  it cannot be swapped between verification and install. `--prepare` prints
+  these steps and calls no sudo.
+- `bin/sync-upstream` and its hooks run with an HTTPS-only `.curlrc`
+  (`CURL_HOME`), `TMPDIR` under the cache and without the release-age bypass
+  variables; makepkg runs with a generated config whose `DLAGENTS` allow
+  only HTTPS, with time and size limits.
+- `mise outdated` is asked about the listed, installed tools only;
+  `MISE_HIDE_UPDATE_WARNING=1` for every mise call.
+- Limits: feeds are capped at 8 MB and the vendor package at 4 GB, apt
+  indexes count at most 500 matching stanzas and validate each version
+  before `vercmp`, versions must start with a letter or digit, hold no `..`
+  and stay within 64 characters (`full_version_ok` for pacman versions), and
+  the shell runs the check under `timeout -k 10 600`.
+- Package, installed, mise tool and git ref names from `apps.json` and
+  `pins.json` are validated; bad entries are dropped with a message, and
+  refs reach `git fetch` after `--`.
+- git runs without hooks, fsmonitor, automatic gc or maintenance and with
+  the `https` protocol only. The omarchy-pkgs clone fetches the pinned
+  commit by SHA into an empty repo and is made again when its origin
+  differs. Children (git, mise, sync-upstream, makepkg, sudo, command
+  feeds) do not inherit the lock fds.
+- Install scripts and the recipe diff shown before pacman have terminal
+  escapes neutralised; the diff is printed without colour.
+- The panel clamps the interval to 60 s to 1 day, throttles IPC `refresh`
+  to once a minute, and loads icons only from the plugin directory.
+- `&` in status text is replaced for notify-send markup, and large JSON
+  reaches jq through `--slurpfile` instead of the command line.
+- The README states each guarantee exactly: what the background check runs
+  (mise backends, your own command feeds), where HTTPS-only applies, that a
+  checksum proves integrity and not vendor authenticity, and where
+  Omabump and the tools it runs write.

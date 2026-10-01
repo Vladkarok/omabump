@@ -83,7 +83,7 @@ mkdir -p "$PKGDEST" "$SRCDEST" "$BUILDDIR"
 #                             makepkg's own order, with DLAGENTS replaced
 # Both are 0600. sync-upstream also gets its own TMPDIR under the cache.
 write_download_policy() {
-  mkdir -p "$cache_dir/curl" "$cache_dir/tmp"
+  mkdir -p "$cache_dir/curl" "$cache_dir/scratch"
   (umask 077
    cat >"$cache_dir/curl/.curlrc" <<'EOF'
 proto = "=https"
@@ -359,7 +359,7 @@ install_omarchy() {
   # maintainer-only release-age bypass never reaches it.
   write_download_policy
   (cd "$pkgs_dir" && run_unlocked env -u BYPASS_MIN_RELEASE_AGE -u MIN_RELEASE_AGE_SECONDS \
-     CURL_HOME="$cache_dir/curl" TMPDIR="$cache_dir/tmp" \
+     CURL_HOME="$cache_dir/curl" TMPDIR="$cache_dir/scratch" \
      timeout -k 10 900 bin/sync-upstream "$pkg") </dev/null || die "bin/sync-upstream $pkg failed"
 
   echo
