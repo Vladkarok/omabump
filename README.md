@@ -56,6 +56,10 @@ omarchy plugin add https://github.com/vladkarok/omabump.git --enable
 
 `omarchy plugin add` asks for confirmation; from a script pass `--yes`.
 
+### Updating Omabump
+
+`omarchy update` updates Omarchy and your packages, not plugins. So Omabump checks its own GitHub release too: when a newer one exists, the panel shows a PLUGIN section with an Omabump row (hidden while it is current). Update runs `omarchy plugin update io.github.vladkarok.omabump --yes` in a terminal, which fetches the plugin clone's origin, fast-forwards it, validates the manifest and reloads the shell's plugins; if the panel still shows the old version, `omarchy restart shell`. That command installs the repository's current HEAD, not the release the row named: Omarchy's installer does not enforce the marketplace's verified snapshot. A plugin directory that is a symlink or has no `.git` (a developer checkout) shows "Local checkout, update it with git" and no Update button. Mute and skip work on this row too (`self:omabump`).
+
 The widget lands in the bar's right section. Move it with `omarchy bar move io.github.vladkarok.omabump --section center --index 0` (sections: left, center, right).
 
 ## Remove
@@ -92,7 +96,7 @@ The background check (every 15 minutes by default) fetches version feeds:
 - `persistent.oaistatic.com` (Codex apt index)
 - `packages.perplexity.ai` (Perplexity apt index)
 - `downloads.cursor.com` (Grok apt index)
-- `github.com` (`/releases/latest` redirects for T3 Code, Hermes, voxtype; the omarchy-pkgs clone)
+- `github.com` (`/releases/latest` redirects for T3 Code, Hermes, voxtype and Omabump itself; the omarchy-pkgs clone)
 - `registry.npmjs.org` (OpenClaw)
 - `lmstudio.ai` (LM Studio download page)
 - `zcode.z.ai` (ZCode update manifest)

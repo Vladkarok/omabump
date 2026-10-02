@@ -24,9 +24,11 @@ Panel {
   readonly property var apps: checker.apps
   // Desktop apps first, then the mise CLIs: the keyboard cursor walks
   // this order across both sections.
-  readonly property var desktopApps: apps.filter(function(app) { return app.source !== "mise" })
+  readonly property var desktopApps: apps.filter(function(app) { return app.source !== "mise" && app.source !== "self" })
   readonly property var cliApps: apps.filter(function(app) { return app.source === "mise" })
-  readonly property var orderedApps: desktopApps.concat(cliApps)
+  // Omabump's own row, only while a newer release exists.
+  readonly property var pluginApps: apps.filter(function(app) { return app.source === "self" && app.updateAvailable === true })
+  readonly property var orderedApps: desktopApps.concat(cliApps).concat(pluginApps)
   readonly property int updateCount: checker.updateCount
   readonly property bool iconOnlyWithUpdates: settings && settings.barIconOnlyWithUpdates === true
 
@@ -94,7 +96,8 @@ Panel {
 
   function rowItem(index) {
     if (index < desktopApps.length) return desktopRepeater.itemAt(index)
-    return cliRepeater.itemAt(index - desktopApps.length)
+    if (index < desktopApps.length + cliApps.length) return cliRepeater.itemAt(index - desktopApps.length)
+    return pluginRepeater.itemAt(index - desktopApps.length - cliApps.length)
   }
 
   // Keeps the keyboard cursor on screen when the list scrolls.
@@ -248,7 +251,7 @@ Panel {
   // recipe without a watch, or a feed that failed with a newer version known.
   // Or a mise tool whose request holds it below a newer release.
   function askable(app) {
-    if (!app || app.installable === true) return false
+    if (!app || app.installable === true || app.source === "self") return false
     if (app.updateAvailable === true) return true
     return app.source === "mise" && String(app.error || "") === ""
       && String(app.latest || "") !== "" && app.latest !== app.installed
@@ -402,6 +405,9 @@ Panel {
       lines.push("Newest " + app.latest + (from !== "" ? " from " + from : ""))
     }
     if (app.source === "mise") lines.push("Updates with mise up")
+    else if (app.source === "self") lines.push(app.installable === true
+      ? "Updates with omarchy plugin update, which installs the repository's current HEAD"
+      : "omarchy update does not update plugins")
     else if (app.source === "omarchy") {
       var commit = String(app.recipeCommit || checker.pkgsCommit || "")
       lines.push("Updates through Omarchy's recipe"
@@ -667,7 +673,7 @@ Panel {
             spacing: Style.space(12)
 
             Column {
-              visible: !root.settingsOpen && root.apps.length === 0
+              visible: !root.settingsOpen && root.desktopApps.length + root.cliApps.length === 0
               width: parent.width
               topPadding: Style.space(24)
               bottomPadding: Style.space(24)
@@ -757,6 +763,43 @@ Panel {
                     width: parent.width
                     app: modelData
                     rowIndex: root.desktopApps.length + index
+                  }
+                }
+              }
+            }
+
+            PanelSeparator {
+              visible: !root.settingsOpen && root.pluginApps.length > 0 && root.desktopApps.length + root.cliApps.length > 0
+              foreground: root.foreground
+            }
+
+            // omarchy update does not update plugins, so Omabump says when
+            // a newer release of itself exists.
+            Column {
+              visible: !root.settingsOpen && root.pluginApps.length > 0
+              width: parent.width
+              spacing: Style.space(10)
+
+              PanelSectionHeader {
+                text: "PLUGIN"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+              }
+
+              Column {
+                width: parent.width
+                spacing: Style.spacing.xxs
+
+                Repeater {
+                  id: pluginRepeater
+                  model: root.pluginApps
+
+                  AppRow {
+                    required property var modelData
+                    required property int index
+                    width: parent.width
+                    app: modelData
+                    rowIndex: root.desktopApps.length + root.cliApps.length + index
                   }
                 }
               }

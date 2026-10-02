@@ -9,6 +9,7 @@
 - The panel footer and the bar tooltip say when agent discovery failed.
 - Mute a row (`m`): it stays in the list, dimmed, with no badge, count or notification until unmuted; Update still works. Stored in the widget setting `mutedApps`.
 - Skip a version (`K`): that version stops counting and notifying; a newer one lights the row up again and is announced once. Stored in `skippedVersions`.
+- Omabump checks its own GitHub release, since `omarchy update` does not update plugins. A newer one shows in a PLUGIN section; Update runs `omarchy plugin update io.github.vladkarok.omabump --yes`. A symlinked or non-git checkout says "Local checkout, update it with git".
 
 ## 0.1.0 (2026-10-01)
 

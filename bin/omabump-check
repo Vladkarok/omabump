@@ -112,7 +112,8 @@ write_status() {
   at=$(jq -r '.checkedAt // ""' <<<"$previous")
   (( final == 1 )) && at=$(date -Iseconds)
   out=$(mktemp "$state_dir/.status.XXXXXX")
-  # Desktop apps first, mise tools after them, each in table order.
+  # Desktop apps first, mise tools after them, each in table order, then
+  # Omabump itself.
   printf '%s\n' "${rows[@]}" | jq -s --slurpfile prevs "$tmp/previous.json" --argjson order "$order" \
     --argjson final "$final" --arg at "$at" --arg started "$started" \
     --arg commit "$pkgs_commit" --arg perr "$(clean_text "$pkgs_error")" --arg pnote "$(clean_text "$pkgs_note")" \
@@ -121,7 +122,7 @@ write_status() {
     | (map(.pkg)) as $done
     | (if $final == 1 then .
        else . + [$prev.apps[] | select(.pkg as $p | $done | index($p) | not) | .checking = ($final == 0)] end)
-    | sort_by([.source == "mise", (.pkg as $p | $order | index($p) // 1e9)])
+    | sort_by([.source == "self", .source == "mise", (.pkg as $p | $order | index($p) // 1e9)])
     | {checkedAt: $at, checking: ($final == 0), startedAt: $started,
        omarchyPkgs: {commit: $commit, following: ($following == 1), error: $perr, note: $pnote},
        discoveryError: $derr, apps: .}' >"$out"
@@ -162,6 +163,11 @@ while IFS= read -r app; do
       else
         installable=true
       fi ;;
+    self)
+      # omarchy update does not update plugins; omarchy plugin update does,
+      # for a git clone.
+      if self_git_managed; then installable=true
+      else note="Local checkout, update it with git"; fi ;;
     indicator)
       note="No supported install path"
       [[ $(jq -r '.feed.type // ""' <<<"$app") == aur-rpc ]] && note+=", version from AUR" ;;
@@ -276,7 +282,7 @@ while IFS= read -r app; do
       request: $request, muted: $muted, skipped: $skipped,
       icon: $icon, iconLight: $iconLight}')")
   write_status 0
-done < <(jq -c '.[]' <<<"$table")
+done < <(jq -c '.[]' <<<"$table"; echo "$self_app")
 
 write_status 1
 status_done=1

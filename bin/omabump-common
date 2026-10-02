@@ -31,12 +31,28 @@ pkgs_lock=$cache_dir/omarchy-pkgs.lock
 shipped_pins=$plugin_dir/pins.json
 user_pins=${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/omabump/pins.json
 
+# Omabump's own row ("self:omabump"): the installed version is this copy's
+# manifest.json, the newest one the GitHub release. `omarchy plugin update`
+# can update it only when the plugin directory is a git clone of its own,
+# as `omarchy plugin add` leaves it; a symlink or a copy without .git is a
+# developer checkout.
+self_pkg=self:omabump
+self_plugin_id=io.github.vladkarok.omabump
+plugins_dir=$HOME/.config/omarchy/plugins
+self_app='{"pkg": "self:omabump", "label": "Omabump", "source": "self", "feed": {"type": "github-release", "repo": "vladkarok/omabump"}}'
+self_version() { jq -r '.version // ""' "$plugin_dir/manifest.json" 2>/dev/null; }
+self_git_managed() {
+  local dir=$plugins_dir/$self_plugin_id
+  [[ ! -L $dir && -d $dir/.git ]] || return 1
+  [[ $(cd "$dir" && pwd -P) == "$(cd "$plugin_dir" && pwd -P)" ]]
+}
+
 # Names that reach pacman, file names, git and mise. A package name as Arch
 # allows it, never starting with a dot or dash; an app id is that or, for a
 # mise row, "mise:<name>"; a mise tool may also carry a backend prefix and a
 # scope (npm:@scope/name); a git ref sits under refs/. None may hold "..".
 pkg_name_ok() { [[ $1 =~ ^[a-z0-9@_+][a-z0-9@._+-]*$ ]]; }
-app_id_ok() { pkg_name_ok "$1" || { [[ $1 == mise:* ]] && pkg_name_ok "${1#mise:}"; }; }
+app_id_ok() { pkg_name_ok "$1" || { [[ $1 == mise:* ]] && pkg_name_ok "${1#mise:}"; } || [[ $1 == "$self_pkg" ]]; }
 tool_name_ok() { [[ $1 =~ ^[A-Za-z0-9@_+:][A-Za-z0-9@._+:/-]*$ && $1 != *..* ]]; }
 ref_ok() { [[ $1 =~ ^refs/[A-Za-z0-9._/-]+$ && $1 != *..* ]]; }
 # The same rules as jq definitions, for apps_table.
@@ -425,6 +441,10 @@ installed_app() {
   source=$(jq -r '.source // ""' <<<"$app")
   if [[ $source == mise ]]; then
     line=$(mise_active "$app") || return 1
+  elif [[ $source == self ]]; then
+    line=$(self_version)
+    version_ok "$line" || return 1
+    line="omabump $line"
   else
     mapfile -t names < <(jq -r '(.installed // [.pkg])[]' <<<"$app")
     line=$(installed_package "${names[@]}") || return 1

@@ -12,6 +12,8 @@
 #               app's feed advertises, installed with pacman -U.
 #   mise        mise up <tool>.
 #
+#   self        Omabump itself: omarchy plugin update.
+#
 #   omabump-install [--prepare] [--switch] <pkg>
 #
 # --switch replaces an app installed under another package name
@@ -44,8 +46,12 @@ pkg=${1:?usage: omabump-install [--prepare] [--switch] <pkg>}
 die() { echo "omabump: $*" >&2; exit 1; }
 command -v jq >/dev/null || die "jq is missing; install it with: sudo pacman -S --needed jq"
 
-load_table
-app=$(app_json "$pkg") || die "$pkg is not in the app table"
+if [[ $pkg == "$self_pkg" ]]; then
+  app=$self_app
+else
+  load_table
+  app=$(app_json "$pkg") || die "$pkg is not in the app table"
+fi
 pkg=$(jq -r .pkg <<<"$app")
 # The name becomes a lock file name below and reaches pacman and git.
 app_id_ok "$pkg" || die "'$pkg' is not a package name Omabump accepts"
@@ -485,7 +491,33 @@ install_mise() {
   target_version=$now
 }
 
+# Omabump itself, through Omarchy's plugin updater: it fetches the clone's
+# origin HEAD, fast-forwards, validates the manifest and rescans plugins.
+# The function exits, so nothing of this file is read after the update
+# replaced it.
+install_self() {
+  local latest cmd=(omarchy plugin update "$self_plugin_id" --yes)
+  self_git_managed || die "Omabump runs from a local checkout ($plugin_dir); update it with git"
+  command -v omarchy >/dev/null || die "the omarchy command is missing"
+  latest=$(feed_version "$app") || die "could not read Omabump's newest release"
+  echo "Newest release: $latest"
+  if ! newer "$latest" "$installed"; then
+    echo "Omabump $installed is the newest release."
+    exit 0
+  fi
+  echo "omarchy plugin update installs the repository's current HEAD, which can be ahead of $latest."
+  if (( prepare )); then
+    echo "Would run: ${cmd[*]}"
+    exit 0
+  fi
+  run_unlocked "${cmd[@]}" </dev/null || die "omarchy plugin update failed"
+  "$plugin_dir/bin/omabump-check" --no-notify || true
+  echo "Omarchy rescans its plugins now. If the panel still shows $installed, run: omarchy restart shell"
+  exit 0
+}
+
 case $source in
+  self) install_self ;;
   omarchy) install_omarchy ;;
   vendor-pkg) install_vendor_pkg ;;
   mise) install_mise ;;

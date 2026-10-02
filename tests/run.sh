@@ -393,6 +393,34 @@ same "skip: the skipped version is recorded, not notified" record "$(announce_ac
 same "skip: a newer release than the skipped one is notified once" send "$(announce_action true '' false 0.67.0 0.66.0)"
 same "skip: and not again" '' "$(announce_action true '' false 0.67.0 0.67.0)"
 
+# --- Omabump's own row ---------------------------------------------------------------
+
+check "app_id_ok: self:omabump" app_id_ok self:omabump
+refuse "app_id_ok: another self: id" app_id_ok self:other
+same "apps_table: a self: row from the user's file is dropped" '' \
+  "$(printf '[{"pkg": "self:omabump", "source": "indicator"}]' >"$user_apps"; apps_table 2>/dev/null | jq -r '.[] | select(.pkg == "self:omabump") | .pkg')"
+rm -f "$user_apps"
+same "installed_app: the self row reads manifest.json" "self omabump $(jq -r .version "$root/manifest.json")" "$(installed_app "$self_app")"
+echo '302 https://github.com/vladkarok/omabump/releases/tag/v0.2.0' >"$scratch/served/latest"
+same "the self row's newest version from the release redirect" 0.2.0 "$(feed_version "$self_app")"
+echo '404 ' >"$scratch/served/latest"
+refuse "the self row: no release is a feed error" feed_version "$self_app"
+rm -f "$scratch/served/latest"
+real_plugins=$plugins_dir real_plugin_dir=$plugin_dir
+plugins_dir=$scratch/plugins
+mkdir -p "$plugins_dir"
+ln -s "$root" "$plugins_dir/$self_plugin_id"
+refuse "self_git_managed: a symlinked checkout is local" self_git_managed
+rm "$plugins_dir/$self_plugin_id"
+mkdir -p "$plugins_dir/$self_plugin_id"
+plugin_dir=$plugins_dir/$self_plugin_id
+refuse "self_git_managed: a copy without .git is local" self_git_managed
+mkdir "$plugins_dir/$self_plugin_id/.git"
+check "self_git_managed: a git clone omarchy plugin add made" self_git_managed
+plugin_dir=$real_plugin_dir
+refuse "self_git_managed: only when it is the copy running" self_git_managed
+plugins_dir=$real_plugins
+
 # --- omabump-discover ----------------------------------------------------------
 
 disc=$scratch/discover
