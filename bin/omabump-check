@@ -12,7 +12,10 @@
 #   mise        `mise outdated`: what `mise up` would reach under the
 #               configured request, and what lies outside it (a pin).
 #
-#   omabump-check [--no-notify] [--no-mise] [--muted pkg,...] [--skipped pkg=version,...]
+#   omabump-check [--no-notify] [--no-mise]
+#
+# Muted rows and skipped versions come from the widget's settings in
+# Omarchy's shell.json (load_quiet), whoever runs the check.
 #
 # The shell runs it under `timeout -k 10 600` (Main.qml), so a hung feed or
 # tool cannot keep a check alive past ten minutes; the TERM trap below still
@@ -21,14 +24,12 @@ set -euo pipefail
 # shellcheck source=omabump-common
 source "$(dirname "$(readlink -f "$0")")/omabump-common"
 
-usage="usage: omabump-check [--no-notify] [--no-mise] [--muted pkg,...] [--skipped pkg=version,...]"
-notify=1 with_mise=1 muted_arg="" skipped_arg=""
+usage="usage: omabump-check [--no-notify] [--no-mise]"
+notify=1 with_mise=1
 while (( $# )); do
   case $1 in
     --no-notify) notify=0 ;;
     --no-mise) with_mise=0 ;;
-    --muted) (( $# > 1 )) || { echo "$usage" >&2; exit 2; }; muted_arg=$2; shift ;;
-    --skipped) (( $# > 1 )) || { echo "$usage" >&2; exit 2; }; skipped_arg=$2; shift ;;
     *) echo "$usage" >&2; exit 2 ;;
   esac
   shift
@@ -36,8 +37,7 @@ done
 # Muted rows (the panel's mutedApps setting) and rows at a version the user
 # skipped (skippedVersions) never notify; status.json still says the truth
 # about them, plus "muted" and "skipped".
-muted_json=$(parse_muted "$muted_arg" | jq -Rsc 'split("\n") | map(select(. != ""))')
-skipped_json=$(parse_skipped "$skipped_arg")
+load_quiet
 
 mkdir -p "$state_dir"
 # The shell timer and a hand run can overlap; the second one has nothing to add.
@@ -253,7 +253,7 @@ while IFS= read -r app; do
 
   announced=$(jq -r --arg pkg "$pkg" '.[$pkg] // ""' <<<"$notified")
   action=""
-  (( notify )) && action=$(announce_action "$update" "$error" "$quiet" "$latest" "$announced")
+  (( notify )) && action=$(announce_action "$source" "$update" "$error" "$quiet" "$latest" "$announced")
   if [[ $action == record ]]; then
     notified=$(jq -c --arg pkg "$pkg" --arg v "$latest" '.[$pkg] = $v' <<<"$notified")
     save_notified

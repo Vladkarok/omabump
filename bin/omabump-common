@@ -64,59 +64,77 @@ jq_name_rules='
     and ((.installed // []) | type == "array" and all(.[]; pkg_ok))
     and ([.tool // empty] | flatten | all(.[]; tool_ok));'
 
-# The rows the user muted in the panel (widget setting mutedApps), passed
-# as --muted pkg1,pkg2. Prints the valid ids, one per line; an id
-# app_id_ok refuses is dropped with a line on stderr.
-parse_muted() {
-  local id ids=()
-  IFS=, read -ra ids <<<"$1"
-  for id in "${ids[@]}"; do
-    [[ -n $id ]] || continue
-    if app_id_ok "$id"; then echo "$id"; else echo "ignoring muted id '$id'" >&2; fi
-  done
-}
-
 # A version as mise or a feed prints it, for a skipped version: what
-# version_ok allows plus "-" (mise versions such as 1.0.0-beta.1).
+# version_ok allows plus "-" (mise versions such as 1.0.0-beta.1). Panel.qml
+# checks the same rule before it stores a skip.
 skip_version_ok() { [[ ${#1} -le 64 && $1 =~ ^[0-9A-Za-z][A-Za-z0-9._+~-]*$ && $1 != *..* ]]; }
 
-# The versions the user skipped in the panel (widget setting
-# skippedVersions), passed as --skipped pkg=version,... Prints them as a JSON
-# object; an entry with a bad id or version is dropped with a line on stderr.
-parse_skipped() {
-  local entry entries=() pkg ver out='{}'
-  IFS=, read -ra entries <<<"$1"
-  for entry in "${entries[@]}"; do
-    [[ -n $entry ]] || continue
-    pkg=${entry%%=*} ver=${entry#*=}
-    if [[ $entry == *=* ]] && app_id_ok "$pkg" && skip_version_ok "$ver"; then
-      out=$(jq -c --arg p "$pkg" --arg v "$ver" '.[$p] = $v' <<<"$out")
-    else
-      echo "ignoring skipped entry '$entry'" >&2
-    fi
-  done
-  echo "$out"
+# The rows the user muted (widget setting mutedApps, an array of pkg ids) and
+# the versions the user skipped (skippedVersions, an object of pkg id to
+# version), read from the widget's entry in Omarchy's shell.json: the one with
+# the plugin's id in bar.layout.left/center/right or in the top-level
+# plugins list. The checker reads them itself, so every run (the shell's
+# timer, a terminal, the installer's refresh) honours them. Sets muted_json
+# (an array) and skipped_json (an object). The file is read only up to
+# 1 MiB, each setting only up to 200 entries, and an id or version the rules
+# above refuse is dropped with a line on stderr; nothing else in the file is
+# used.
+shell_json=$HOME/.config/omarchy/shell.json
+muted_json='[]' skipped_json='{}'
+quiet_max=200
+load_quiet() {
+  local entry size ids=() pairs=() id ver
+  muted_json='[]' skipped_json='{}'
+  [[ -f $shell_json ]] || return 0
+  size=$(head -c 1048577 -- "$shell_json" 2>/dev/null | wc -c)
+  (( size <= 1048576 )) || { echo "ignoring $shell_json: larger than 1 MiB" >&2; return 0; }
+  entry=$(head -c 1048576 -- "$shell_json" | jq -c --arg id "$self_plugin_id" --argjson max "$quiet_max" '
+    [(.bar?.layout? | objects | (.left, .center, .right) | arrays | .[]), (.plugins? | arrays | .[])]
+    | map(objects | select(.id == $id))[0] // {}
+    | {muted: [.mutedApps | arrays | .[] | strings], skipped: [.skippedVersions | objects | to_entries[] | select(.value | type == "string")]}
+    | (if (.muted | length) > $max or (.skipped | length) > $max then "more than \($max) muted or skipped entries; using the first \($max)" else "" end) as $cap
+    | {muted: .muted[:$max], skipped: .skipped[:$max], cap: $cap}' 2>/dev/null) \
+    || { echo "ignoring $shell_json: not JSON" >&2; return 0; }
+  [[ -z $(jq -r .cap <<<"$entry") ]] || echo "$shell_json: $(jq -r .cap <<<"$entry")" >&2
+  while IFS= read -r id; do
+    if app_id_ok "$id"; then ids+=("$id"); else echo "ignoring muted id $(jq -Rc . <<<"$id")" >&2; fi
+  done < <(jq -r '.muted[] | select(test("\n") | not)' <<<"$entry")
+  while IFS=$'\t' read -r id ver; do
+    if app_id_ok "$id" && skip_version_ok "$ver"; then pairs+=("$id"$'\t'"$ver")
+    else echo "ignoring skipped entry $(jq -Rc . <<<"$id=$ver")" >&2; fi
+  done < <(jq -r '.skipped[] | select((.key + .value) | test("[\t\n]") | not) | "\(.key)\t\(.value)"' <<<"$entry")
+  (( ${#ids[@]} )) && muted_json=$(printf '%s\n' "${ids[@]}" | jq -Rsc 'split("\n") | map(select(. != "")) | unique')
+  (( ${#pairs[@]} )) && skipped_json=$(printf '%s\n' "${pairs[@]}" | jq -Rnc '[inputs | split("\t") | {(.[0]): .[1]}] | add // {}')
+  return 0
 }
 
-# True when a row's update is the version the user skipped, or older: mise
-# versions must match exactly (mise compares them, not vercmp), the others
-# compare with vercmp. A newer release than the skipped one lights the row
-# up again. $1 source, $2 update (true/false), $3 latest, $4 skipped version.
+# Versions mise or Omabump's release feed print are compared as strings: mise
+# decides what is newer there, and vercmp would call 1.0.0 and 1.0.0-beta.1
+# equal. Every other source compares with vercmp.
+string_versions() { [[ $1 == mise || $1 == self ]]; }
+
+# True when a row's update is the version the user skipped, or (vercmp
+# sources) older. A newer release than the skipped one lights the row up
+# again. $1 source, $2 update (true/false), $3 latest, $4 skipped version.
 row_skipped() {
   [[ $2 == true && -n $4 && -n $3 ]] || return 1
-  if [[ $1 == mise ]]; then [[ $3 == "$4" ]]; else ! newer "$3" "$4"; fi
+  if string_versions "$1"; then [[ $3 == "$4" ]]; else ! newer "$3" "$4"; fi
 }
 
 # What to do about a row's newer version once per version: "send" a
 # notification, "record" it as announced without one (a quiet row: muted, or
 # at a skipped version; undoing either does not announce it late), or
-# nothing (no update, a failed check, or already announced). $1 update
-# (true/false), $2 error text, $3 quiet (true/false), $4 latest, $5 the
-# version last announced.
+# nothing (no update, a failed check, or already announced). "Not announced
+# yet" is a different string for mise and self rows, a newer vercmp version
+# for the others. $1 source, $2 update (true/false), $3 error text, $4 quiet
+# (true/false), $5 latest, $6 the version last announced.
 announce_action() {
-  [[ $1 == true && -z $2 ]] || return 0
-  [[ -z $5 ]] || newer "$4" "$5" || return 0
-  if [[ $3 == true ]]; then echo record; else echo send; fi
+  [[ $2 == true && -z $3 ]] || return 0
+  if [[ -n $6 ]]; then
+    if string_versions "$1"; then [[ $5 != "$6" ]] || return 0
+    else newer "$5" "$6" || return 0; fi
+  fi
+  if [[ $4 == true ]]; then echo record; else echo send; fi
 }
 
 # The omarchy-pkgs commit every recipe read, sync and build starts from:

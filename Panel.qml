@@ -52,11 +52,15 @@ Panel {
   readonly property int intervalRow: 0
   // The "Muted: …" line with its Clear button, after the toggles, when any.
   readonly property int quietRow: settingRows.length + 1
+  // Only rows the last check listed: a mute or skip for a row hidden by Show
+  // mise tools (or not installed now) is kept but not shown.
   readonly property string quietText: {
     var names = []
-    for (var i = 0; i < checker.mutedApps.length; i++) names.push(appName(checker.mutedApps[i]))
+    for (var i = 0; i < checker.mutedApps.length; i++)
+      if (listed(checker.mutedApps[i])) names.push(appName(checker.mutedApps[i]))
     var skips = []
-    for (var pkg in checker.skippedVersions) skips.push(appName(pkg) + " " + checker.skippedVersions[pkg])
+    for (var pkg in checker.skippedVersions)
+      if (listed(pkg)) skips.push(appName(pkg) + " " + checker.skippedVersions[pkg])
     var parts = []
     if (names.length > 0) parts.push("Muted: " + names.join(", "))
     if (skips.length > 0) parts.push("Skipped: " + skips.join(", "))
@@ -118,6 +122,11 @@ Panel {
     if (panelFlick) panelFlick.contentY = 0
   }
 
+  function listed(pkg) {
+    for (var i = 0; i < checker.apps.length; i++) if (checker.apps[i].pkg === pkg) return true
+    return false
+  }
+
   // A row's label by pkg, from the last check, else the pkg itself.
   function appName(pkg) {
     for (var i = 0; i < checker.apps.length; i++)
@@ -159,13 +168,16 @@ Panel {
     setSettings(changes)
   }
 
-  // A skip is stale once the row's newest version is past it.
+  // A skip is stale once the row has an update the checker no longer calls
+  // skipped (its newest version moved past the skip). A skip made since the
+  // last check matches the newest version exactly and stays. Skips for rows
+  // the check did not list stay too.
   function liveSkips(skips) {
     var out = {}
     for (var pkg in skips) {
       var app = null
       for (var i = 0; i < checker.apps.length; i++) if (checker.apps[i].pkg === pkg) app = checker.apps[i]
-      var stale = !!app && app.updateAvailable === true && app.latest !== skips[pkg] && app.skipped !== true
+      var stale = !!app && app.updateAvailable === true && app.skipped !== true && app.latest !== skips[pkg]
       if (!stale) out[pkg] = skips[pkg]
     }
     return out
@@ -203,9 +215,18 @@ Panel {
     for (var pkg in checker.skippedVersions) if (pkg !== app.pkg) skips[pkg] = checker.skippedVersions[pkg]
     if (!checker.isSkipped(app)) {
       if (app.updateAvailable !== true || String(app.latest || "") === "") return
+      if (!skipVersionOk(String(app.latest))) {
+        setActionNote(app.pkg, "Cannot skip " + app.latest + ": not a version Omabump stores")
+        return
+      }
       skips[app.pkg] = app.latest
     }
     setSetting("skippedVersions", skips)
+  }
+
+  // skip_version_ok in bin/omabump-common: the checker drops anything else.
+  function skipVersionOk(v) {
+    return v.length <= 64 && /^[0-9A-Za-z][A-Za-z0-9._+~-]*$/.test(v) && v.indexOf("..") === -1
   }
 
   function clearQuiet() {

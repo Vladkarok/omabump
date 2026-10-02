@@ -359,39 +359,69 @@ reset_mise
 shipped_apps=$real_shipped
 app_table=""
 
-# --- mute, notifications ---------------------------------------------------------
+# --- mute and skip settings, read from shell.json ------------------------------------
 
-same "parse_muted: valid ids kept, bad ones dropped" $'mise:grok-cli\nclaude-desktop' \
-  "$(parse_muted 'mise:grok-cli,,../x,claude-desktop,-y,mise:../z' 2>/dev/null)"
-same "parse_muted: each dropped id is named on stderr" 3 "$(parse_muted '../x,-y,mise:../z' 2>&1 >/dev/null | grep -c '^ignoring muted id')"
-same "parse_muted: nothing given, nothing kept" '' "$(parse_muted '')"
-same "announce_action: a new version is sent" send "$(announce_action true '' false 1.1 1.0)"
-same "announce_action: a version already announced is not" '' "$(announce_action true '' false 1.1 1.1)"
-same "announce_action: a muted row records it without a notification" record "$(announce_action true '' true 1.1 '')"
-same "announce_action: a muted row's recorded version stays quiet after unmuting" '' "$(announce_action true '' false 1.1 1.1)"
-same "announce_action: a failed check announces nothing" '' "$(announce_action true 'feed failed' false 1.1 '')"
-same "announce_action: no update, nothing" '' "$(announce_action false '' false 1.1 '')"
+shell_json=$scratch/shell.json
+quiet() { load_quiet 2>/dev/null; echo "$muted_json $skipped_json"; }
+cat >"$shell_json" <<'EOF2'
+{"bar": {"layout": {"left": [{"id": "omarchy.menu", "mutedApps": ["nope"]}], "right": [
+  {"id": "io.github.vladkarok.omabump", "mutedApps": ["mise:grok-cli", "claude-desktop", "../x", 7, "-y"],
+   "skippedVersions": {"grok-bot": "0.66.0", "mise:grok-cli": "1.0.0-beta.1", "bad": "$(id)", "../x": "1", "n": 3}}]}}}
+EOF2
+same "load_quiet: the widget's entry in a bar.layout section, bad entries dropped" \
+  '["claude-desktop","mise:grok-cli"] {"grok-bot":"0.66.0","mise:grok-cli":"1.0.0-beta.1"}' "$(quiet)"
+same "load_quiet: each dropped string entry is named on stderr" 4 "$(load_quiet 2>&1 >/dev/null | grep -c '^ignoring')"
+printf '{"bar": {"layout": {"center": []}}, "plugins": [{"id": "x"}, {"id": "io.github.vladkarok.omabump", "mutedApps": ["kimi-bin"], "skippedVersions": {"trae-bin": "1.2"}}]}' >"$shell_json"
+same "load_quiet: the entry in the top-level plugins list" '["kimi-bin"] {"trae-bin":"1.2"}' "$(quiet)"
+printf '{"bar": {"layout": {"right": [{"id": "io.github.vladkarok.omabump", "mutedApps": "a,b", "skippedVersions": ["x"]}]}}}' >"$shell_json"
+same "load_quiet: settings of the wrong type are ignored" '[] {}' "$(quiet)"
+printf '[1, 2]' >"$shell_json"
+same "load_quiet: a file that is not an object" '[] {}' "$(quiet)"
+printf 'not json' >"$shell_json"
+same "load_quiet: a file that is not JSON" '[] {}' "$(quiet)"
+{ printf '{"bar": {"layout": {"right": [{"id": "io.github.vladkarok.omabump", "mutedApps": ["a"]}]}}, "pad": "'; head -c 1048576 /dev/zero | tr '\0' x; printf '"}'; } >"$shell_json"
+same "load_quiet: a file over 1 MiB is ignored" '[] {}' "$(quiet)"
+same "load_quiet: and named on stderr" 1 "$(load_quiet 2>&1 >/dev/null | grep -c 'larger than 1 MiB')"
+jq -n '{bar: {layout: {right: [{id: "io.github.vladkarok.omabump", mutedApps: [range(300) | "app\(.)"],
+  skippedVersions: ([range(300) | {key: "app\(.)", value: "1.\(.)"}] | from_entries)}]}}}' >"$shell_json"
+same "load_quiet: at most 200 muted and 200 skipped entries" '200 200' "$(load_quiet 2>/dev/null; echo "$(jq length <<<"$muted_json") $(jq length <<<"$skipped_json")")"
+rm -f "$shell_json"
+same "load_quiet: no shell.json, nothing muted or skipped" '[] {}' "$(quiet)"
 
-# --- skip a version -----------------------------------------------------------------
+# --- notifications and skips ----------------------------------------------------
 
-# The $(id) entries are literal text that must be refused, never expanded.
-# shellcheck disable=SC2016
-same "parse_skipped: valid entries kept, bad ones dropped" '{"mise:grok-cli":"1.0.0-beta.1","grok-bot":"0.66.0"}' \
-  "$(parse_skipped 'mise:grok-cli=1.0.0-beta.1,../x=1,grok-bot=0.66.0,y=$(id),z,w=..,mise:a=1..2' 2>/dev/null)"
-# shellcheck disable=SC2016
-same "parse_skipped: each dropped entry is named on stderr" 5 \
-  "$(parse_skipped '../x=1,y=$(id),z,w=..,mise:a=1..2' 2>&1 >/dev/null | grep -c '^ignoring skipped entry')"
-same "parse_skipped: nothing given" '{}' "$(parse_skipped '')"
+same "announce_action: a new version is sent" send "$(announce_action omarchy true '' false 1.1 1.0)"
+same "announce_action: a version already announced is not" '' "$(announce_action omarchy true '' false 1.1 1.1)"
+same "announce_action: a muted row records it without a notification" record "$(announce_action omarchy true '' true 1.1 '')"
+same "announce_action: a muted row's recorded version stays quiet after unmuting" '' "$(announce_action omarchy true '' false 1.1 1.1)"
+same "announce_action: a failed check announces nothing" '' "$(announce_action omarchy true 'feed failed' false 1.1 '')"
+same "announce_action: no update, nothing" '' "$(announce_action omarchy false '' false 1.1 '')"
 check "row_skipped: mise, the skipped version exactly" row_skipped mise true 1.0.99 1.0.99
 refuse "row_skipped: mise, a different version string" row_skipped mise true 1.0.99 1.0.98
+check "row_skipped: self, the skipped version exactly" row_skipped self true 0.2.0 0.2.0
+refuse "row_skipped: self, another version" row_skipped self true 0.1.9 0.2.0
 check "row_skipped: pacman, latest at the skipped version" row_skipped omarchy true 0.66.0 0.66.0
-check "row_skipped: pacman, latest below the skipped version (vercmp)" row_skipped omarchy true 0.66.0 0.67.0
+check "row_skipped: pacman, a rollback below the skipped version stays skipped (vercmp)" row_skipped omarchy true 0.66.0 0.67.0
 refuse "row_skipped: pacman, a newer release lights the row up again" row_skipped omarchy true 0.68.0 0.67.0
 refuse "row_skipped: no update, not skipped" row_skipped omarchy false 0.66.0 0.66.0
 refuse "row_skipped: nothing skipped" row_skipped omarchy true 0.66.0 ''
-same "skip: the skipped version is recorded, not notified" record "$(announce_action true '' true 0.66.0 '')"
-same "skip: a newer release than the skipped one is notified once" send "$(announce_action true '' false 0.67.0 0.66.0)"
-same "skip: and not again" '' "$(announce_action true '' false 0.67.0 0.67.0)"
+same "skip: the skipped version is recorded, not notified" record "$(announce_action omarchy true '' true 0.66.0 '')"
+same "skip: a newer release than the skipped one is notified once" send "$(announce_action omarchy true '' false 0.67.0 0.66.0)"
+same "skip: and not again" '' "$(announce_action omarchy true '' false 0.67.0 0.67.0)"
+# vercmp calls 1.0.0 and 1.0.0-beta.1 equal; mise rows compare strings.
+refuse "skip: mise stable 1.0.0 is past the skipped 1.0.0-beta.1" row_skipped mise true 1.0.0 1.0.0-beta.1
+same "skip: mise stable after a recorded beta is notified" send "$(announce_action mise true '' false 1.0.0 1.0.0-beta.1)"
+same "skip: and only once" '' "$(announce_action mise true '' false 1.0.0 1.0.0)"
+same "skip: a pacman rollback below the announced version announces nothing" '' "$(announce_action omarchy true '' false 0.66.0 0.67.0)"
+# The installer's refresh runs omabump-check with no settings arguments: the
+# skips still apply, since the checker reads them from shell.json.
+printf '{"bar": {"layout": {"right": [{"id": "io.github.vladkarok.omabump", "skippedVersions": {"grok-bot": "0.67.0"}}]}}}' >"$shell_json"
+load_quiet
+check "skip: a check without arguments keeps a pacman skip across a feed rollback" \
+  row_skipped omarchy true 0.66.0 "$(jq -r '.["grok-bot"]' <<<"$skipped_json")"
+check "omabump-check takes no settings arguments" bash -c "! grep -q -- '--skipped\|--muted' '$root/bin/omabump-check' '$root/Main.qml'"
+rm -f "$shell_json"
+load_quiet
 
 # --- Omabump's own row ---------------------------------------------------------------
 

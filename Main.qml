@@ -31,7 +31,8 @@ Item {
   readonly property bool showMise: setting("showMise", true) !== false
   onShowMiseChanged: { parse(statusFile.text()); if (settingsReady) refresh() }
   // Rows the user muted (pkg ids): no badge, no count, no notification.
-  // Their update stays visible in the panel and installable.
+  // Their update stays visible in the panel and installable. The checker
+  // reads the same two settings from shell.json itself (load_quiet).
   // The bar hands lists over as a QVariantList, which Array.isArray does
   // not accept, so they are read by index.
   readonly property var mutedApps: {
@@ -122,8 +123,9 @@ Item {
   function skippedVersion(app) {
     return app && skippedVersions.hasOwnProperty(app.pkg) ? skippedVersions[app.pkg] : ""
   }
-  // Skipped while the newest version is the skipped one: the checker says so
-  // (vercmp for pacman rows) or, right after a skip, the versions match.
+  // The checker decides (vercmp for pacman rows, exact strings for mise and
+  // self rows) from the settings it read; right after a skip, before the
+  // next check, an exact match stands in for its answer.
   function isSkipped(app) {
     var version = skippedVersion(app)
     return version !== "" && app.updateAvailable === true && (app.latest === version || app.skipped === true)
@@ -137,10 +139,6 @@ Item {
     var command = ["timeout", "-k", "10", "600", checkScript]
     if (!notify) command.push("--no-notify")
     if (!showMise) command.push("--no-mise")
-    if (mutedApps.length > 0) command.push("--muted", mutedApps.join(","))
-    var skips = []
-    for (var pkg in skippedVersions) skips.push(pkg + "=" + skippedVersions[pkg])
-    if (skips.length > 0) command.push("--skipped", skips.join(","))
     checkProcess.command = command
     checkProcess.running = true
   }
