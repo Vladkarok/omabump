@@ -262,6 +262,45 @@
     "pkg": "mise:grok-cli",
     "label": "Grok CLI",
     "source": "mise",
-    "tool": "npm:@xai-official/grok"
+    "tool": [
+      "grok",
+      "npm:@xai-official/grok"
+    ]
+  },
+  {
+    "pkg": "mise:copilot",
+    "label": "Copilot CLI",
+    "source": "mise",
+    "tool": [
+      "copilot",
+      "npm:@github/copilot"
+    ]
+  },
+  {
+    "pkg": "mise:cursor-agent",
+    "label": "Cursor CLI",
+    "source": "mise",
+    "tool": "cursor-agent"
+  },
+  {
+    "pkg": "mise:pi",
+    "label": "Pi",
+    "source": "mise",
+    "tool": [
+      "pi",
+      "npm:@mariozechner/pi-coding-agent"
+    ]
+  },
+  {
+    "pkg": "mise:oh-my-pi",
+    "label": "Oh My Pi",
+    "source": "mise",
+    "tool": "github:can1357/oh-my-pi"
+  },
+  {
+    "pkg": "mise:ori",
+    "label": "Ori",
+    "source": "mise",
+    "tool": "github:OpenRouterLabs/ori-releases"
   }
 ]

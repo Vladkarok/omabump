@@ -256,5 +256,15 @@ vendor_ok=1
 while IFS= read -r app; do vendor_checksum_declared "$app" || vendor_ok=0; done < <(jq -c '.[] | select(.source == "vendor-pkg")' "$root/apps.json")
 check "every vendor-pkg in apps.json names a checksum source" test "$vendor_ok" = 1
 check "pins.json pins a 40-hex commit" jq -e '.omarchyPkgs.commit | test("^[0-9a-f]{40}$")' "$root/pins.json"
+# Omarchy's lazy wrappers (omarchy-mise-install) call `mise use -g <name>`;
+# the key mise ls reports is that name, so the table must carry it.
+for t in claude codex crush opencode grok copilot cursor-agent pi github:can1357/oh-my-pi; do
+  # $t inside the single quotes is jq's variable, not the shell's.
+  # shellcheck disable=SC2016
+  check "apps.json tracks Omarchy's mise tool $t" jq -e --arg t "$t" 'any(.[]; .source == "mise" and ([.tool] | flatten | index($t)))' "$root/apps.json"
+done
+mise_ls_json='{"grok":[{"version":"1.0.46","installed":true,"active":true}]}'
+same "the Grok CLI row finds mise's first-party grok" "grok 1.0.46" "$(mise_active "$(app_json mise:grok-cli)")"
+mise_ls_json='{}'
 
 echo "all $n tests passed"

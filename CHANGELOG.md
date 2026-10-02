@@ -1,6 +1,11 @@
 # Changelog
 
-## 0.1.0 (unreleased)
+## 0.1.1 (unreleased)
+
+- Grok CLI: track mise's first-party `grok` tool. Omarchy's migration 1790863209 replaced `npm:@xai-official/grok` with it, which made the row disappear.
+- Track the other agent CLIs Omarchy installs through mise wrappers: Copilot CLI, Cursor CLI, Pi, Oh My Pi, Ori.
+
+## 0.1.0 (2026-10-01)
 
 First release, formerly Agent Apps.
 
