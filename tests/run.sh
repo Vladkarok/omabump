@@ -359,6 +359,19 @@ reset_mise
 shipped_apps=$real_shipped
 app_table=""
 
+# --- mute, notifications ---------------------------------------------------------
+
+same "parse_muted: valid ids kept, bad ones dropped" $'mise:grok-cli\nclaude-desktop' \
+  "$(parse_muted 'mise:grok-cli,,../x,claude-desktop,-y,mise:../z' 2>/dev/null)"
+same "parse_muted: each dropped id is named on stderr" 3 "$(parse_muted '../x,-y,mise:../z' 2>&1 >/dev/null | grep -c '^ignoring muted id')"
+same "parse_muted: nothing given, nothing kept" '' "$(parse_muted '')"
+same "announce_action: a new version is sent" send "$(announce_action true '' false 1.1 1.0)"
+same "announce_action: a version already announced is not" '' "$(announce_action true '' false 1.1 1.1)"
+same "announce_action: a muted row records it without a notification" record "$(announce_action true '' true 1.1 '')"
+same "announce_action: a muted row's recorded version stays quiet after unmuting" '' "$(announce_action true '' false 1.1 1.1)"
+same "announce_action: a failed check announces nothing" '' "$(announce_action true 'feed failed' false 1.1 '')"
+same "announce_action: no update, nothing" '' "$(announce_action false '' false 1.1 '')"
+
 # --- omabump-discover ----------------------------------------------------------
 
 disc=$scratch/discover

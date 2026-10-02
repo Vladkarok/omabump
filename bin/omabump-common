@@ -48,6 +48,30 @@ jq_name_rules='
     and ((.installed // []) | type == "array" and all(.[]; pkg_ok))
     and ([.tool // empty] | flatten | all(.[]; tool_ok));'
 
+# The rows the user muted in the panel (widget setting mutedApps), passed
+# as --muted pkg1,pkg2. Prints the valid ids, one per line; an id
+# app_id_ok refuses is dropped with a line on stderr.
+parse_muted() {
+  local id ids=()
+  IFS=, read -ra ids <<<"$1"
+  for id in "${ids[@]}"; do
+    [[ -n $id ]] || continue
+    if app_id_ok "$id"; then echo "$id"; else echo "ignoring muted id '$id'" >&2; fi
+  done
+}
+
+# What to do about a row's newer version once per version: "send" a
+# notification, "record" it as announced without one (a quiet row: muted, or
+# at a skipped version, so undoing that does not announce it late), or
+# nothing (no update, a failed check, or already announced). $1 update
+# (true/false), $2 error text, $3 quiet (true/false), $4 latest, $5 the
+# version last announced.
+announce_action() {
+  [[ $1 == true && -z $2 ]] || return 0
+  [[ -z $5 ]] || newer "$4" "$5" || return 0
+  if [[ $3 == true ]]; then echo record; else echo send; fi
+}
+
 # The omarchy-pkgs commit every recipe read, sync and build starts from:
 # pins.json's 40-hex commit, with the user's pins.json merged over it. The
 # install path runs that repo's sync tool and hook scripts, so a moving

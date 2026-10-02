@@ -30,6 +30,18 @@ Item {
   readonly property bool notify: setting("notify", true) !== false
   readonly property bool showMise: setting("showMise", true) !== false
   onShowMiseChanged: { parse(statusFile.text()); if (settingsReady) refresh() }
+  // Rows the user muted (pkg ids): no badge, no count, no notification.
+  // Their update stays visible in the panel and installable.
+  // The bar hands lists over as a QVariantList, which Array.isArray does
+  // not accept, so they are read by index.
+  readonly property var mutedApps: {
+    var list = setting("mutedApps", [])
+    var out = []
+    if (list && typeof list === "object" && typeof list.length === "number")
+      for (var i = 0; i < list.length; i++)
+        if (typeof list[i] === "string" && list[i] !== "") out.push(list[i])
+    return out
+  }
 
   property var apps: []
   property string checkedAt: ""
@@ -56,10 +68,12 @@ Item {
   // The checker itself failed, or omarchy-pkgs could not be fetched: no
   // summary may then read as up to date.
   readonly property bool checkFailed: checkError !== "" || pkgsError !== ""
+  // Counts, the urgent icon and the bar icon's visibility leave quiet rows
+  // out (isQuiet); quietCount says how many updates that hides.
   readonly property int updateCount: {
     var count = 0
     for (var i = 0; i < apps.length; i++)
-      if (apps[i].updateAvailable === true && apps[i].installable === true) count++
+      if (apps[i].updateAvailable === true && apps[i].installable === true && !isQuiet(apps[i])) count++
     return count
   }
   // Newer upstream releases with no install path (no recipe watch, or an
@@ -67,7 +81,13 @@ Item {
   readonly property int waitingCount: {
     var count = 0
     for (var i = 0; i < apps.length; i++)
-      if (apps[i].updateAvailable === true && apps[i].installable !== true) count++
+      if (apps[i].updateAvailable === true && apps[i].installable !== true && !isQuiet(apps[i])) count++
+    return count
+  }
+  readonly property int quietCount: {
+    var count = 0
+    for (var i = 0; i < apps.length; i++)
+      if (apps[i].updateAvailable === true && isQuiet(apps[i])) count++
     return count
   }
   readonly property int errorCount: {
@@ -87,12 +107,17 @@ Item {
     return value === undefined || value === null ? fallback : value
   }
 
+  function isMuted(app) { return !!app && mutedApps.indexOf(String(app.pkg)) !== -1 }
+  // A row that signals nothing: muted.
+  function isQuiet(app) { return isMuted(app) }
+
   function refresh() {
     if (!settingsReady || checkProcess.running) return
     // An overall deadline: ten minutes, then TERM, then KILL ten seconds later.
     var command = ["timeout", "-k", "10", "600", checkScript]
     if (!notify) command.push("--no-notify")
     if (!showMise) command.push("--no-mise")
+    if (mutedApps.length > 0) command.push("--muted", mutedApps.join(","))
     checkProcess.command = command
     checkProcess.running = true
   }

@@ -7,6 +7,7 @@
 - A failed `mise outdated --bump` call is a check failure; it used to be ignored, and the row could read as current.
 - The app table is built once per run, so the check, the mise queries and the installer see the same rows.
 - The panel footer and the bar tooltip say when agent discovery failed.
+- Mute a row (`m`): it stays in the list, dimmed, with no badge, count or notification until unmuted; Update still works. Stored in the widget setting `mutedApps`.
 
 ## 0.1.0 (2026-10-01)
 

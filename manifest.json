@@ -20,7 +20,8 @@
       "refreshIntervalSec": 900,
       "notify": true,
       "showMise": true,
-      "barIconOnlyWithUpdates": false
+      "barIconOnlyWithUpdates": false,
+      "mutedApps": []
     },
     "schema": [
       { "key": "refreshIntervalSec", "type": "integer", "label": "Check interval (seconds)", "min": 60, "max": 86400, "step": 60, "defaultValue": 900 },

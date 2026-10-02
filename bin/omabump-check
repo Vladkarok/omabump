@@ -12,7 +12,7 @@
 #   mise        `mise outdated`: what `mise up` would reach under the
 #               configured request, and what lies outside it (a pin).
 #
-#   omabump-check [--no-notify] [--no-mise]
+#   omabump-check [--no-notify] [--no-mise] [--muted pkg,...]
 #
 # The shell runs it under `timeout -k 10 600` (Main.qml), so a hung feed or
 # tool cannot keep a check alive past ten minutes; the TERM trap below still
@@ -21,14 +21,20 @@ set -euo pipefail
 # shellcheck source=omabump-common
 source "$(dirname "$(readlink -f "$0")")/omabump-common"
 
-notify=1 with_mise=1
-for arg; do
-  case $arg in
+usage="usage: omabump-check [--no-notify] [--no-mise] [--muted pkg,...]"
+notify=1 with_mise=1 muted_arg=""
+while (( $# )); do
+  case $1 in
     --no-notify) notify=0 ;;
     --no-mise) with_mise=0 ;;
-    *) echo "usage: omabump-check [--no-notify] [--no-mise]" >&2; exit 2 ;;
+    --muted) (( $# > 1 )) || { echo "$usage" >&2; exit 2; }; muted_arg=$2; shift ;;
+    *) echo "$usage" >&2; exit 2 ;;
   esac
+  shift
 done
+# Muted rows (the panel's mutedApps setting) never notify; status.json still
+# says the truth about them, plus "muted": true.
+muted_json=$(parse_muted "$muted_arg" | jq -Rsc 'split("\n") | map(select(. != ""))')
 
 mkdir -p "$state_dir"
 # The shell timer and a hand run can overlap; the second one has nothing to add.
@@ -230,9 +236,16 @@ while IFS= read -r app; do
     fi
   fi
 
+  muted=$(jq --arg pkg "$pkg" 'index($pkg) != null' <<<"$muted_json")
+  quiet=$muted
+
   announced=$(jq -r --arg pkg "$pkg" '.[$pkg] // ""' <<<"$notified")
-  if (( notify )) && [[ $update == true && -z $error ]] \
-     && { [[ -z $announced ]] || newer "$latest" "$announced"; }; then
+  action=""
+  (( notify )) && action=$(announce_action "$update" "$error" "$quiet" "$latest" "$announced")
+  if [[ $action == record ]]; then
+    notified=$(jq -c --arg pkg "$pkg" --arg v "$latest" '.[$pkg] = $v' <<<"$notified")
+    save_notified
+  elif [[ $action == send ]]; then
     body="Installed: $installed. Open the Omabump panel to update."
     [[ $installable == true ]] || body="Installed: $installed. ${note^}."
     if notify-send -a Omabump "$(clean_text "$label $latest available")" "$(clean_text "$body")" 2>/dev/null; then
@@ -248,13 +261,13 @@ while IFS= read -r app; do
     --arg latest "$(clean_text "$latest")" --arg versionFrom "$from" --argjson update "$update" \
     --argjson installable "$installable" --arg error "$error" --arg note "$(clean_text "$note")" \
     --argjson stale "$stale" --argjson switchable "$switchable" --arg recipe "$(clean_text "$recipe")" --arg recipeCommit "$recipe_commit" \
-    --arg request "$(clean_text "$request")" \
+    --arg request "$(clean_text "$request")" --argjson muted "$muted" \
     --arg icon "$(jq -r '.icon // ""' <<<"$app")" --arg iconLight "$(jq -r '.iconLight // ""' <<<"$app")" \
     '{pkg: $pkg, label: $label, source: $source, installedName: $installedName,
       installed: $installed, latest: $latest, versionFrom: $versionFrom,
       updateAvailable: $update, installable: $installable, error: $error, note: $note,
       stale: $stale, switchable: $switchable, recipe: $recipe, recipeCommit: $recipeCommit,
-      request: $request,
+      request: $request, muted: $muted,
       icon: $icon, iconLight: $iconLight}')")
   write_status 0
 done < <(jq -c '.[]' <<<"$table")

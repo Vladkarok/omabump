@@ -48,6 +48,13 @@ Panel {
     { key: "notify", fallback: true, label: "Notify on new releases", description: "" }
   ]
   readonly property int intervalRow: 0
+  // The "Muted: …" line with its Clear button, after the toggles, when any.
+  readonly property int quietRow: settingRows.length + 1
+  readonly property string quietText: {
+    var names = []
+    for (var i = 0; i < checker.mutedApps.length; i++) names.push(appName(checker.mutedApps[i]))
+    return names.length > 0 ? "Muted: " + names.join(", ") : ""
+  }
   readonly property var intervalChoices: [300, 900, 1800, 3600, 21600, 86400]
 
   // "checked 3 min ago" reads this instead of Date.now() so it keeps moving
@@ -72,7 +79,7 @@ Panel {
 
   function moveCursor(dy) {
     if (settingsOpen) {
-      settingIndex = clamp(settingIndex + dy, 0, settingRows.length)
+      settingIndex = clamp(settingIndex + dy, 0, settingRows.length + (quietText !== "" ? 1 : 0))
       return
     }
     if (orderedApps.length === 0) return
@@ -103,6 +110,13 @@ Panel {
     if (panelFlick) panelFlick.contentY = 0
   }
 
+  // A row's label by pkg, from the last check, else the pkg itself.
+  function appName(pkg) {
+    for (var i = 0; i < checker.apps.length; i++)
+      if (checker.apps[i].pkg === pkg) return String(checker.apps[i].label || pkg)
+    return pkg
+  }
+
   function hasAction(app) {
     return !!app && ((app.updateAvailable === true && app.installable === true)
       || askable(app) || app.switchable === true)
@@ -113,7 +127,7 @@ Panel {
   function resetCursor() {
     var first = 0
     for (var i = 0; i < orderedApps.length; i++)
-      if (hasAction(orderedApps[i])) { first = i; break }
+      if (hasAction(orderedApps[i]) && !checker.isQuiet(orderedApps[i])) { first = i; break }
     rowIndex = first
     cursorActive = orderedApps.length > 0
   }
@@ -135,8 +149,26 @@ Panel {
       intervalDropdown.open()
       return
     }
+    if (settingIndex === quietRow) {
+      clearQuiet()
+      return
+    }
     var row = settingRows[settingIndex - 1]
     setSetting(row.key, !settingOn(row))
+  }
+
+  // Mute: the row stays, its update keeps Update and Enter, but it adds no
+  // badge, no count and no notification until unmuted.
+  function toggleMute(app) {
+    if (!app) return
+    var list = checker.mutedApps.filter(function(pkg) { return pkg !== app.pkg })
+    if (!checker.isMuted(app)) list.push(app.pkg)
+    setSetting("mutedApps", list)
+  }
+
+  function clearQuiet() {
+    setSetting("mutedApps", [])
+    settingIndex = clamp(settingIndex, 0, settingRows.length)
   }
 
   function intervalLabel(sec) {
@@ -220,10 +252,11 @@ Panel {
   function hintText() {
     if (root.settingsOpen) return "Space change · Esc back"
     var app = root.cursorActive ? root.selectedApp() : null
-    if (root.askable(app)) return "Enter ask agent · c copy prompt · Esc close"
-    if (app && app.updateAvailable === true && app.installable === true) return "Enter update · Esc close"
-    if (app && app.switchable === true) return "w switch package · Esc close"
-    return (root.orderedApps.length > 0 ? "↑↓ select · " : "") + "r refresh · s settings"
+    var mute = app ? (checker.isMuted(app) ? " · m unmute" : " · m mute") : ""
+    if (root.askable(app)) return "Enter ask agent · c copy prompt" + mute
+    if (app && app.updateAvailable === true && app.installable === true) return "Enter update" + mute + " · Esc close"
+    if (app && app.switchable === true) return "w switch package" + mute + " · Esc close"
+    return (root.orderedApps.length > 0 ? "↑↓ select · " : "") + "r refresh · s settings" + mute
   }
 
   function checkedText() {
@@ -262,8 +295,8 @@ Panel {
     if (checker.checkFailed) parts.push("check failed")
     else if (failed > 0) parts.push("check failed for " + failed + (failed === 1 ? " app" : " apps"))
     if (checker.staleCount > 0) parts.push("last known for " + checker.staleCount + (checker.staleCount === 1 ? " app" : " apps"))
-    if (parts.length === 0 && checker.checkedAt !== "" && apps.length > 0) return "All current"
-    return parts.join(", ")
+    var text = parts.length === 0 && checker.checkedAt !== "" && apps.length > 0 ? "All current" : parts.join(", ")
+    return text !== "" && checker.quietCount > 0 ? text + " (+" + checker.quietCount + " muted/skipped)" : text
   }
 
   readonly property string followingText: checker.pkgsFollowing ? "omarchy-pkgs: following master (unpinned)" : ""
@@ -271,7 +304,7 @@ Panel {
 
   function tooltipText() {
     var summary = summaryText()
-    var text = summary === "All current" ? "Omabump up to date"
+    var text = summary.indexOf("All current") === 0 ? "Omabump up to date" + summary.substring(11)
       : summary !== "" ? "Omabump: " + summary
       : checker.checkedAt === "" ? "Omabump: not checked yet" : "Omabump: none installed"
     if (followingText !== "") text += "\n" + followingText
@@ -337,6 +370,7 @@ Panel {
     } else if (app.source === "vendor-pkg") lines.push("Updates with the vendor's Arch package")
     if (String(app.note || "") !== "") lines.push(app.note)
     if (String(app.error || "") !== "") lines.push("Check failed: " + app.error)
+    if (checker.isMuted(app)) lines.push("Muted: no badge, no notification")
     return lines.join("\n")
   }
 
@@ -474,6 +508,7 @@ Panel {
         else if ((t === "r" || t === "R") && !root.settingsOpen) root.refreshNow()
         else if ((t === "c" || t === "C") && !root.settingsOpen && root.cursorActive) root.promptFor(root.selectedApp(), "copy")
         else if ((t === "w" || t === "W") && !root.settingsOpen && root.cursorActive) root.switchApp(root.selectedApp())
+        else if ((t === "m" || t === "M") && !root.settingsOpen && root.cursorActive) root.toggleMute(root.selectedApp())
       }
 
       // The hero and the footer stay put; only the rows scroll.
@@ -761,6 +796,57 @@ Panel {
                   onClicked: root.setSetting(modelData.key, !root.settingOn(modelData))
                 }
               }
+
+              // Muted and skipped rows, undone one by one on their own row
+              // (m, K) or all at once here.
+              BorderSurface {
+                id: quietSurface
+                readonly property bool hot: root.cursorActive && root.settingIndex === root.quietRow
+                visible: root.quietText !== ""
+                width: parent.width
+                implicitHeight: Math.max(54, quietLabel.implicitHeight + Style.spacing.huge)
+                radius: Style.cornerRadius
+                color: Style.controlFill(false, hot, root.foreground, Color.accent)
+                borderSpec: Border.controlSpec(hot ? "hover-cursor" : "normal", root.foreground, Color.accent)
+
+                HoverHandler {
+                  onHoveredChanged: if (hovered) {
+                    root.cursorActive = true
+                    root.settingIndex = root.quietRow
+                  }
+                }
+
+                Text {
+                  id: quietLabel
+                  textFormat: Text.PlainText
+                  anchors.left: parent.left
+                  anchors.right: clearButton.left
+                  anchors.verticalCenter: parent.verticalCenter
+                  anchors.leftMargin: quietSurface.borderLeft + Style.spacing.rowPaddingX
+                  anchors.rightMargin: Style.spacing.rowPaddingX
+                  text: root.quietText
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  wrapMode: Text.WordWrap
+                  maximumLineCount: 3
+                  elide: Text.ElideRight
+                }
+
+                Button {
+                  id: clearButton
+                  anchors.right: parent.right
+                  anchors.verticalCenter: parent.verticalCenter
+                  anchors.rightMargin: quietSurface.borderRight + Style.spacing.rowPaddingX
+                  text: "Clear"
+                  bordered: true
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.bodySmall
+                  tooltipText: "Unmute and unskip every row  Space"
+                  onClicked: root.clearQuiet()
+                }
+              }
             }
           }
         }
@@ -820,6 +906,8 @@ Panel {
     readonly property bool askable: root.askable(app)
     readonly property bool switchable: !!app && app.switchable === true && !updatable
     readonly property bool showAction: hasCursor && (updatable || askable || switchable)
+    readonly property bool muted: checker.isMuted(app)
+    readonly property bool quiet: checker.isQuiet(app)
     readonly property string extra: root.extraLine(app)
     property bool actionHovered: false
     onShowActionChanged: if (!showAction) actionHovered = false
@@ -887,8 +975,8 @@ Panel {
         Text {
           textFormat: Text.PlainText
           Layout.fillWidth: true
-          text: appRow.app ? String(appRow.app.label || appRow.app.pkg) : ""
-          color: root.foreground
+          text: appRow.app ? String(appRow.app.label || appRow.app.pkg) + (appRow.muted ? "  󰖁" : "") : ""
+          color: appRow.muted ? root.dim : root.foreground
           font.family: root.fontFamily
           font.pixelSize: Style.font.body
           elide: Text.ElideRight
@@ -923,10 +1011,10 @@ Panel {
           textFormat: Text.PlainText
           visible: appRow.hasUpdate
           text: appRow.app ? "→ " + appRow.app.latest : ""
-          color: root.urgent
+          color: appRow.quiet ? root.dim : root.urgent
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
-          font.bold: true
+          font.bold: !appRow.quiet
         }
       }
 
@@ -979,6 +1067,18 @@ Panel {
         tooltipText: "Open your default agent with a prompt to plan the update; it may change the system  Enter"
         onHovered: function(on) { appRow.actionHovered = on }
         onClicked: root.promptFor(appRow.app, "ask")
+      }
+
+      PanelActionButton {
+        visible: appRow.hasCursor
+        Layout.alignment: Qt.AlignVCenter
+        iconText: "󰖁"
+        bordered: appRow.muted
+        tooltipText: appRow.muted ? "Unmute  m" : "Mute: no badge, no notification  m"
+        foreground: appRow.muted ? root.foreground : root.dim
+        fontFamily: root.fontFamily
+        onHovered: function(on) { appRow.actionHovered = on }
+        onClicked: root.toggleMute(appRow.app)
       }
     }
   }
