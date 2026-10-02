@@ -17,6 +17,8 @@ mkdir -p "$XDG_CONFIG_HOME/omarchy/omabump" "$scratch/served"
 
 # shellcheck source=../bin/omabump-common
 source "$root/bin/omabump-common"
+# The real mise_run, kept under another name before the stub replaces it.
+eval "$(declare -f mise_run | sed '1s/^mise_run/real_mise_run/')"
 
 # Stubs. fetch serves $scratch/served/<basename of the last argument>.
 fetch() {
@@ -350,10 +352,8 @@ mise_run() {
     "ls --json") echo '{"a":[{"version":"1.0","installed":true,"active":true}],"npm:a":[{"version":"0.9","installed":true,"active":true}],
       "b":[{"version":"2.0","installed":true,"active":false}],"asdf:c":[{"version":"3.0","installed":true,"active":true}],
       "d":[{"version":"4.0","installed":false,"active":true}],"e":[{"version":"5.0","installed":true,"active":true}]}' ;;
-    "ls --json --backend aqua") echo '{"a":[],"npm:a":[],"b":[]}' ;;
-    "ls --json --backend http") echo '{"e":[]}' ;;
-    "ls --json --backend gem") [[ -z ${mise_fail_backend:-} ]] || return 1; echo '{}' ;;
-    "ls --json --backend "*) echo '{}' ;;
+    "ls --json --backend aqua --backend github --backend gitlab --backend forgejo --backend npm --backend http --backend ubi --backend pipx --backend cargo")
+      [[ -z ${mise_fail_backend:-} ]] || return 1; echo '{"a":[],"npm:a":[],"b":[],"e":[]}' ;;
     "outdated --json -- "*) [[ -z ${mise_fail_outdated:-} ]] || { echo "boom" >&2; return 1; }
       echo '{"e":{"latest":"5.1","requested":"latest"}}' ;;
     "outdated --bump --json -- "*) [[ -z ${mise_fail_bump:-} ]] || { echo "bump boom" >&2; return 1; }
@@ -368,8 +368,10 @@ load_table; reset_mise
 mise_load 1
 same "mise: outdated and bump name only the selected keys on safe backends, after --" \
   $'outdated --json -- a e\noutdated --bump --json -- a e' "$(grep '^outdated' "$mise_calls")"
-same "mise: one ls per allowed backend plus the inventory" 13 "$(grep -c '^ls' "$mise_calls")"
+same "mise: one ls for all allowed backends plus the inventory" 2 "$(grep -c '^ls' "$mise_calls")"
 row() { mise_row "$1" "$2"; echo "${latest}|${installable}|${mise_update}|${note}|${feed_error}"; }
+same "mise_row: a checked key is not unchecked" false "$(mise_row e 5.0; echo "$unchecked")"
+same "mise_row: a key on no allowed backend is unchecked" true "$(mise_row asdf:c 3.0; echo "$unchecked")"
 same "mise_row: an update mise up reaches" '5.1|true|true||' "$(row e 5.0)"
 same "mise_row: pinned below a newer release" '1.2|false|false|Pinned to 1.0, 1.2 exists|' "$(row a 1.0)"
 same "mise_row: a key on asdf is not checked and never current" '|false|false|Update check skipped: asdf backend|' "$(row asdf:c 3.0)"
@@ -382,7 +384,8 @@ mise_fail_outdated=1 mise_load 1
 same "mise_row: an outdated failure" '|true|false||mise outdated failed: boom' "$(row e 5.0)"
 reset_mise
 mise_fail_backend=1 mise_load 1
-same "mise: a failing backend listing is a diagnostic, the rest still load" 'mise ls --backend gem failed|a e' "$mise_backend_error|${mise_query[*]}"
+same "mise: a failing backend listing is a diagnostic and checks nothing" 'mise ls --backend failed|' "$mise_backend_error|${mise_query[*]}"
+same "mise_row: then every row says why" '|false|false|Update check skipped: mise ls --backend failed|' "$(row e 5.0)"
 cat >"$shipped_apps" <<'EOF2'
 [{"pkg": "mise:c", "source": "mise", "tool": "asdf:c"}, {"pkg": "mise:d", "source": "mise", "tool": "d"}]
 EOF2
@@ -405,6 +408,13 @@ mise_select
 same "mise_select: a failed selection is a mise error" 'could not select the mise tools to check|' "$mise_error|${mise_query[*]}"
 unset -f mise
 mise_run() { echo "mise_run called in a test" >&2; return 1; }
+# Every mise call runs with asdf and vfox disabled, so no plugin script runs.
+mkdir -p "$scratch/fakebin"
+# shellcheck disable=SC2016 # expanded by the fake mise, not here
+printf '#!/bin/sh\necho "$MISE_DISABLE_BACKENDS|$PWD|$*"\n' >"$scratch/fakebin/mise"
+chmod +x "$scratch/fakebin/mise"
+same "mise_run: asdf and vfox disabled, in \$HOME" "asdf,vfox|$HOME|ls --json" "$(PATH=$scratch/fakebin:$PATH real_mise_run ls --json)"
+same "mise: the allowed backends" 'aqua github gitlab forgejo npm http ubi pipx cargo' "${mise_safe_backends[*]}"
 reset_mise
 shipped_apps=$real_shipped
 app_table=""

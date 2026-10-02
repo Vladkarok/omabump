@@ -347,6 +347,7 @@ Panel {
     if (checker.staleCount > 0) return "Last known, " + checkedText()
     if (checker.errorCount > 0) return "Check failed"
     if (checker.checkedAt === "") return "Not checked yet"
+    if (checker.uncheckedCount > 0) return "All checked current, " + checker.uncheckedCount + " unchecked"
     return apps.length > 0 ? "All current" : ""
   }
 
@@ -359,7 +360,10 @@ Panel {
     if (checker.checkFailed) parts.push("check failed")
     else if (failed > 0) parts.push("check failed for " + failed + (failed === 1 ? " app" : " apps"))
     if (checker.staleCount > 0) parts.push("last known for " + checker.staleCount + (checker.staleCount === 1 ? " app" : " apps"))
-    var text = parts.length === 0 && checker.checkedAt !== "" && apps.length > 0 ? "All current" : parts.join(", ")
+    var unchecked = checker.uncheckedCount > 0 ? checker.uncheckedCount + " unchecked" : ""
+    var text = parts.length > 0 ? parts.concat(unchecked !== "" ? [unchecked] : []).join(", ")
+      : checker.checkedAt === "" || apps.length === 0 ? ""
+      : unchecked !== "" ? "All checked current, " + unchecked : "All current"
     return text !== "" && checker.quietCount > 0 ? text + " (+" + checker.quietCount + " muted/skipped)" : text
   }
 

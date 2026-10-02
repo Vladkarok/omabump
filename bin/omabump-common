@@ -342,16 +342,20 @@ installed_package() {
 }
 
 # mise answers depend on the config files of the current directory, so every
-# mise call runs in $HOME, in the check and the installer alike.
-mise_run() { (cd "$HOME" && run_unlocked env MISE_HIDE_UPDATE_WARNING=1 timeout -k 10 "${mise_timeout:-120}" mise "$@" </dev/null); }
+# mise call runs in $HOME, in the check and the installer alike. asdf and
+# vfox plugins are scripts: with those backends disabled for Omabump's calls,
+# no plugin script runs while mise resolves your config (mise ls still lists
+# such a tool, it just cannot be checked or updated here).
+mise_run() { (cd "$HOME" && run_unlocked env MISE_HIDE_UPDATE_WARNING=1 MISE_DISABLE_BACKENDS=asdf,vfox timeout -k 10 "${mise_timeout:-120}" mise "$@" </dev/null); }
 
 # mise_load fills these once, in the calling shell (never call it in a
 # subshell, the values would be lost there):
 #   mise_ls_json        `mise ls --json`, the inventory
-#   mise_safe_json      {key: backend} for the installed tools that resolve
-#                       through a backend in mise_safe_backends, from
-#                       `mise ls --json --backend <b>` (which classifies
-#                       registry shorthands by the backend they resolve to)
+#   mise_safe_json      {key: true} for the installed tools that resolve
+#                       through a backend in mise_safe_backends, from one
+#                       `mise ls --json --backend <b> --backend <b2> ...`
+#                       (which classifies registry shorthands by the backend
+#                       they resolve to)
 # and with $1=1, for the key each mise row selected (mise_select) that is
 # also safe:
 #   mise_outdated_json  `mise outdated --json`: what `mise up` reaches under
@@ -364,8 +368,9 @@ mise_run() { (cd "$HOME" && run_unlocked env MISE_HIDE_UPDATE_WARNING=1 timeout 
 # the selected keys on mise's own backends only, never about every tool; a
 # row on another backend shows its installed version and "Update check
 # skipped". Each outdated call fails on its own: mise_error and
-# mise_bump_error say why.
-mise_safe_backends=(aqua github gitlab forgejo npm http ubi cargo go pipx gem core)
+# mise_bump_error say why. The allowed backends are the ones agent CLIs ship
+# on; mise's core languages, go and gem are left out.
+mise_safe_backends=(aqua github gitlab forgejo npm http ubi pipx cargo)
 mise_ls_json='{}' mise_safe_json='{}' mise_outdated_json='{}' mise_bump_json='{}'
 mise_error="" mise_bump_error="" mise_backend_error="" mise_query=()
 
@@ -376,20 +381,18 @@ mise_inventory() {
   mise_ls_json=$(mise_run ls --json 2>/dev/null | jq -ce 'if type == "object" then . else {} end' 2>/dev/null) || mise_ls_json='{}'
 }
 
-# A backend whose `mise ls --backend` call fails adds nothing to the safe set
-# (its tools are then not checked) and a line to mise_backend_error.
+# One listing for all allowed backends. When it fails, no tool is checked
+# and mise_backend_error says why.
 mise_safe_keys() {
-  local b out safe='{}'
-  mise_backend_error=""
-  for b in "${mise_safe_backends[@]}"; do
-    if out=$(mise_run ls --json --backend "$b" 2>/dev/null) \
-       && out=$(jq -ce 'if type == "object" then keys else error("bad") end' <<<"$out" 2>/dev/null); then
-      safe=$(jq -c --arg b "$b" --argjson k "$out" '. + ($k | map({(.): $b}) | add // {})' <<<"$safe")
-    else
-      mise_backend_error+="${mise_backend_error:+; }mise ls --backend $b failed"
-    fi
-  done
-  mise_safe_json=$safe
+  local b out args=()
+  mise_backend_error="" mise_safe_json='{}'
+  for b in "${mise_safe_backends[@]}"; do args+=(--backend "$b"); done
+  if out=$(mise_run ls --json "${args[@]}" 2>/dev/null) \
+     && out=$(jq -ce 'if type == "object" then with_entries(.value = true) else error("bad") end' <<<"$out" 2>/dev/null); then
+    mise_safe_json=$out
+  else
+    mise_backend_error="mise ls --backend failed"
+  fi
 }
 
 # The key a mise row resolves to: the first of its tool names that mise has
@@ -464,12 +467,13 @@ mise_field() { jq -r --arg t "$2" --arg f "$3" '.[$t][$f] // empty | tostring' <
 # What the check shows for a mise row whose active key is $1 at version $2.
 # mise decides: an entry in `mise outdated` is a version `mise up` will
 # install; one only in the --bump table lies outside the request. Sets
-# latest, from, note, installable, mise_update, request and feed_error.
+# latest, from, note, installable, mise_update, request, feed_error and
+# unchecked (a key on no allowed backend: no newest version is known).
 mise_row() {
   local key=$1 have=$2
-  latest="" from=mise note="" installable=true mise_update=false request="" feed_error=""
+  latest="" from=mise note="" installable=true mise_update=false request="" feed_error="" unchecked=false
   if ! mise_key_safe "$key"; then
-    installable=false from=""
+    installable=false from="" unchecked=true
     note=$(mise_skip_note "$key")
   elif [[ -n $mise_error ]]; then
     feed_error=$mise_error

@@ -107,6 +107,14 @@ Item {
     for (var i = 0; i < apps.length; i++) if (String(apps[i].error || "") !== "") count++
     return count
   }
+  // mise rows on no backend Omabump queries ("Update check skipped"): their
+  // newest version is unknown, so no summary may call them current.
+  readonly property int uncheckedCount: {
+    var count = 0
+    for (var i = 0; i < apps.length; i++)
+      if ((apps[i].unchecked === true || String(apps[i].note || "").indexOf("Update check skipped") === 0) && !isMuted(apps[i])) count++
+    return count
+  }
   // Rows showing the version from an earlier run because this one failed.
   readonly property int staleCount: {
     var count = 0

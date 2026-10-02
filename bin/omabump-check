@@ -148,7 +148,7 @@ while IFS= read -r app; do
 
   prev=$(jq -c --arg pkg "$pkg" '[.apps[] | select(.pkg == $pkg)][0] // {}' <<<"$previous")
   latest="" from="" note="" installable=false stale=false
-  route_error="" feed_error="" recipe="" recipe_commit="" mise_update=false request=""
+  route_error="" feed_error="" recipe="" recipe_commit="" mise_update=false request="" unchecked=false
 
   case $source in
     mise)
@@ -273,13 +273,13 @@ while IFS= read -r app; do
     --arg latest "$(clean_text "$latest")" --arg versionFrom "$from" --argjson update "$update" \
     --argjson installable "$installable" --arg error "$error" --arg note "$(clean_text "$note")" \
     --argjson stale "$stale" --argjson switchable "$switchable" --arg recipe "$(clean_text "$recipe")" --arg recipeCommit "$recipe_commit" \
-    --arg request "$(clean_text "$request")" --argjson muted "$muted" --argjson skipped "$skipped" \
+    --arg request "$(clean_text "$request")" --argjson muted "$muted" --argjson skipped "$skipped" --argjson unchecked "$unchecked" \
     --arg icon "$(jq -r '.icon // ""' <<<"$app")" --arg iconLight "$(jq -r '.iconLight // ""' <<<"$app")" \
     '{pkg: $pkg, label: $label, source: $source, installedName: $installedName,
       installed: $installed, latest: $latest, versionFrom: $versionFrom,
       updateAvailable: $update, installable: $installable, error: $error, note: $note,
       stale: $stale, switchable: $switchable, recipe: $recipe, recipeCommit: $recipeCommit,
-      request: $request, muted: $muted, skipped: $skipped,
+      request: $request, muted: $muted, skipped: $skipped, unchecked: $unchecked,
       icon: $icon, iconLight: $iconLight}')")
   write_status 0
 done < <(jq -c '.[]' <<<"$table"; echo "$self_app")
