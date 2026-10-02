@@ -567,6 +567,42 @@ same "discover: a wrapper owned by another uid is rejected" 'omp/command' \
   "$(agents --uid "$(( $(id -u) + 1 ))" | tr ' ' '\n' | sed -n 's/^omp=//p')"
 same "discover: --debug says why" 'omabump-discover: omp: not owned by uid' \
   "$(discover --debug --uid "$(( $(id -u) + 1 ))" 2>&1 >/dev/null | grep -o '^omabump-discover: omp: not owned by uid')"
+errors_of() { discover | jq -r '.errors | join("|")'; }
+wrapper omp github:can1357/oh-my-pi >"$disc/bin/omp"
+wrapper omp github:can1357/oh-my-pi | sed '1a # a line Omarchy added' >"$disc/bin/omp"
+same "discover: a wrapper script that exists but is rejected is an error line" \
+  "wrapper $disc/bin/omp not recognised: not the omarchy-mise-install template" "$(HOME=/nonexistent errors_of)"
+same "discover: and the agent still falls back to its command" 'omp/command' "$(agents | tr ' ' '\n' | sed -n 's/^omp=//p')"
+same "discover: the home directory shows as ~" "wrapper ~/bin/omp not recognised: not the omarchy-mise-install template" \
+  "$(HOME=$disc errors_of)"
+printf '\x7fELF\x02\x01\x01' >"$disc/bin/omp"
+same "discover: a binary in its place is silent" '' "$(errors_of)"
+rm -f "$disc/bin/omp"; ln -s "$disc/real-omp" "$disc/bin/omp"
+same "discover: a symlink in its place is silent" '' "$(errors_of)"
+rm -f "$disc/bin/omp"
+same "discover: a missing wrapper is silent" '' "$(errors_of)"
+wrapper omp github:can1357/oh-my-pi >"$disc/bin/omp"
+printf '{"setup.default.agent.zed\\n": {"label": "Trailing newline"}, "setup.default.agent.pi": {"label": "Pi"}}' >"$disc/user.jsonc"
+same "discover: a menu id must match whole, no trailing newline" 'pi' \
+  "$(discover | jq -r '[.agents[] | select(.command == "zed" or .command == "pi") | .command] | join(" ")')"
+printf '{"setup.default.agent.claude": {"label": "Cl\\u202eau\\u200bde\\u0007  Code\\n\\t x"}, "setup.default.agent.muse": {"label": "%s"}, "setup.default.agent.pi": {"label": "\\u200b\\u2066"}}' \
+  "$(printf 'M%.0s' {1..100})" >"$disc/user.jsonc"
+same "discover: labels lose control and format characters, whitespace collapsed" 'Claude Code x' "$(discover | jq -r '.agents[] | select(.command == "claude") | .label')"
+same "discover: labels stop at 64 characters" 64 "$(discover | jq -r '.agents[] | select(.command == "muse") | .label | length')"
+same "discover: a label that is nothing but format characters drops the agent" '' "$(discover | jq -r '.agents[] | select(.command == "pi") | .command')"
+jq -n '[range(100) | {key: "setup.default.agent.a\(.)", value: {label: "A\(.)"}}] | from_entries' >"$disc/user.jsonc"
+same "discover: at most 64 agents" 64 "$(discover | jq '.agents | length')"
+rm -f "$disc/user.jsonc"; mkfifo "$disc/user.jsonc"
+same "discover: a menu FIFO is refused without waiting for a writer" 'not a regular file' \
+  "$(timeout 5 python3 -I "$root/bin/omabump-discover" --stock "$disc/stock.jsonc" --user "$disc/user.jsonc" --bin-dir "$disc/bin" | jq -r '.errors[]' | grep -o 'not a regular file')"
+rm -f "$disc/user.jsonc"; printf '{}' >"$disc/menu-target"; ln -s "$disc/menu-target" "$disc/user.jsonc"
+same "discover: a symlinked menu is followed" '' "$(errors_of)"
+same "discover: a menu owned by another user is refused" 'not owned by uid' \
+  "$(discover --menu-uid "$(( $(id -u) + 1 ))" | jq -r '.errors[0]' | grep -o 'not owned by uid')"
+rm -f "$disc/user.jsonc"; : >"$disc/user.jsonc"
+# shellcheck disable=SC2016 # the literal text of the script
+check "discovery runs python3 isolated" grep -q 'python3 -I "$plugin_dir/bin/omabump-discover"' "$root/bin/omabump-common"
+check "the installer prints labels through term_safe" grep -q "^label=.*| term_safe" "$root/bin/omabump-install"
 echo '{"setup.default.agent.claude": {"label": "Claude"' >"$disc/stock.jsonc"
 same "discover: a malformed menu is an error and no agents" '1 0' "$(discover | jq -r '"\(.errors | length) \(.agents | length)"')"
 rm -f "$disc/stock.jsonc"

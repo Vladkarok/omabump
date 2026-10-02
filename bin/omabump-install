@@ -55,7 +55,9 @@ fi
 pkg=$(jq -r .pkg <<<"$app")
 # The name becomes a lock file name below and reaches pacman and git.
 app_id_ok "$pkg" || die "'$pkg' is not a package name Omabump accepts"
-label=$(jq -r '.label // .pkg' <<<"$app")
+# A discovered row's label comes from a menu file: shown in the terminal only
+# after term_safe, on one line.
+label=$(jq -r '.label // .pkg' <<<"$app" | term_safe | tr '\t\n' '  ' | sed 's/ *$//')
 
 # One update per app at a time; the clone lock below serialises Omarchy builds.
 mkdir -p "$cache_dir/locks"

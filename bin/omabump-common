@@ -182,7 +182,7 @@ pkgs_pin
 # array of {command, label, key, source}, and discovery_error, empty when
 # discovery worked. Never fatal: the curated rows stay either way.
 discovered_json='[]' discovery_error=""
-discover_run() { run_unlocked timeout -k 5 20 python3 "$plugin_dir/bin/omabump-discover" </dev/null 2>/dev/null; }
+discover_run() { run_unlocked timeout -k 5 20 python3 -I "$plugin_dir/bin/omabump-discover" </dev/null 2>/dev/null; }
 discover_agents() {
   local out
   discovered_json='[]' discovery_error=""
@@ -608,7 +608,7 @@ apt_newest() {
 # First capture group of a Python regex over a page. Pages that embed JSON in
 # a JS string escape its quotes, so the pattern is also tried with \" as ".
 regex_first() {
-  python3 -c '
+  python3 -I -c '
 import re, sys
 body = sys.stdin.read()
 for text in (body, body.replace("\\\"", "\"")):

@@ -12,24 +12,33 @@ omarchy-mise-install writes ~/.local/bin/<command> as a four-line wrapper
 that names the mise package; that package, with a trailing [options] suffix
 removed, is the key `mise ls` reports. Both files are read as text only:
 nothing is executed, sourced or evaluated, and of a menu entry only the id
-and the label are used. A wrapper that does not match the template exactly
-is ignored, and the agent falls back to its command name as the key
-(source "command"); the check accepts that key only when mise has exactly it
-installed and active.
+and the label are used. Menus are opened without blocking and read only
+when they are regular files owned by the user or root. Labels lose control
+and format characters (bidi, zero-width) and stop at 64 characters; at most
+64 agents are listed.
 
-  omabump-discover [--debug] [--stock FILE] [--user FILE] [--bin-dir DIR] [--uid N]
+A wrapper that does not match the template exactly is ignored, and the
+agent falls back to its command name as the key (source "command"); the
+check accepts that key only when mise has exactly it installed and active.
+A wrapper script that exists but is rejected is also named in "errors", so a
+changed template shows in the panel; a missing wrapper, a symlink or a file
+that is not a script (a native installer's link or binary) stays silent.
+
+  omabump-discover [--debug] [--stock FILE] [--user FILE] [--bin-dir DIR] [--uid N] [--menu-uid N]
 
 --debug prints why a wrapper was rejected on stderr. The other options exist
 for the tests.
 """
 
+import errno
 import json
 import os
 import re
 import stat
 import sys
+import unicodedata
 
-COMMAND_ID = re.compile(r"^setup\.default\.agent\.([a-z0-9][a-z0-9-]{0,40})$")
+COMMAND_ID = re.compile(r"setup\.default\.agent\.([a-z0-9][a-z0-9-]{0,40})")
 # The literals omarchy-mise-install double-quotes: no $ ` " \ ! and no
 # control characters (it switches to printf %q for those, never accepted).
 LITERAL = r'([^$`"\\!\x00-\x1f\x7f]+)'
@@ -44,6 +53,12 @@ OPTIONS = re.compile(r"^([^\[\]]*)\[[^\[\]]*\]$")
 TOOL_NAME = re.compile(r"^[A-Za-z0-9@_+:][A-Za-z0-9@._+:/-]*$")
 MAX_WRAPPER = 4096
 MAX_MENU = 4 * 1024 * 1024
+MAX_LABEL = 64
+MAX_AGENTS = 64
+
+
+class NoWrapper(ValueError):
+    """No wrapper, or a file that is clearly not one: nothing to report."""
 
 
 def strip_jsonc(text):
@@ -97,10 +112,35 @@ def _string_end(text, i):
     return j + 1
 
 
-def read_menu(path):
-    """The menu's items by id: a flat object, or one under "items"."""
-    with open(path, "rb") as f:
-        raw = f.read(MAX_MENU + 1)
+def read_bounded(fd, limit):
+    """Up to limit + 1 bytes from fd."""
+    chunks, left = [], limit + 1
+    while left > 0:
+        chunk = os.read(fd, min(left, 65536))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        left -= len(chunk)
+    return b"".join(chunks)
+
+
+def read_menu(path, uid):
+    """The menu's items by id: a flat object, or one under "items". A menu
+    may be a symlink (dotfile setups use them), but what it opens must be a
+    regular file owned by the user or root; the descriptor is opened without
+    blocking, so a FIFO cannot stall the check."""
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise ValueError("not a regular file")
+        if st.st_uid not in (uid, 0):
+            raise ValueError("not owned by uid %d or root" % uid)
+        if st.st_size > MAX_MENU:
+            raise ValueError("larger than 4 MiB")
+        raw = read_bounded(fd, MAX_MENU)
+    finally:
+        os.close(fd)
     if len(raw) > MAX_MENU:
         raise ValueError("larger than 4 MiB")
     text = strip_jsonc(raw.decode("utf-8"))
@@ -113,12 +153,21 @@ def read_menu(path):
     return items if isinstance(items, dict) else data
 
 
-def menu_agents(stock, user, errors):
+def clean_label(label):
+    """A label without control or format characters (Cc, Cf: bidi overrides,
+    zero-width), whitespace collapsed, at most MAX_LABEL characters."""
+    if not isinstance(label, str):
+        return ""
+    kept = "".join(c for c in label if unicodedata.category(c) not in ("Cc", "Cf"))
+    return " ".join(kept.split())[:MAX_LABEL].strip()
+
+
+def menu_agents(stock, user, uid, errors):
     """[(command, label)] in menu order, user fields merged over stock ones."""
     merged = {}
     for path, required in ((stock, True), (user, False)):
         try:
-            items = read_menu(path)
+            items = read_menu(path, uid)
         except FileNotFoundError:
             if required:
                 errors.append("no Omarchy menu at %s" % path)
@@ -127,14 +176,14 @@ def menu_agents(stock, user, errors):
             errors.append("cannot read the menu %s: %s" % (path, e))
             continue
         for key, value in items.items():
-            m = COMMAND_ID.match(key)
+            m = COMMAND_ID.fullmatch(key)
             if not m or not isinstance(value, dict):
                 continue
             entry = merged.setdefault(m.group(1), {})
             if "label" in value:
                 entry["label"] = value["label"]
-    return [(c, e["label"]) for c, e in merged.items()
-            if isinstance(e.get("label"), str) and e["label"].strip()]
+    agents = [(c, clean_label(e.get("label"))) for c, e in merged.items()]
+    return [(c, label) for c, label in agents if label][:MAX_AGENTS]
 
 
 def tool_name_ok(name):
@@ -148,20 +197,22 @@ def wrapper_key(path, uid):
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
     except FileNotFoundError:
-        raise ValueError("no wrapper")
+        raise NoWrapper("no wrapper")
     except OSError as e:
+        if e.errno == errno.ELOOP:
+            raise NoWrapper("a symlink")
         raise ValueError("cannot open: %s" % e.strerror)
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
-            raise ValueError("not a regular file")
+            raise NoWrapper("not a regular file")
         if st.st_uid != uid:
             raise ValueError("not owned by uid %d" % uid)
-        if st.st_size > MAX_WRAPPER:
-            raise ValueError("larger than %d bytes" % MAX_WRAPPER)
-        raw = os.read(fd, MAX_WRAPPER + 1)
+        raw = read_bounded(fd, MAX_WRAPPER)
     finally:
         os.close(fd)
+    if not raw.startswith(b"#!"):
+        raise NoWrapper("not a script")
     if len(raw) > MAX_WRAPPER:
         raise ValueError("larger than %d bytes" % MAX_WRAPPER)
     try:
@@ -185,6 +236,13 @@ def wrapper_key(path, uid):
     return key
 
 
+def shown(path, home):
+    """A path with the home directory as ~."""
+    if home and path.startswith(home.rstrip("/") + "/"):
+        return "~" + path[len(home.rstrip("/")):]
+    return path
+
+
 def main(argv):
     home = os.environ.get("HOME", "")
     omarchy = os.environ.get("OMARCHY_PATH") or "/usr/share/omarchy"
@@ -193,6 +251,7 @@ def main(argv):
         "--user": os.path.join(home, ".config/omarchy/extensions/omarchy-menu.jsonc"),
         "--bin-dir": os.path.join(home, ".local/bin"),
         "--uid": str(os.getuid()),
+        "--menu-uid": str(os.getuid()),
     }
     debug = False
     args = list(argv)
@@ -203,16 +262,20 @@ def main(argv):
         elif a in opts and args:
             opts[a] = args.pop(0)
         else:
-            print("usage: omabump-discover [--debug] [--stock FILE] [--user FILE] [--bin-dir DIR] [--uid N]",
+            print("usage: omabump-discover [--debug] [--stock FILE] [--user FILE] [--bin-dir DIR] [--uid N] [--menu-uid N]",
                   file=sys.stderr)
             return 2
     errors, agents = [], []
-    for command, label in menu_agents(opts["--stock"], opts["--user"], errors):
+    uid = int(opts["--uid"])
+    for command, label in menu_agents(opts["--stock"], opts["--user"], int(opts["--menu-uid"]), errors):
+        path = os.path.join(opts["--bin-dir"], command)
         try:
-            key, source = wrapper_key(os.path.join(opts["--bin-dir"], command), int(opts["--uid"])), "wrapper"
+            key, source = wrapper_key(path, uid), "wrapper"
         except ValueError as e:
             if debug:
                 print("omabump-discover: %s: %s" % (command, e), file=sys.stderr)
+            if not isinstance(e, NoWrapper):
+                errors.append("wrapper %s not recognised: %s" % (shown(path, home), e))
             key, source = command, "command"
         agents.append({"command": command, "label": label, "key": key, "source": source})
     json.dump({"agents": agents, "errors": errors}, sys.stdout)

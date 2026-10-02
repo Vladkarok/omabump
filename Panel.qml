@@ -364,7 +364,8 @@ Panel {
   }
 
   readonly property string followingText: checker.pkgsFollowing ? "omarchy-pkgs: following master (unpinned)" : ""
-  readonly property string discoveryText: checker.discoveryError !== "" ? "Agent discovery failed: " + checker.discoveryError : ""
+  // A failure or a warning (a wrapper Omabump no longer recognises).
+  readonly property string discoveryText: checker.discoveryError !== "" ? "Agent discovery: " + checker.discoveryError : ""
 
   function tooltipText() {
     var summary = summaryText()

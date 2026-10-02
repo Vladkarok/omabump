@@ -62,8 +62,9 @@ Item {
   property string pkgsError: ""
   property string pkgsNote: ""
   property string checkError: ""
-  // bin/omabump-discover could not read Omarchy's agent menu: the curated
-  // mise rows still show, discovered ones do not.
+  // bin/omabump-discover could not read Omarchy's agent menu (the curated
+  // mise rows still show, discovered ones do not), or found a wrapper it no
+  // longer recognises.
   property string discoveryError: ""
   // When this shell's last check ended; IPC refresh is throttled on it.
   property double lastCheckEndMs: 0
