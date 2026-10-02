@@ -206,6 +206,42 @@ rm -f "$user_apps"
 app_table=""
 shipped_apps=$real_shipped
 
+# The shipped table: a disabled identity hides a discovered agent whichever
+# name the user disabled it by.
+set_discovered "$(disc_agent grok grok Grok)" "$(disc_agent agy antigravity-cli Antigravity)" \
+  "$(disc_agent omp github:can1357/oh-my-pi omp)"
+pkgs_with() { jq -r --arg c "$1" '[.[] | select(.command == $c or .pkg == "mise:" + $c) | .pkg] | join(" ")' <<<"$app_table"; }
+for pair in grok:mise:grok grok:mise:grok-cli agy:mise:agy agy:mise:antigravity-cli omp:mise:omp omp:mise:oh-my-pi; do
+  printf '[{"pkg": "%s", "disabled": true}]' "${pair#*:}" >"$user_apps"
+  load_table
+  same "merge: {\"pkg\": \"${pair#*:}\", \"disabled\": true} hides the ${pair%%:*} agent" '' "$(pkgs_with "${pair%%:*}")"
+done
+rm -f "$user_apps"
+load_table
+same "merge: without a disabled entry the agents join their shipped rows" 'mise:grok-cli|mise:antigravity-cli|mise:oh-my-pi' \
+  "$(pkgs_with grok)|$(pkgs_with agy)|$(pkgs_with omp)"
+printf '[{"pkg": "mise:grok-cli", "source": "indicator", "disabled": true}]' >"$user_apps"
+load_table 2>/dev/null
+same "merge: a disabled row whose source the user changed still hides its command" '' "$(pkgs_with grok)"
+rm -f "$user_apps"
+
+# A source outside the four routes is dropped; "self" is Omabump's own.
+printf '[{"pkg": "x1", "source": "self"}, {"pkg": "x2", "source": "shell"}, {"pkg": "x3"}, {"pkg": "x4", "source": "indicator"}]' >"$user_apps"
+same "apps_table: a user entry with source self, an unknown or no source is dropped" 'x4' \
+  "$(apps_table 2>/dev/null | jq -r '[.[] | select(.pkg | startswith("x")) | .pkg] | join(" ")')"
+rm -f "$user_apps"
+
+# A merge that fails with the discovered agents keeps every other row.
+real_discover_agents=$(declare -f discover_agents)
+discover_agents() { discovered_json='[1]' discovery_error=""; }
+load_table 2>/dev/null
+same "merge: a failed merge keeps the shipped rows and says so" "$(jq length "$real_shipped")|could not merge discovered agents" \
+  "$(jq length <<<"$app_table")|$discovery_error"
+eval "$real_discover_agents"
+same "merge: the discovered JSON never becomes a jq argument" 0 "$(grep -c 'argjson disc' "$root/bin/omabump-common")"
+discover_out='{"agents":[],"errors":[]}'
+app_table=""
+
 # --- recipe_version -----------------------------------------------------------
 
 same "recipe_version: plain" 'foo 1.2.3-1' "$(printf 'pkgname=foo\npkgver=1.2.3\npkgrel=1\n' | recipe_version)"
@@ -353,6 +389,20 @@ EOF2
 load_table; reset_mise
 mise_load 1
 same "mise: no safe selected key, no outdated call" 0 "$(grep -c '^outdated' "$mise_calls")"
+# An inventory far over the 128 KiB argument limit still selects.
+cat >"$shipped_apps" <<'EOF2'
+[{"pkg": "mise:e", "source": "mise", "tool": "e"}]
+EOF2
+load_table
+mise_ls_json=$(jq -nc '[range(3000) | {key: "npm:@pad/tool-\(.)", value: [{version: "1.0.\(.)", installed: true, active: true, install_path: "/home/user/.local/share/mise/installs/pad"}]}]
+  | from_entries + {e: [{version: "5.0", installed: true, active: true}]}')
+mise_safe_json='{"e": true}' mise_error=""
+mise_select
+same "mise_select: a $(( ${#mise_ls_json} / 1024 )) KiB inventory works" 'e|' "${mise_query[*]}|$mise_error"
+same "mise_active: on the same inventory" 'e 5.0' "$(mise_active '{"tool": ["x", "e"]}')"
+app_table='not json'
+mise_select
+same "mise_select: a failed selection is a mise error" 'could not select the mise tools to check|' "$mise_error|${mise_query[*]}"
 unset -f mise
 mise_run() { echo "mise_run called in a test" >&2; return 1; }
 reset_mise

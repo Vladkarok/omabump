@@ -61,6 +61,7 @@ jq_name_rules='
   def id_ok: pkg_ok or (type == "string" and startswith("mise:") and (.[5:] | pkg_ok));
   def tool_ok: type == "string" and test("^[A-Za-z0-9@_+:][A-Za-z0-9@._+:/-]*$") and (contains("..") | not);
   def entry_ok: (.pkg | id_ok) and ((.pkg | pkg_ok) or .source == "mise")
+    and (.source | IN("omarchy", "vendor-pkg", "mise", "indicator"))
     and ((.installed // []) | type == "array" and all(.[]; pkg_ok))
     and ([.tool // empty] | flatten | all(.[]; tool_ok));'
 
@@ -203,15 +204,20 @@ discover_agents() {
 # feed_version requires for a command feed. An entry whose pkg, installed
 # names or tool names break the rules above is dropped with a line on stderr.
 #
-# A discovered agent joins the mise entry whose "command" is its command,
-# else the one whose tool list holds its key, else the entry "mise:<command>";
-# its key goes first in that entry's tool list. With no such entry it becomes
-# the row "mise:<command>" with the menu's label. A disabled entry stays
-# hidden (discovery never brings it back), a tool list the user's file sets
-# is left as the user wrote it, and pkg stays the row's identity throughout.
-# Reads discovered_json; load_table runs discovery first.
+# A command is off when the user disabled the entry "mise:<command>" or an
+# entry whose "command" it is: every row with that command is hidden and a
+# discovered agent with it adds nothing. Otherwise a discovered agent joins
+# the entry whose "command" is its command, else the mise entry whose tool
+# list holds its key, else the entry "mise:<command>"; its key goes first in
+# that entry's tool list. With no such entry it becomes the
+# row "mise:<command>" with the menu's label. A disabled or non-mise entry is
+# left alone, a tool list the user's file sets is left as the user wrote it,
+# and pkg stays the row's identity throughout. The source must be one of the
+# four route names; "self" is Omabump's own row and never comes from a file.
+# With $1=0 the discovered agents are left out. Reads discovered_json;
+# load_table runs discovery first.
 apps_table() {
-  local user=/dev/null merged
+  local user=/dev/null merged disc rc=0
   if [[ -f $user_apps ]]; then
     if jq -se 'length == 1 and (.[0] | type == "array")' "$user_apps" >/dev/null 2>&1; then
       user=$user_apps
@@ -219,9 +225,14 @@ apps_table() {
       echo "ignoring $user_apps: not a JSON array" >&2
     fi
   fi
-  # The user's file goes in with --slurpfile, never as an argv string.
-  merged=$(jq -c --slurpfile user "$user" --argjson disc "${discovered_json:-[]}" '
-    ($user[0] // [] | map(select(type == "object"))) as $u
+  # The user's file and the discovered agents go in with --slurpfile, never
+  # as argv strings.
+  mkdir -p "$state_dir"
+  disc=$(mktemp "$state_dir/.discovered.XXXXXX")
+  if [[ ${1:-1} == 1 ]]; then printf '%s\n' "${discovered_json:-[]}" >"$disc"; else echo '[]' >"$disc"; fi
+  merged=$(jq -c --slurpfile user "$user" --slurpfile discs "$disc" '
+    ($discs[0] // []) as $disc
+    | ($user[0] // [] | map(select(type == "object"))) as $u
     | [$u[] | select(has("tool")) | .pkg] as $userTool
     | map(select(type == "object") | del(._userFeed))
     + ($u | map(del(._userFeed) | if has("feed") then ._userFeed = true else . end))
@@ -229,31 +240,46 @@ apps_table() {
     | reduce .[] as $a ({order: [], by: {}};
       if .by[$a.pkg] then .by[$a.pkg] += $a
       else .order += [$a.pkg] | .by[$a.pkg] = $a end)
+    | [.by[] | select(.disabled == true) | (.command | strings), (.pkg | select(startswith("mise:")) | .[5:])] as $off
     | reduce $disc[] as $d (.;
-      [.order[] as $p | .by[$p] | select(.source == "mise")] as $mise
+      [.order[] as $p | .by[$p]] as $all
+      | [$all[] | select(.source == "mise")] as $mise
       | ("mise:" + $d.command) as $own
-      | ([$mise[] | select(.command == $d.command)][0]
-         // [$mise[] | select([.tool // empty] | flatten | index($d.key))][0]
-         // .by[$own]) as $hit
-      | if $hit == null then
-          .order += [$own]
-          | .by[$own] = {pkg: $own, label: $d.label, source: "mise", command: $d.command, tool: [$d.key], discovered: true}
-        elif $hit.disabled == true or $hit.source != "mise" or ($userTool | index($hit.pkg)) then .
-        else .by[$hit.pkg].tool = ([$d.key] + ([$hit.tool // empty] | flatten | map(select(. != $d.key))))
+      | if any($off[]; . == $d.command) then .
+        else
+          ([$all[] | select(.command == $d.command)][0]
+           // [$mise[] | select([.tool // empty] | flatten | index($d.key))][0]
+           // .by[$own]) as $hit
+          | if $hit == null then
+              .order += [$own]
+              | .by[$own] = {pkg: $own, label: $d.label, source: "mise", command: $d.command, tool: [$d.key], discovered: true}
+            elif $hit.disabled == true or $hit.source != "mise" or ($userTool | index($hit.pkg)) then .
+            else .by[$hit.pkg].tool = ([$d.key] + ([$hit.tool // empty] | flatten | map(select(. != $d.key))))
+            end
         end)
-    | [.order[] as $p | .by[$p] | select(.disabled != true)]' "$shipped_apps") || return 1
+    | [.order[] as $p | .by[$p] | select(.disabled != true and (.command as $c | any($off[]; . == $c) | not))]' "$shipped_apps") || rc=1
+  rm -f "$disc"
+  (( rc == 0 )) || return 1
   jq -r "$jq_name_rules"' .[] | select(entry_ok | not)
-    | "ignoring app \(.pkg | tojson): a pkg, installed or tool name with characters Omabump does not accept"' <<<"$merged" >&2
+    | "ignoring app \(.pkg | tojson): a pkg, installed or tool name with characters Omabump does not accept, or a source other than omarchy, vendor-pkg, mise or indicator"' <<<"$merged" >&2
   jq -c "$jq_name_rules"' map(select(entry_ok))' <<<"$merged"
 }
 
 # The table every step of one run works on: discovery and the merge happen
 # once, here, so the check, mise_load and app_json agree. Call it in the
 # script's own shell (not in a subshell, the values would be lost there).
+# A merge that fails with the discovered agents is done again without them:
+# the shipped and user rows always show, and the footer says why the
+# discovered ones do not.
 app_table=""
 load_table() {
   discover_agents
-  app_table=$(apps_table) || app_table='[]'
+  app_table=$(apps_table) && return 0
+  if [[ ${discovered_json:-[]} != '[]' ]] && app_table=$(apps_table 0); then
+    discovery_error="could not merge discovered agents${discovery_error:+; $discovery_error}"
+    return 0
+  fi
+  app_table='[]'
 }
 
 # An app by its pkg, or else by one of its installed package or mise tool
@@ -366,14 +392,36 @@ mise_safe_keys() {
   mise_safe_json=$safe
 }
 
-# The key each mise row of the frozen table resolves to (its first tool
-# name mise has installed and active, as mise_active picks it) that is on a
-# safe backend, unique: the only names the outdated calls see.
+# The key a mise row resolves to: the first of its tool names that mise has
+# installed and active, with that version, or null. One definition for
+# mise_select and mise_active, so the outdated calls and the rows agree.
+# shellcheck disable=SC2016 # jq variables, not the shell's
+mise_jq_active='
+  def active($ls): first([.tool // empty] | flatten | .[] | strings as $t
+    | ($ls[$t] // [])[]? | select(type == "object" and .active == true and .installed != false)
+    | {key: $t, version: (.version | tostring)}) // null;'
+
+# The key each mise row of the frozen table resolves to that is on a safe
+# backend, unique: the only names the outdated calls see. The inventory can
+# be large, so it reaches jq as a file, never as an argument. A failure is
+# mise_error: no row may then read as current.
 mise_select() {
-  mapfile -t mise_query < <(jq -r --argjson ls "$mise_ls_json" --argjson safe "$mise_safe_json" '
-    [.[] | select(.source == "mise") | [.tool // empty] | flatten
-     | map(select(type == "string" and any(($ls[.] // [])[]; .active == true and .installed != false)))[0] // empty
-     | select($safe[.] != null)] | unique | .[]' <<<"$app_table")
+  local d out rc=0
+  mise_query=()
+  mkdir -p "$cache_dir"
+  d=$(mktemp -d "$cache_dir/.mise-select.XXXXXX")
+  printf '%s\n' "$mise_ls_json" >"$d/ls.json"
+  printf '%s\n' "$mise_safe_json" >"$d/safe.json"
+  out=$(jq -r --slurpfile ls "$d/ls.json" --slurpfile safe "$d/safe.json" "$mise_jq_active"'
+    $ls[0] as $ls | $safe[0] as $safe
+    | [.[] | select(.source == "mise") | active($ls) | .key? // empty | select($safe[.] != null)]
+    | unique | .[]' <<<"$app_table" 2>/dev/null) || rc=1
+  rm -rf "$d"
+  if (( rc )); then
+    mise_error="could not select the mise tools to check"
+    return 1
+  fi
+  [[ -z $out ]] || mapfile -t mise_query <<<"$out"
 }
 
 mise_load() {
@@ -382,7 +430,7 @@ mise_load() {
   mise_inventory
   (( ${1:-0} )) || return 0
   mise_safe_keys
-  mise_select
+  mise_select || return 0
   (( ${#mise_query[@]} )) || return 0
   mkdir -p "$cache_dir"
   err=$(mktemp "$cache_dir/.mise.XXXXXX")
@@ -447,9 +495,8 @@ mise_row() {
 # mise has installed and active. The key is whatever the user's mise config
 # uses, e.g. claude or npm:@anthropic-ai/claude-code.
 mise_active() {
-  jq -re --argjson tools "$(jq -c '[.tool // empty] | flatten' <<<"$1")" '
-    . as $ls | [$tools[] as $t | ($ls[$t] // [])[] | select(.active == true and .installed != false)
-      | "\($t) \(.version)"][0] // empty' <<<"$mise_ls_json"
+  jq -re --argjson app "$1" "$mise_jq_active"'
+    . as $ls | $app | active($ls) | select(. != null) | "\(.key) \(.version)"' <<<"$mise_ls_json"
 }
 
 # Prints "<source> <installed name> <version>" for an app, or fails when it is
