@@ -26,6 +26,9 @@ fetch() {
 }
 mise_run() { echo "mise_run called in a test" >&2; return 1; }
 pgit_net() { echo "pgit_net called in a test" >&2; return 1; }
+# Discovery reads the machine's menu and ~/.local/bin; tests set its answer.
+discover_out='{"agents":[],"errors":[]}'
+discover_run() { printf '%s\n' "$discover_out"; }
 
 n=0
 pass() { n=$((n + 1)); echo "ok $n - $1"; }
@@ -158,6 +161,48 @@ same "recipe_fetch: a recipeFetch outside refs/ is refused" "recipeFetch '--uplo
 echo '{"pkg": "x"}' >"$user_apps"
 same "apps_table: a user file that is not an array is ignored" 'a b c' "$(apps_table 2>/dev/null | jq -r 'map(.pkg) | join(" ")')"
 rm -f "$user_apps"
+
+# --- discovered agents in the app table -----------------------------------------
+
+cat >"$shipped_apps" <<'EOF2'
+[
+  {"pkg": "mise:grok-cli", "label": "Grok CLI", "source": "mise", "command": "grok", "tool": ["npm:@xai-official/grok"]},
+  {"pkg": "mise:oh-my-pi", "label": "Oh My Pi", "source": "mise", "tool": "github:can1357/oh-my-pi"},
+  {"pkg": "mise:claude", "label": "Claude Code", "source": "mise", "command": "claude", "tool": ["npm:x/claude", "claude"]},
+  {"pkg": "app", "label": "App", "source": "indicator"}
+]
+EOF2
+disc_agent() { jq -cn --arg c "$1" --arg k "$2" --arg l "${3:-$1}" '{command: $c, key: $k, label: $l, source: "wrapper"}'; }
+set_discovered() { discover_out=$(printf '%s\n' "$@" | jq -sc '{agents: ., errors: []}'); }
+set_discovered "$(disc_agent grok grok Grok)" "$(disc_agent omp github:can1357/oh-my-pi omp)" \
+  "$(disc_agent claude claude Claude)" "$(disc_agent muse http:muse 'Muse Code')"
+tools_of() { jq -r --arg p "$1" '.[] | select(.pkg == $p) | [.tool] | flatten | join(" ")' <<<"$app_table"; }
+load_table
+same "merge: attach by command, the discovered key first" 'grok npm:@xai-official/grok' "$(tools_of mise:grok-cli)"
+same "merge: attach by a tool alias" 'github:can1357/oh-my-pi' "$(tools_of mise:oh-my-pi)"
+same "merge: a key already listed moves first, no duplicate" 'claude npm:x/claude' "$(tools_of mise:claude)"
+same "merge: an unknown agent becomes a row with the menu label" 'mise:muse|Muse Code|http:muse|true' \
+  "$(jq -r '.[-1] | [.pkg, .label, (.tool | join(" ")), .discovered] | join("|")' <<<"$app_table")"
+same "merge: curated labels stay" 'Grok CLI Oh My Pi Claude Code' "$(jq -r '[.[] | select(.source == "mise" and (.discovered | not)) | .label] | join(" ")' <<<"$app_table")"
+same "merge: the frozen table is what app_json reads" "$(jq -c '.[] | select(.pkg == "mise:muse")' <<<"$app_table")" "$(app_json http:muse)"
+discover_out='{"agents":[],"errors":[]}'
+same "merge: app_json keeps the frozen table after discovery changes" 'mise:muse' "$(app_json mise:muse | jq -r .pkg)"
+set_discovered "$(disc_agent grok grok Grok)" "$(disc_agent omp github:can1357/oh-my-pi omp)" \
+  "$(disc_agent claude claude Claude)" "$(disc_agent muse http:muse 'Muse Code')"
+printf '[{"pkg": "mise:grok-cli", "disabled": true}, {"pkg": "mise:muse", "disabled": true}, {"pkg": "mise:claude", "tool": "npm:x/claude"}]' >"$user_apps"
+load_table
+same "merge: disabled rows stay hidden, by pkg and by mise:<command>" 'mise:oh-my-pi mise:claude app' "$(jq -r 'map(.pkg) | join(" ")' <<<"$app_table")"
+same "merge: a tool list the user sets is not extended" 'npm:x/claude' "$(tools_of mise:claude)"
+discover_out='{"agents":[{"command":"x","key":"../x","label":"X","source":"wrapper"}],"errors":["bad menu"]}'
+load_table 2>/dev/null
+same "merge: a discovered key with bad characters drops the row" 'mise:oh-my-pi mise:claude app' "$(jq -r 'map(.pkg) | join(" ")' <<<"$app_table" 2>/dev/null)"
+same "discovery errors are kept" 'bad menu' "$discovery_error"
+discover_out='not json'
+load_table
+same "a discovery helper that fails is an error, the table stays" 'bin/omabump-discover failed|3' "$discovery_error|$(jq length <<<"$app_table")"
+discover_out='{"agents":[],"errors":[]}'
+rm -f "$user_apps"
+app_table=""
 shipped_apps=$real_shipped
 
 # --- recipe_version -----------------------------------------------------------
@@ -290,6 +335,7 @@ same "discover: an extra statement is rejected" 'omp/command' "$(agents | tr ' '
 # shellcheck disable=SC2016
 wrapper omp 'github:a/$(id)' >"$disc/bin/omp"
 same "discover: a \$ inside the literal is rejected" 'omp/command' "$(agents | tr ' ' '\n' | sed -n 's/^omp=//p')"
+# shellcheck disable=SC2016
 wrapper omp 'github:a/`id`' >"$disc/bin/omp"
 same "discover: a backtick inside the literal is rejected" 'omp/command' "$(agents | tr ' ' '\n' | sed -n 's/^omp=//p')"
 wrapper omp 'http:x[a=1][b=2]' >"$disc/bin/omp"

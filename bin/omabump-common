@@ -87,13 +87,40 @@ pkgs_pin() {
 }
 pkgs_pin
 
-# The app table: the shipped one, with the user's file merged over it by pkg.
-# A user entry adds an app or overrides fields of a shipped one; "disabled":
-# true hides it. Shipped order comes first, user additions after. An entry
-# whose feed the user's file set carries "_userFeed": true (never taken from
-# either file), which feed_version requires for a command feed. An entry
-# whose pkg, installed names or tool names break the rules above is dropped
-# with a line on stderr.
+# The coding-agent CLIs Omarchy offers (bin/omabump-discover: its menu and
+# omarchy-mise-install wrappers, read as text). Sets discovered_json, an
+# array of {command, label, key, source}, and discovery_error, empty when
+# discovery worked. Never fatal: the curated rows stay either way.
+discovered_json='[]' discovery_error=""
+discover_run() { run_unlocked timeout -k 5 20 python3 "$plugin_dir/bin/omabump-discover" </dev/null 2>/dev/null; }
+discover_agents() {
+  local out
+  discovered_json='[]' discovery_error=""
+  command -v python3 >/dev/null || { discovery_error="python3 is missing"; return 0; }
+  if ! out=$(discover_run) || ! jq -e 'type == "object" and (.agents | type == "array") and (.errors | type == "array")' >/dev/null 2>&1 <<<"$out"; then
+    discovery_error="bin/omabump-discover failed"
+    return 0
+  fi
+  discovered_json=$(jq -c '[.agents[] | select(type == "object" and (.command | type == "string")
+    and (.key | type == "string") and (.label | type == "string"))]' <<<"$out")
+  discovery_error=$(jq -r '.errors | map(tostring) | join("; ")' <<<"$out")
+}
+
+# The app table: the shipped one, with the user's file merged over it by pkg,
+# then the discovered agents. A user entry adds an app or overrides fields of
+# a shipped one; "disabled": true hides it. Shipped order comes first, user
+# additions after, new discovered rows last. An entry whose feed the user's
+# file set carries "_userFeed": true (never taken from either file), which
+# feed_version requires for a command feed. An entry whose pkg, installed
+# names or tool names break the rules above is dropped with a line on stderr.
+#
+# A discovered agent joins the mise entry whose "command" is its command,
+# else the one whose tool list holds its key, else the entry "mise:<command>";
+# its key goes first in that entry's tool list. With no such entry it becomes
+# the row "mise:<command>" with the menu's label. A disabled entry stays
+# hidden (discovery never brings it back), a tool list the user's file sets
+# is left as the user wrote it, and pkg stays the row's identity throughout.
+# Reads discovered_json; load_table runs discovery first.
 apps_table() {
   local user=/dev/null merged
   if [[ -f $user_apps ]]; then
@@ -104,25 +131,49 @@ apps_table() {
     fi
   fi
   # The user's file goes in with --slurpfile, never as an argv string.
-  merged=$(jq -c --slurpfile user "$user" '
-    map(select(type == "object") | del(._userFeed))
-    + (($user[0] // []) | map(select(type == "object") | del(._userFeed) | if has("feed") then ._userFeed = true else . end))
+  merged=$(jq -c --slurpfile user "$user" --argjson disc "${discovered_json:-[]}" '
+    ($user[0] // [] | map(select(type == "object"))) as $u
+    | [$u[] | select(has("tool")) | .pkg] as $userTool
+    | map(select(type == "object") | del(._userFeed))
+    + ($u | map(del(._userFeed) | if has("feed") then ._userFeed = true else . end))
     | map(select(.pkg | type == "string"))
     | reduce .[] as $a ({order: [], by: {}};
       if .by[$a.pkg] then .by[$a.pkg] += $a
       else .order += [$a.pkg] | .by[$a.pkg] = $a end)
+    | reduce $disc[] as $d (.;
+      [.order[] as $p | .by[$p] | select(.source == "mise")] as $mise
+      | ("mise:" + $d.command) as $own
+      | ([$mise[] | select(.command == $d.command)][0]
+         // [$mise[] | select([.tool // empty] | flatten | index($d.key))][0]
+         // .by[$own]) as $hit
+      | if $hit == null then
+          .order += [$own]
+          | .by[$own] = {pkg: $own, label: $d.label, source: "mise", command: $d.command, tool: [$d.key], discovered: true}
+        elif $hit.disabled == true or $hit.source != "mise" or ($userTool | index($hit.pkg)) then .
+        else .by[$hit.pkg].tool = ([$d.key] + ([$hit.tool // empty] | flatten | map(select(. != $d.key))))
+        end)
     | [.order[] as $p | .by[$p] | select(.disabled != true)]' "$shipped_apps") || return 1
   jq -r "$jq_name_rules"' .[] | select(entry_ok | not)
     | "ignoring app \(.pkg | tojson): a pkg, installed or tool name with characters Omabump does not accept"' <<<"$merged" >&2
   jq -c "$jq_name_rules"' map(select(entry_ok))' <<<"$merged"
 }
 
+# The table every step of one run works on: discovery and the merge happen
+# once, here, so the check, mise_load and app_json agree. Call it in the
+# script's own shell (not in a subshell, the values would be lost there).
+app_table=""
+load_table() {
+  discover_agents
+  app_table=$(apps_table) || app_table='[]'
+}
+
 # An app by its pkg, or else by one of its installed package or mise tool
 # names, so `omabump-install z-code-bin` finds ZCode.
 app_json() {
-  apps_table | jq -ce --arg n "$1" '
+  [[ -n $app_table ]] || load_table
+  jq -ce --arg n "$1" '
     ([.[] | select(.pkg == $n)] + [.[] | select(((.installed // []) + ([.tool // empty] | flatten)) | index($n))])[0]
-    // error("no app")' 2>/dev/null
+    // error("no app")' <<<"$app_table" 2>/dev/null
 }
 
 # Text bound for status.json and notifications, made inert: control
@@ -194,9 +245,9 @@ mise_load() {
   command -v mise >/dev/null || return 0
   mise_ls_json=$(mise_run ls --json 2>/dev/null | jq -ce 'if type == "object" then . else {} end' 2>/dev/null) || mise_ls_json='{}'
   (( ${1:-0} )) || return 0
-  mapfile -t tools < <(apps_table 2>/dev/null | jq -r --argjson ls "$mise_ls_json" '
+  mapfile -t tools < <(jq -r --argjson ls "$mise_ls_json" '
     [.[] | select(.source == "mise") | [.tool // empty] | flatten | .[]
-     | select(type == "string" and any(($ls[.] // [])[]; .installed != false))] | unique | .[]')
+     | select(type == "string" and any(($ls[.] // [])[]; .installed != false))] | unique | .[]' <<<"$app_table")
   (( ${#tools[@]} )) || return 0
   mkdir -p "$cache_dir"
   err=$(mktemp "$cache_dir/.mise.XXXXXX")

@@ -85,7 +85,9 @@ pkgs_ready() {
   [[ $pkgs_state == ready ]]
 }
 
-table=$(apps_table)
+# One table for the whole run: discovery and the merge happen once.
+load_table
+table=$app_table
 order=$(jq -c 'map(.pkg)' <<<"$table")
 
 # Replaces status.json in one rename. $1 is 0 while checking, 1 for the final

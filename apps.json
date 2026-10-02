@@ -167,6 +167,7 @@
     "pkg": "mise:claude",
     "label": "Claude Code",
     "source": "mise",
+    "command": "claude",
     "tool": [
       "claude",
       "npm:@anthropic-ai/claude-code"
@@ -176,6 +177,7 @@
     "pkg": "mise:codex",
     "label": "Codex CLI",
     "source": "mise",
+    "command": "codex",
     "tool": [
       "codex",
       "npm:@openai/codex"
@@ -204,6 +206,7 @@
     "pkg": "mise:antigravity-cli",
     "label": "Antigravity CLI",
     "source": "mise",
+    "command": "agy",
     "tool": "antigravity-cli"
   },
   {
@@ -229,6 +232,7 @@
     "pkg": "mise:crush",
     "label": "Crush",
     "source": "mise",
+    "command": "crush",
     "tool": [
       "crush",
       "npm:@charmland/crush"
@@ -238,6 +242,7 @@
     "pkg": "mise:opencode",
     "label": "OpenCode",
     "source": "mise",
+    "command": "opencode",
     "tool": [
       "opencode",
       "npm:opencode-ai"
@@ -262,6 +267,7 @@
     "pkg": "mise:grok-cli",
     "label": "Grok CLI",
     "source": "mise",
+    "command": "grok",
     "tool": [
       "grok",
       "npm:@xai-official/grok"
@@ -271,6 +277,7 @@
     "pkg": "mise:copilot",
     "label": "Copilot CLI",
     "source": "mise",
+    "command": "copilot",
     "tool": [
       "copilot",
       "npm:@github/copilot"
@@ -280,12 +287,14 @@
     "pkg": "mise:cursor-agent",
     "label": "Cursor CLI",
     "source": "mise",
+    "command": "cursor-agent",
     "tool": "cursor-agent"
   },
   {
     "pkg": "mise:pi",
     "label": "Pi",
     "source": "mise",
+    "command": "pi",
     "tool": [
       "pi",
       "npm:@mariozechner/pi-coding-agent"
@@ -295,12 +304,14 @@
     "pkg": "mise:oh-my-pi",
     "label": "Oh My Pi",
     "source": "mise",
+    "command": "omp",
     "tool": "github:can1357/oh-my-pi"
   },
   {
     "pkg": "mise:ori",
     "label": "Ori",
     "source": "mise",
+    "command": "ori",
     "tool": "github:OpenRouterLabs/ori-releases"
   }
 ]
