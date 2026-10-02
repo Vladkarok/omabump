@@ -12,7 +12,8 @@
 #               app's feed advertises, installed with pacman -U.
 #   mise        mise up <tool>.
 #
-#   self        Omabump itself: omarchy plugin update.
+#   self        Omabump itself: its clone fast-forwarded to the release tag,
+#               after the log is shown and you answer y.
 #
 #   omabump-install [--prepare] [--switch] <pkg>
 #
@@ -26,7 +27,8 @@
 # sync tool and the recipe's hook, and makepkg reads the PKGBUILD), and stops
 # before makepkg builds. On the vendor path it downloads and checks the
 # package and stops before pacman -U. Nothing is installed and sudo is never
-# called; the staging and install commands are printed instead.
+# called; the staging and install commands are printed instead. On the self
+# row it fetches the release tag, prints the plan and stops before asking.
 set -euo pipefail
 here=$(dirname "$(readlink -f "$0")")
 # shellcheck source=omabump-common
@@ -493,28 +495,47 @@ install_mise() {
   target_version=$now
 }
 
-# Omabump itself, through Omarchy's plugin updater: it fetches the clone's
-# origin HEAD, fast-forwards, validates the manifest and rescans plugins.
-# The function exits, so nothing of this file is read after the update
-# replaced it.
+# Omabump itself: the plugin's own clone, fast-forwarded to the commit the
+# release tag names (self_plan) once you have read its log and answered y,
+# then validated as Omarchy's updater does and rolled back if that fails.
+# `omarchy plugin update` would install the repository's HEAD instead. The
+# function exits, so nothing of this file is read after the merge replaced
+# it.
 install_self() {
-  local latest cmd=(omarchy plugin update "$self_plugin_id" --yes)
+  local latest answer validate=(omarchy-plugin-validate)
   self_git_managed || die "Omabump runs from a local checkout ($plugin_dir); update it with git"
-  command -v omarchy >/dev/null || die "the omarchy command is missing"
+  command -v omarchy-plugin-validate >/dev/null || validate=(omarchy plugin validate)
+  command -v "${validate[0]}" >/dev/null || die "omarchy-plugin-validate is missing"
   latest=$(feed_version "$app") || die "could not read Omabump's newest release"
   echo "Newest release: $latest"
   if ! newer "$latest" "$installed"; then
     echo "Omabump $installed is the newest release."
     exit 0
   fi
-  echo "omarchy plugin update installs the repository's current HEAD, which can be ahead of $latest."
+  self_origin_ok || die "the plugin clone's origin is not $self_repo; update it with: omarchy plugin update $self_plugin_id"
+  self_plan "$latest" || die "not updating to v$latest. omarchy plugin update $self_plugin_id still works; it installs the repository's HEAD"
+  echo "Release v$latest is commit $self_target."
+  echo
+  echo "Commits after the installed $(self_git rev-parse --short HEAD):"
+  self_git --no-pager log --no-color --oneline "HEAD..$self_target" | term_safe
+  echo
+  self_git --no-pager diff --no-color --stat HEAD "$self_target" | term_safe
+  echo
   if (( prepare )); then
-    echo "Would run: ${cmd[*]}"
+    echo "Would ask: Update Omabump to $latest? [y/N]"
+    echo "Would run: git merge --ff-only $self_target in $plugin_dir, ${validate[*]} $plugin_dir (git reset --hard ORIG_HEAD if it fails), omarchy-shell shell rescanPlugins"
     exit 0
   fi
-  run_unlocked "${cmd[@]}" </dev/null || die "omarchy plugin update failed"
+  read -r -p "Update Omabump to $latest? [y/N] " answer </dev/tty || answer=""
+  [[ $answer == [yY] ]] || { echo "Not updated."; exit 0; }
+  self_git merge -q --ff-only "$self_target" || die "git merge --ff-only $self_target failed"
+  if ! run_unlocked "${validate[@]}" "$plugin_dir" </dev/null; then
+    self_git reset -q --hard ORIG_HEAD || true
+    die "the new version failed validation; rolled back"
+  fi
+  run_unlocked omarchy-shell shell rescanPlugins >/dev/null 2>&1 </dev/null || true
   "$plugin_dir/bin/omabump-check" --no-notify || true
-  echo "Omarchy rescans its plugins now. If the panel still shows $installed, run: omarchy restart shell"
+  echo "Omabump is now $latest. If the panel still shows $installed, run: omarchy restart shell"
   exit 0
 }
 

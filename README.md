@@ -58,7 +58,7 @@ omarchy plugin add https://github.com/vladkarok/omabump.git --enable
 
 ### Updating Omabump
 
-`omarchy update` updates Omarchy and your packages, not plugins. So Omabump checks its own GitHub release too: when a newer one exists, the panel shows a PLUGIN section with an Omabump row (hidden while it is current). Update runs `omarchy plugin update io.github.vladkarok.omabump --yes` in a terminal, which fetches the plugin clone's origin, fast-forwards it, validates the manifest and reloads the shell's plugins; if the panel still shows the old version, `omarchy restart shell`. That command installs the repository's current HEAD, not the release the row named: Omarchy's installer does not enforce the marketplace's verified snapshot. A plugin directory that is a symlink or has no `.git` (a developer checkout) shows "Local checkout, update it with git" and no Update button. Mute and skip work on this row too (`self:omabump`).
+`omarchy update` updates Omarchy and your packages, not plugins. So Omabump checks its own GitHub release too: the panel shows a PLUGIN section with an Omabump row while a newer release exists or that check failed, and hides it while Omabump is current. Update installs the release the row names, in a terminal: in the plugin's own clone it checks that `origin` is `https://github.com/vladkarok/omabump` and that there are no local changes, fetches the tag `v<version>` and nothing else, and requires the tagged commit to be a fast-forward of the installed one. It prints that commit, the commits since the installed one and a diffstat, then asks `Update Omabump to <version>? [y/N]`. On `y` it fast-forwards to the tagged commit, validates the plugin with `omarchy-plugin-validate` (rolling back if that fails) and reloads the shell's plugins; if the panel still shows the old version, `omarchy restart shell`. `omabump-install --prepare self:omabump` stops before the question. `omarchy plugin update io.github.vladkarok.omabump`, run by hand, still follows the repository's HEAD rather than the release. A plugin directory that is a symlink or has no `.git` (a developer checkout) shows "Local checkout, update it with git" and no Update button. Mute and skip work on this row too (`self:omabump`).
 
 The widget lands in the bar's right section. Move it with `omarchy bar move io.github.vladkarok.omabump --section center --index 0` (sections: left, center, right).
 
@@ -138,7 +138,8 @@ Update opens a floating terminal and runs `bin/omabump-install <pkg>`. The row's
 | Update, omarchy row | `bin/sync-upstream` and the recipe's upstream hook from the pinned commit, then makepkg and the PKGBUILD | you; sudo for missing build dependencies |
 | Update, vendor row | download, digest check against the vendor's published list, `pacman -Qp` | you |
 | Install of any built or vendor package | `sudo install` into `/var/cache/omabump`, `pacman -U` on that copy, the package's install script, pacman hooks | root |
-| Update, mise row | `mise up` and the tool's backend | you |
+| Update, mise row | `mise up` and the tool's backend, asdf and vfox disabled | you |
+| Update, Omabump row | git fetch of the release tag into the plugin's clone, after you answer y a fast-forward to it, `omarchy-plugin-validate`, then the shell loads the new plugin code | you |
 | Ask agent | whatever your default agent decides to run | the permissions `omarchy-agent` gives it |
 
 What each guarantee covers, exactly:

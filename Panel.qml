@@ -26,8 +26,11 @@ Panel {
   // this order across both sections.
   readonly property var desktopApps: apps.filter(function(app) { return app.source !== "mise" && app.source !== "self" })
   readonly property var cliApps: apps.filter(function(app) { return app.source === "mise" })
-  // Omabump's own row, only while a newer release exists.
-  readonly property var pluginApps: apps.filter(function(app) { return app.source === "self" && app.updateAvailable === true })
+  // Omabump's own row, while a newer release exists or its check failed;
+  // hidden while current.
+  readonly property var pluginApps: apps.filter(function(app) {
+    return app.source === "self" && (app.updateAvailable === true || String(app.error || "") !== "")
+  })
   readonly property var orderedApps: desktopApps.concat(cliApps).concat(pluginApps)
   readonly property int updateCount: checker.updateCount
   readonly property bool iconOnlyWithUpdates: settings && settings.barIconOnlyWithUpdates === true
@@ -432,7 +435,7 @@ Panel {
     }
     if (app.source === "mise") lines.push("Updates with mise up")
     else if (app.source === "self") lines.push(app.installable === true
-      ? "Updates with omarchy plugin update, which installs the repository's current HEAD"
+      ? "Updates to the release's tagged commit, after showing its log and asking"
       : "omarchy update does not update plugins")
     else if (app.source === "omarchy") {
       var commit = String(app.recipeCommit || checker.pkgsCommit || "")

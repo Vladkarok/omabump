@@ -511,6 +511,58 @@ plugin_dir=$real_plugin_dir
 refuse "self_git_managed: only when it is the copy running" self_git_managed
 plugins_dir=$real_plugins
 
+# The release fast-forward, against a local bare repository. Production git
+# allows only https; the test's self_git also allows file:// and nothing else
+# changes. A user's git config could rewrite URLs, so it is left out.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+tgit() { git -c user.name=t -c user.email=t@example.com -c init.defaultBranch=main -c advice.detachedHead=false "$@" >/dev/null 2>&1; }
+eval "$(declare -f self_git | sed '1s/^self_git/real_self_git/')"
+self_git() { git -c protocol.file.allow=always -C "$plugin_dir" "$@" </dev/null; }
+tgit init -q --bare "$scratch/self.git"
+tgit clone -q "$scratch/self.git" "$scratch/self-work"
+for c in one two three; do
+  echo "$c" >"$scratch/self-work/$c"
+  tgit -C "$scratch/self-work" add "$c"
+  tgit -C "$scratch/self-work" commit -q -m "feat: $c"
+  case $c in one) tgit -C "$scratch/self-work" tag v0.1.0 ;; two) tgit -C "$scratch/self-work" tag -a -m 0.2.0 v0.2.0 ;; esac
+done
+tgit -C "$scratch/self-work" push -q origin main v0.1.0 v0.2.0
+tgit clone -q "$scratch/self.git" "$scratch/self-clone"
+tgit -C "$scratch/self-clone" reset -q --hard v0.1.0
+plugin_dir=$scratch/self-clone
+self_plan 0.2.0 2>/dev/null
+same "self_plan: the target is the tagged commit, not the branch head" "$(git -C "$scratch/self-work" rev-parse 'v0.2.0^{commit}')" "$self_target"
+same "self_plan: the log shows only the release's commits" 'feat: two' "$(git -C "$plugin_dir" log --format=%s "HEAD..$self_target")"
+same "self_plan: only the tag was fetched" 1 "$(grep -c . "$plugin_dir/.git/FETCH_HEAD")"
+same "self_plan: nothing moved before the answer" "$(git -C "$scratch/self-work" rev-parse v0.1.0)" "$(git -C "$plugin_dir" rev-parse HEAD)"
+echo dirty >"$plugin_dir/one"
+same "self_plan: local changes refuse" 'local changes' "$(self_plan 0.2.0 2>&1 | grep -o 'local changes')"
+tgit -C "$plugin_dir" checkout -q -- one
+refuse "self_plan: a tag that does not exist" self_plan 0.9.0
+tgit -C "$plugin_dir" reset -q --hard main
+tgit -C "$plugin_dir" merge -q --ff-only origin/main
+same "self_plan: a tag behind the installed commit is not a fast-forward" 'not a fast-forward' "$(self_plan 0.2.0 2>&1 | grep -o 'not a fast-forward')"
+refuse "self_plan: an odd version never reaches git" self_plan '0.2.0:refs/heads/x'
+self_git() { git -C "$plugin_dir" "$@" </dev/null; }
+for url in https://github.com/vladkarok/omabump https://GitHub.com/VladKarok/Omabump.git; do
+  tgit -C "$plugin_dir" remote set-url origin "$url"
+  check "self_origin_ok: $url" self_origin_ok
+done
+for url in https://github.com/evil/omabump git@github.com:vladkarok/omabump.git https://github.com/vladkarok/omabump.git.evil "$scratch/self.git"; do
+  tgit -C "$plugin_dir" remote set-url origin "$url"
+  refuse "self_origin_ok: $url" self_origin_ok
+done
+tgit -C "$plugin_dir" remote set-url origin https://github.com/vladkarok/omabump
+tgit -C "$plugin_dir" config url."https://example.com/".insteadOf https://github.com/
+refuse "self_origin_ok: an insteadOf that redirects the canonical url" self_origin_ok
+unset GIT_CONFIG_GLOBAL GIT_CONFIG_NOSYSTEM
+eval "$(declare -f real_self_git | sed '1s/^real_self_git/self_git/')"
+self_def=$(declare -f self_git)
+# shellcheck disable=SC2016 # the literal text of the definition
+check "self_git: hardened like pgit, https only, bounded" test -n "$([[ $self_def == *'timeout -k 10 120 env GIT_ALLOW_PROTOCOL=https GIT_TERMINAL_PROMPT=0 git "${git_safe[@]}"'* ]] && echo y)"
+check "the installer no longer runs omarchy plugin update" bash -c "! grep -q 'cmd=(omarchy plugin update' '$root/bin/omabump-install'"
+plugin_dir=$real_plugin_dir
+
 # --- omabump-discover ----------------------------------------------------------
 
 disc=$scratch/discover

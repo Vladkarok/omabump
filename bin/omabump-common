@@ -32,10 +32,10 @@ shipped_pins=$plugin_dir/pins.json
 user_pins=${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/omabump/pins.json
 
 # Omabump's own row ("self:omabump"): the installed version is this copy's
-# manifest.json, the newest one the GitHub release. `omarchy plugin update`
-# can update it only when the plugin directory is a git clone of its own,
-# as `omarchy plugin add` leaves it; a symlink or a copy without .git is a
-# developer checkout.
+# manifest.json, the newest one the GitHub release. Update fast-forwards the
+# plugin directory to the release tag (self_plan), so it has to be a git
+# clone of its own, as `omarchy plugin add` leaves it; a symlink or a copy
+# without .git is a developer checkout.
 self_pkg=self:omabump
 self_plugin_id=io.github.vladkarok.omabump
 plugins_dir=$HOME/.config/omarchy/plugins
@@ -764,6 +764,41 @@ git_safe=(-c core.hooksPath=/dev/null -c core.fsmonitor=false -c protocol.allow=
   -c protocol.https.allow=always -c gc.auto=0 -c maintenance.auto=false)
 pgit() { run_unlocked timeout -k 10 300 env GIT_ALLOW_PROTOCOL=https GIT_TERMINAL_PROMPT=0 git "${git_safe[@]}" -C "$pkgs_dir" "$@" </dev/null; }
 pgit_net() { run_unlocked timeout -k 10 300 env GIT_ALLOW_PROTOCOL=https GIT_TERMINAL_PROMPT=0 git "${git_safe[@]}" "$@" </dev/null; }
+
+# --- Omabump's own update ----------------------------------------------------
+
+# Update installs the release the row named: the commit behind the tag
+# v<latest>, fetched alone from the canonical repository into the plugin's
+# own clone and fast-forwarded to, never the branch head. git runs as pgit
+# does: hardened, HTTPS only, bounded.
+self_repo=https://github.com/vladkarok/omabump
+self_git() { run_unlocked timeout -k 10 120 env GIT_ALLOW_PROTOCOL=https GIT_TERMINAL_PROMPT=0 git "${git_safe[@]}" -C "$plugin_dir" "$@" </dev/null; }
+
+# True when the clone's origin, as git would fetch it (insteadOf applied), is
+# the canonical repository, in any letter case, with or without .git.
+self_origin_ok() {
+  local url
+  url=$(self_git remote get-url origin 2>/dev/null) || return 1
+  url=${url,,}
+  [[ $url == "$self_repo" || $url == "$self_repo.git" ]]
+}
+
+# Fetches the tag v$1 and nothing else into FETCH_HEAD and checks that the
+# clone can fast-forward to it: no local changes, and the installed commit
+# is an ancestor of the tagged one. Sets self_target to that commit, or
+# fails with the reason on stderr.
+self_target=""
+self_plan() {
+  local tag=v$1 status
+  self_target=""
+  version_ok "$1" || { echo "'$1' is not a release version" >&2; return 1; }
+  status=$(self_git status --porcelain) || { echo "git status failed in $plugin_dir" >&2; return 1; }
+  [[ -z $status ]] || { echo "the plugin clone $plugin_dir has local changes" >&2; return 1; }
+  self_git fetch -q --no-tags origin -- "refs/tags/$tag" >&2 || { echo "could not fetch the tag $tag" >&2; return 1; }
+  self_target=$(self_git rev-parse --verify -q 'FETCH_HEAD^{commit}') || { echo "the tag $tag names no commit" >&2; return 1; }
+  self_git merge-base --is-ancestor HEAD "$self_target" \
+    || { echo "the tag $tag (${self_target:0:12}) does not contain the installed commit, so it is not a fast-forward" >&2; self_target=""; return 1; }
+}
 
 # Makes the pinned commit (or, when following, origin/master's) present in
 # the clone, creating it first, and prints that commit. The caller sets
