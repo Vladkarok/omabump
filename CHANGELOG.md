@@ -6,10 +6,17 @@
 - `mise outdated` is asked only about the key each row resolved to, and only on mise's own backends (`mise ls --backend`); a tool on asdf, vfox or another plugin backend shows "Update check skipped" and has no Update.
 - A failed `mise outdated --bump` call is a check failure; it used to be ignored, and the row could read as current.
 - The app table is built once per run, so the check, the mise queries and the installer see the same rows.
-- The panel footer and the bar tooltip say when agent discovery failed.
+- The panel footer and the bar tooltip say when agent discovery failed, when the discovered agents could not be merged, and when a wrapper script exists but no longer matches Omarchy's template. A missing wrapper, a symlink or a binary in its place stays silent.
+- Disabling `mise:<command>` or the shipped row with that `command` hides the agent everywhere: `mise:grok` and `mise:grok-cli` both hide Grok CLI.
+- A failed merge of the discovered agents keeps the shipped and user rows. Discovered agents and the mise inventory reach jq as files, so a large one no longer empties the table or the mise selection, and a failed selection is a check failure.
+- Table entries need one of the sources `omarchy`, `vendor-pkg`, `mise` or `indicator`.
+- Discovery hardening: menus open without blocking and must be regular files owned by you or root, menu ids match whole, labels lose control and format characters and stop at 64 characters, at most 64 agents. Python helpers run with `-I`. The installer prints labels through the terminal filter.
+- Every mise call runs with `MISE_DISABLE_BACKENDS=asdf,vfox`, so no asdf or vfox plugin script runs during a check or an update. The checked backends are aqua, github, gitlab, forgejo, npm, http, ubi, pipx and cargo, listed in one `mise ls` call.
+- CLI tools whose update check was skipped count as unchecked: the summary says "All checked current, N unchecked" instead of "All current".
 - Mute a row (`m`): it stays in the list, dimmed, with no badge, count or notification until unmuted; Update still works. Stored in the widget setting `mutedApps`.
-- Skip a version (`K`): that version stops counting and notifying; a newer one lights the row up again and is announced once. Stored in `skippedVersions`.
-- Omabump checks its own GitHub release, since `omarchy update` does not update plugins. A newer one shows in a PLUGIN section; Update runs `omarchy plugin update io.github.vladkarok.omabump --yes`. A symlinked or non-git checkout says "Local checkout, update it with git".
+- Skip a version (`K`): that version stops counting and notifying; a newer one lights the row up again and is announced once. Stored in `skippedVersions`. pacman and feed versions compare with `vercmp`, mise and Omabump's own versions as exact strings, for skips and for notifications alike.
+- The checker reads `mutedApps` and `skippedVersions` from `shell.json` itself, so a check from a terminal or after an Update honours them too.
+- Omabump checks its own GitHub release, since `omarchy update` does not update plugins. A newer one, or a failed check, shows in a PLUGIN section. Update fetches the release tag into the plugin's clone, prints its log and diffstat, asks, then fast-forwards to the tagged commit and validates it, rolling back on failure. A symlinked or non-git checkout says "Local checkout, update it with git".
 
 ## 0.1.0 (2026-10-01)
 
