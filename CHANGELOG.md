@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.1 (unreleased)
+## 0.1.1 (2026-10-02)
 
 - Agent CLIs are discovered instead of listed by hand. Omarchy's migration 1790863209 moved Grok CLI from `npm:@xai-official/grok` to mise's first-party `grok`, and the row disappeared because its key was not in `apps.json`; Copilot CLI, Cursor CLI, Pi, Oh My Pi and Ori were never there. `bin/omabump-discover` now reads Omarchy's agent menu (stock and your extension) and each agent's `omarchy-mise-install` wrapper, as text, and takes the mise key from the wrapper. Known agents keep their shipped name and icon (new `command` field), new ones get a row with the menu's label, disabled rows stay hidden.
 - `mise outdated` is asked only about the key each row resolved to, and only on mise's own backends (`mise ls --backend`); a tool on asdf, vfox or another plugin backend shows "Update check skipped" and has no Update.
@@ -11,12 +11,12 @@
 - A failed merge of the discovered agents keeps the shipped and user rows. Discovered agents and the mise inventory reach jq as files, so a large one no longer empties the table or the mise selection, and a failed selection is a check failure.
 - Table entries need one of the sources `omarchy`, `vendor-pkg`, `mise` or `indicator`.
 - Discovery hardening: menus open without blocking and must be regular files owned by you or root, menu ids match whole, labels lose control and format characters and stop at 64 characters, at most 64 agents. Python helpers run with `-I`. The installer prints labels through the terminal filter.
-- Every mise call runs with `MISE_DISABLE_BACKENDS=asdf,vfox`, so no asdf or vfox plugin script runs during a check or an update. The checked backends are aqua, github, gitlab, forgejo, npm, http, ubi, pipx and cargo, listed in one `mise ls` call.
-- CLI tools whose update check was skipped count as unchecked: the summary says "All checked current, N unchecked" instead of "All current".
+- Every mise call runs with `MISE_DISABLE_BACKENDS` set to asdf, vfox and every installed plugin by name (a vfox backend plugin is disabled by its own name), so no plugin script runs during a check or an update. The checked backends are aqua, github, gitlab, forgejo, npm, http, ubi, pipx and cargo, listed in one `mise ls` call.
+- CLI tools whose update check was skipped count as unchecked: the summary says "All checked current, N unchecked" instead of "All current", muted or not.
 - Mute a row (`m`): it stays in the list, dimmed, with no badge, count or notification until unmuted; Update still works. Stored in the widget setting `mutedApps`.
 - Skip a version (`K`): that version stops counting and notifying; a newer one lights the row up again and is announced once. Stored in `skippedVersions`. pacman and feed versions compare with `vercmp`, mise and Omabump's own versions as exact strings, for skips and for notifications alike.
 - The checker reads `mutedApps` and `skippedVersions` from `shell.json` itself, so a check from a terminal or after an Update honours them too.
-- Omabump checks its own GitHub release, since `omarchy update` does not update plugins. A newer one, or a failed check, shows in a PLUGIN section. Update fetches the release tag into the plugin's clone, prints its log and diffstat, asks, then fast-forwards to the tagged commit and validates it, rolling back on failure. A symlinked or non-git checkout says "Local checkout, update it with git".
+- Omabump checks its own GitHub release, since `omarchy update` does not update plugins. A newer one, or a failed check, shows in a PLUGIN section. Update fetches the release tag into the plugin's clone, prints its log and diffstat, asks, then checks the clone did not change while it waited, fast-forwards to the tagged commit and validates it, rolling back to the previous commit on failure. A symlinked or non-git checkout says "Local checkout, update it with git".
 
 ## 0.1.0 (2026-10-01)
 

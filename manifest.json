@@ -2,11 +2,13 @@
   "schemaVersion": 1,
   "id": "io.github.vladkarok.omabump",
   "name": "Omabump",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": "vladkarok",
   "license": "MIT",
   "description": "Agent desktop apps and CLIs at the version the vendor shipped, ahead of the Omarchy repo.",
-  "kinds": ["bar-widget"],
+  "kinds": [
+    "bar-widget"
+  ],
   "entryPoints": {
     "barWidget": "Panel.qml"
   },
@@ -25,10 +27,36 @@
       "skippedVersions": {}
     },
     "schema": [
-      { "key": "refreshIntervalSec", "type": "integer", "label": "Check interval (seconds)", "min": 60, "max": 86400, "step": 60, "defaultValue": 900 },
-      { "key": "notify", "type": "boolean", "label": "Notify on new versions", "defaultValue": true, "description": "Send a desktop notification when a vendor publishes a version newer than the installed one." },
-      { "key": "showMise", "type": "boolean", "label": "Show mise tools", "defaultValue": true, "description": "List the agent CLIs mise has installed (Claude Code, Codex CLI, OpenCode...) after the desktop apps." },
-      { "key": "barIconOnlyWithUpdates", "type": "boolean", "label": "Hide icon until an update", "defaultValue": false, "description": "Show the bar icon only when an installable update exists. IPC open and toggle still open the panel." }
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Check interval (seconds)",
+        "min": 60,
+        "max": 86400,
+        "step": 60,
+        "defaultValue": 900
+      },
+      {
+        "key": "notify",
+        "type": "boolean",
+        "label": "Notify on new versions",
+        "defaultValue": true,
+        "description": "Send a desktop notification when a vendor publishes a version newer than the installed one."
+      },
+      {
+        "key": "showMise",
+        "type": "boolean",
+        "label": "Show mise tools",
+        "defaultValue": true,
+        "description": "List the agent CLIs mise has installed (Claude Code, Codex CLI, OpenCode...) after the desktop apps."
+      },
+      {
+        "key": "barIconOnlyWithUpdates",
+        "type": "boolean",
+        "label": "Hide icon until an update",
+        "defaultValue": false,
+        "description": "Show the bar icon only when an installable update exists. IPC open and toggle still open the panel."
+      }
     ]
   }
 }
