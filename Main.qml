@@ -108,11 +108,12 @@ Item {
     return count
   }
   // mise rows on no backend Omabump queries ("Update check skipped"): their
-  // newest version is unknown, so no summary may call them current.
+  // newest version is unknown, so no summary may call them current, muted or
+  // not (mute silences an update, it does not make an unknown state known).
   readonly property int uncheckedCount: {
     var count = 0
     for (var i = 0; i < apps.length; i++)
-      if ((apps[i].unchecked === true || String(apps[i].note || "").indexOf("Update check skipped") === 0) && !isMuted(apps[i])) count++
+      if (apps[i].unchecked === true || String(apps[i].note || "").indexOf("Update check skipped") === 0) count++
     return count
   }
   // Rows showing the version from an earlier run because this one failed.

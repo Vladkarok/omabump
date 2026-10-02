@@ -413,7 +413,11 @@ mkdir -p "$scratch/fakebin"
 # shellcheck disable=SC2016 # expanded by the fake mise, not here
 printf '#!/bin/sh\necho "$MISE_DISABLE_BACKENDS|$PWD|$*"\n' >"$scratch/fakebin/mise"
 chmod +x "$scratch/fakebin/mise"
-same "mise_run: asdf and vfox disabled, in \$HOME" "asdf,vfox|$HOME|ls --json" "$(PATH=$scratch/fakebin:$PATH real_mise_run ls --json)"
+same "mise_run: asdf and vfox disabled, in \$HOME" "asdf,vfox|$HOME|ls --json" "$(PATH=$scratch/fakebin:$PATH MISE_DATA_DIR=$scratch/no-mise-data real_mise_run ls --json)"
+# A vfox backend plugin is disabled by its own name: every installed plugin
+# directory is added, and a name with odd characters is not.
+mkdir -p "$scratch/mise-data/plugins/foo" "$scratch/mise-data/plugins/vfox-bar" "$scratch/mise-data/plugins/x y" "$scratch/mise-data/plugins/.hidden"
+same "mise_run: installed plugins disabled by name" "asdf,vfox,foo,vfox-bar|$HOME|ls --json" "$(PATH=$scratch/fakebin:$PATH MISE_DATA_DIR=$scratch/mise-data real_mise_run ls --json)"
 same "mise: the allowed backends" 'aqua github gitlab forgejo npm http ubi pipx cargo' "${mise_safe_backends[*]}"
 reset_mise
 shipped_apps=$real_shipped

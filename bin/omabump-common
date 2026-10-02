@@ -343,10 +343,24 @@ installed_package() {
 
 # mise answers depend on the config files of the current directory, so every
 # mise call runs in $HOME, in the check and the installer alike. asdf and
-# vfox plugins are scripts: with those backends disabled for Omabump's calls,
+# vfox plugins are scripts: with those backends (and every installed plugin
+# by name) disabled for Omabump's calls,
 # no plugin script runs while mise resolves your config (mise ls still lists
 # such a tool, it just cannot be checked or updated here).
-mise_run() { (cd "$HOME" && run_unlocked env MISE_HIDE_UPDATE_WARNING=1 MISE_DISABLE_BACKENDS=asdf,vfox timeout -k 10 "${mise_timeout:-120}" mise "$@" </dev/null); }
+# A vfox backend plugin is disabled by its own name, not by "vfox", so every
+# installed plugin is listed too: the names of the directories in mise's
+# plugins directory, read without running anything.
+mise_disabled_backends() {
+  local dir=${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}/plugins name out=asdf,vfox
+  if [[ -d $dir ]]; then
+    for name in "$dir"/*; do
+      name=${name##*/}
+      [[ $name =~ ^[A-Za-z0-9._-]+$ && $name != .* ]] && out+=",$name"
+    done
+  fi
+  echo "$out"
+}
+mise_run() { (cd "$HOME" && run_unlocked env MISE_HIDE_UPDATE_WARNING=1 MISE_DISABLE_BACKENDS="$(mise_disabled_backends)" timeout -k 10 "${mise_timeout:-120}" mise "$@" </dev/null); }
 
 # mise_load fills these once, in the calling shell (never call it in a
 # subshell, the values would be lost there):

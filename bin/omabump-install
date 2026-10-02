@@ -502,7 +502,7 @@ install_mise() {
 # function exits, so nothing of this file is read after the merge replaced
 # it.
 install_self() {
-  local latest answer validate=(omarchy-plugin-validate)
+  local latest answer before validate=(omarchy-plugin-validate)
   self_git_managed || die "Omabump runs from a local checkout ($plugin_dir); update it with git"
   command -v omarchy-plugin-validate >/dev/null || validate=(omarchy plugin validate)
   command -v "${validate[0]}" >/dev/null || die "omarchy-plugin-validate is missing"
@@ -523,15 +523,22 @@ install_self() {
   echo
   if (( prepare )); then
     echo "Would ask: Update Omabump to $latest? [y/N]"
-    echo "Would run: git merge --ff-only $self_target in $plugin_dir, ${validate[*]} $plugin_dir (git reset --hard ORIG_HEAD if it fails), omarchy-shell shell rescanPlugins"
+    echo "Would run: git merge --ff-only $self_target in $plugin_dir, ${validate[*]} $plugin_dir (git reset --hard to the installed commit if it fails), omarchy-shell shell rescanPlugins"
     exit 0
   fi
+  before=$(self_git rev-parse HEAD) || die "git rev-parse HEAD failed in $plugin_dir"
   read -r -p "Update Omabump to $latest? [y/N] " answer </dev/tty || answer=""
   [[ $answer == [yY] ]] || { echo "Not updated."; exit 0; }
+  # The prompt can wait for minutes: refuse if the clone changed meanwhile,
+  # so a rollback below can never discard an edit made while it waited.
+  [[ $(self_git rev-parse HEAD) == "$before" ]] || die "the plugin clone moved while waiting; nothing changed, run Update again"
+  [[ -z $(self_git status --porcelain) ]] || die "the plugin clone has local changes now; nothing changed"
   self_git merge -q --ff-only "$self_target" || die "git merge --ff-only $self_target failed"
   if ! run_unlocked "${validate[@]}" "$plugin_dir" </dev/null; then
-    self_git reset -q --hard ORIG_HEAD || true
-    die "the new version failed validation; rolled back"
+    if self_git reset -q --hard "$before"; then
+      die "the new version failed validation; rolled back to ${before:0:12}"
+    fi
+    die "the new version failed validation and the rollback failed too; restore it with: git -C $plugin_dir reset --hard $before"
   fi
   run_unlocked omarchy-shell shell rescanPlugins >/dev/null 2>&1 </dev/null || true
   "$plugin_dir/bin/omabump-check" --no-notify || true
