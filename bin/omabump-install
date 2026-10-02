@@ -456,18 +456,20 @@ install_mise() {
   local tool=$installed_name target request now
   [[ -n $tool ]] || die "mise has no active $label"
   mise_load 1
+  mise_key_safe "$tool" || die "$(mise_skip_note "$tool"); Omabump updates mise tools on mise's own backends only. Update $tool with mise up yourself."
   [[ -z $mise_error ]] || die "$mise_error"
   target=$(mise_field "$mise_outdated_json" "$tool" latest)
   if [[ -z $target ]]; then
+    [[ -z $mise_bump_error ]] || die "$mise_bump_error"
     request=$(mise_field "$mise_bump_json" "$tool" requested)
     now=$(mise_field "$mise_bump_json" "$tool" bump)
     [[ -n $now ]] && die "$label is held at $installed by its mise request '$request' ($now exists); mise up would not move it. Change the request with mise use."
     echo "$label $installed is the newest mise up can install."
     exit 0
   fi
-  echo "mise up $tool would install $target"
+  echo "mise up -- $tool would install $target"
   if (( prepare )); then
-    echo "Would run: mise up $tool (in $HOME)"
+    echo "Would run: mise up -- $tool (in $HOME)"
     return 0
   fi
   tool_name_ok "$tool" || die "'$tool' is not a mise tool name Omabump accepts"

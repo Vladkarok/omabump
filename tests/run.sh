@@ -24,6 +24,7 @@ fetch() {
   [[ -f $scratch/served/${url##*/} ]] || return 22
   cat "$scratch/served/${url##*/}"
 }
+# shellcheck disable=SC2329 # stubs, called from omabump-common
 mise_run() { echo "mise_run called in a test" >&2; return 1; }
 pgit_net() { echo "pgit_net called in a test" >&2; return 1; }
 # Discovery reads the machine's menu and ~/.local/bin; tests set its answer.
@@ -290,6 +291,73 @@ pkgs_with_lock true; rc=$?
 kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
 same "pkgs_with_lock: busy while another process holds the lock" 75 "$rc"
 check "pkgs_with_lock: runs once the lock is free" pkgs_with_lock true
+
+# --- mise: inventory, safe backends, outdated -------------------------------------
+
+real_shipped=$shipped_apps
+shipped_apps=$scratch/shipped.json
+cat >"$shipped_apps" <<'EOF2'
+[
+  {"pkg": "mise:a", "source": "mise", "tool": ["a", "npm:a"]},
+  {"pkg": "mise:b", "source": "mise", "tool": "b"},
+  {"pkg": "mise:c", "source": "mise", "tool": "asdf:c"},
+  {"pkg": "mise:d", "source": "mise", "tool": "d"},
+  {"pkg": "mise:e", "source": "mise", "tool": "e"}
+]
+EOF2
+mise_calls=$scratch/mise.calls
+# The stub answers like mise does here: a and b on aqua (b only inactive
+# besides), c through asdf, d not installed, e on http.
+mise_run() {
+  printf '%s\n' "$*" >>"$mise_calls"
+  case $* in
+    "ls --json") echo '{"a":[{"version":"1.0","installed":true,"active":true}],"npm:a":[{"version":"0.9","installed":true,"active":true}],
+      "b":[{"version":"2.0","installed":true,"active":false}],"asdf:c":[{"version":"3.0","installed":true,"active":true}],
+      "d":[{"version":"4.0","installed":false,"active":true}],"e":[{"version":"5.0","installed":true,"active":true}]}' ;;
+    "ls --json --backend aqua") echo '{"a":[],"npm:a":[],"b":[]}' ;;
+    "ls --json --backend http") echo '{"e":[]}' ;;
+    "ls --json --backend gem") [[ -z ${mise_fail_backend:-} ]] || return 1; echo '{}' ;;
+    "ls --json --backend "*) echo '{}' ;;
+    "outdated --json -- "*) [[ -z ${mise_fail_outdated:-} ]] || { echo "boom" >&2; return 1; }
+      echo '{"e":{"latest":"5.1","requested":"latest"}}' ;;
+    "outdated --bump --json -- "*) [[ -z ${mise_fail_bump:-} ]] || { echo "bump boom" >&2; return 1; }
+      echo '{"a":{"bump":"1.2","latest":"1.2","requested":"1.0"},"e":{"bump":"5.1","latest":"5.1","requested":"latest"}}' ;;
+    *) return 1 ;;
+  esac
+}
+# shellcheck disable=SC2329 # mise_load checks for it with command -v
+mise() { :; }
+reset_mise() { : >"$mise_calls"; mise_ls_json='{}' mise_safe_json='{}' mise_outdated_json='{}' mise_bump_json='{}' mise_error="" mise_bump_error="" mise_backend_error=""; }
+load_table; reset_mise
+mise_load 1
+same "mise: outdated and bump name only the selected keys on safe backends, after --" \
+  $'outdated --json -- a e\noutdated --bump --json -- a e' "$(grep '^outdated' "$mise_calls")"
+same "mise: one ls per allowed backend plus the inventory" 13 "$(grep -c '^ls' "$mise_calls")"
+row() { mise_row "$1" "$2"; echo "${latest}|${installable}|${mise_update}|${note}|${feed_error}"; }
+same "mise_row: an update mise up reaches" '5.1|true|true||' "$(row e 5.0)"
+same "mise_row: pinned below a newer release" '1.2|false|false|Pinned to 1.0, 1.2 exists|' "$(row a 1.0)"
+same "mise_row: a key on asdf is not checked and never current" '|false|false|Update check skipped: asdf backend|' "$(row asdf:c 3.0)"
+reset_mise
+mise_fail_bump=1 mise_load 1
+same "mise_row: a bump failure is a check failure, not current" '|true|false||mise outdated --bump failed: bump boom' "$(row a 1.0)"
+same "mise_row: a bump failure leaves outdated's answer" '5.1|true|true||' "$(row e 5.0)"
+reset_mise
+mise_fail_outdated=1 mise_load 1
+same "mise_row: an outdated failure" '|true|false||mise outdated failed: boom' "$(row e 5.0)"
+reset_mise
+mise_fail_backend=1 mise_load 1
+same "mise: a failing backend listing is a diagnostic, the rest still load" 'mise ls --backend gem failed|a e' "$mise_backend_error|${mise_query[*]}"
+cat >"$shipped_apps" <<'EOF2'
+[{"pkg": "mise:c", "source": "mise", "tool": "asdf:c"}, {"pkg": "mise:d", "source": "mise", "tool": "d"}]
+EOF2
+load_table; reset_mise
+mise_load 1
+same "mise: no safe selected key, no outdated call" 0 "$(grep -c '^outdated' "$mise_calls")"
+unset -f mise
+mise_run() { echo "mise_run called in a test" >&2; return 1; }
+reset_mise
+shipped_apps=$real_shipped
+app_table=""
 
 # --- omabump-discover ----------------------------------------------------------
 

@@ -139,25 +139,7 @@ while IFS= read -r app; do
 
   case $source in
     mise)
-      # mise decides: an entry in `mise outdated` is a version `mise up` will
-      # install; one only in the --bump table lies outside the request.
-      installable=true from=mise
-      if [[ -n $mise_error ]]; then
-        feed_error=$mise_error
-      elif latest=$(mise_field "$mise_outdated_json" "$installed_name" latest) && [[ -n $latest ]]; then
-        mise_update=true
-      else
-        latest=$(mise_field "$mise_bump_json" "$installed_name" bump)
-        [[ -n $latest ]] || latest=$(mise_field "$mise_bump_json" "$installed_name" latest)
-        if [[ -n $latest && $latest != "$installed" ]]; then
-          installable=false
-          request=$(mise_field "$mise_bump_json" "$installed_name" requested)
-          if [[ $request == latest ]]; then note="Held back by your mise settings, $latest exists"
-          else note="Pinned to $request, $latest exists"; fi
-        else
-          latest=$installed
-        fi
-      fi ;;
+      mise_row "$installed_name" "$installed" ;;
     vendor-pkg)
       if ! command -v sudo >/dev/null || ! command -v curl >/dev/null; then
         note="Missing: sudo or curl; sudo pacman -S --needed base-devel curl"
