@@ -136,7 +136,7 @@ Update opens a floating terminal and runs `bin/omabump-install <pkg>`. The row's
 
 | Step | What runs | As whom |
 |---|---|---|
-| Background check (timer, Refresh) | curl of the feeds above; git fetch of the pinned omarchy-pkgs commit; recipes read as text with `git show`; Omarchy's menu and agent wrappers read as text; your `shell.json` read for the mute and skip settings; `mise ls` and `mise outdated` for the listed tools on the allowed backends, asdf and vfox disabled; your own `command` feeds | you |
+| Background check (timer, Refresh) | curl of the feeds above; the pinned omarchy-pkgs commit, fetched with git; recipes read as text with `git show`; Omarchy's menu and agent wrappers read as text; your `shell.json` read for the mute and skip settings; `mise ls` and `mise outdated` for the listed tools on the allowed backends, asdf and vfox disabled; your own `command` feeds | you |
 | Update, omarchy row | `bin/sync-upstream` and the recipe's upstream hook from the pinned commit, then makepkg and the PKGBUILD | you; sudo for missing build dependencies |
 | Update, vendor row | download, digest check against the vendor's published list, `pacman -Qp` | you |
 | Install of any built or vendor package | `sudo install` into `/var/cache/omabump`, `pacman -U` on that copy, the package's install script, pacman hooks | root |
@@ -201,7 +201,7 @@ Mute and skip apply to every check, whoever starts it: the shell's timer, `bin/o
 
 ## Keys
 
-`j`/`k` or arrows select a row, `Enter` updates it (or asks the agent on a row without Update), `w` switches the package, `c` copies the agent prompt, `m` mutes or unmutes the row, `K` skips or unskips its newest version, `r` checks now, `s` opens the settings, `Esc` closes.
+Arrows or `j` and `k` select a row, `Enter` updates it (or asks the agent on a row without Update), `w` switches the package, `c` copies the agent prompt, `m` mutes or unmutes the row, `K` skips or unskips its newest version, `r` checks now, `s` opens the settings, `Esc` closes.
 
 IPC: `omarchy-shell io.github.vladkarok.omabump status|open|close|toggle|refresh|settings`. `status` counts what the bar counts, including unchecked rows, and adds "(+N muted/skipped)" when quiet rows have updates. `refresh` answers `throttled` and starts nothing when a check ended less than a minute ago. The check interval is kept between 60 seconds and a day.
 
