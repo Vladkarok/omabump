@@ -2,8 +2,11 @@
 
 ## 0.1.1 (unreleased)
 
-- Grok CLI: track mise's first-party `grok` tool. Omarchy's migration 1790863209 replaced `npm:@xai-official/grok` with it, which made the row disappear.
-- Track the other agent CLIs Omarchy installs through mise wrappers: Copilot CLI, Cursor CLI, Pi, Oh My Pi, Ori.
+- Agent CLIs are discovered instead of listed by hand. Omarchy's migration 1790863209 moved Grok CLI from `npm:@xai-official/grok` to mise's first-party `grok`, and the row disappeared because its key was not in `apps.json`; Copilot CLI, Cursor CLI, Pi, Oh My Pi and Ori were never there. `bin/omabump-discover` now reads Omarchy's agent menu (stock and your extension) and each agent's `omarchy-mise-install` wrapper, as text, and takes the mise key from the wrapper. Known agents keep their shipped name and icon (new `command` field), new ones get a row with the menu's label, disabled rows stay hidden.
+- `mise outdated` is asked only about the key each row resolved to, and only on mise's own backends (`mise ls --backend`); a tool on asdf, vfox or another plugin backend shows "Update check skipped" and has no Update.
+- A failed `mise outdated --bump` call is a check failure; it used to be ignored, and the row could read as current.
+- The app table is built once per run, so the check, the mise queries and the installer see the same rows.
+- The panel footer and the bar tooltip say when agent discovery failed.
 
 ## 0.1.0 (2026-10-01)
 

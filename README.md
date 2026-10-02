@@ -29,7 +29,24 @@ The panel has two sections, Desktop apps and CLI tools. Apps are found with `pac
 | `kimi-bin` | Kimi | indicator, version from Moonshot's update feed |
 | `trae-bin` | Trae | indicator, version from the AUR |
 
-mise tools, listed when mise has them installed and active: Claude Code, Codex CLI, Gemini CLI, Jules, Antigravity CLI, Qwen Code, Kimi CLI, Crush, OpenCode, Amp, herdr, Grok CLI.
+mise tools, listed when mise has them installed and active: every coding agent Omarchy offers (Claude Code, Codex CLI, Crush, OpenCode, Grok CLI, Copilot CLI, Cursor CLI, Pi, Oh My Pi, Ori, Antigravity CLI, Muse Code and whatever Omarchy adds later, see How CLI tools are found), plus Gemini CLI, Jules, Qwen Code, Kimi CLI, Amp and herdr.
+
+### How CLI tools are found
+
+Omarchy lists its coding agents in its menu, as the entries `setup.default.agent.<command>` of `/usr/share/omarchy/default/omarchy/omarchy-menu.jsonc` and of your `~/.config/omarchy/extensions/omarchy-menu.jsonc`, and installs each one on first use through `omarchy-mise-install`, which writes `~/.local/bin/<command>`:
+
+```sh
+#!/bin/bash
+export MISE_MINIMUM_RELEASE_AGE=0
+mise use -g --quiet "<package>" || exit 1
+exec mise x "<package>" -- "<bin>" "$@"
+```
+
+Every check, `bin/omabump-discover` reads both as text. Of a menu entry it uses the command and the label, never `action`, `when` or `checked`. A wrapper counts only when it is a regular file you own (not a symlink), at most 4 KiB, and exactly the four lines above with the same package twice and no `$`, backtick, `\`, `"` or `!` in it; it is opened, never run or sourced. The package, without a trailing `[options]` suffix (`http:muse[url=...]` is `http:muse`), is the key `mise ls` reports. Without such a wrapper the command itself is the key, used only when mise has exactly that tool installed and active. So when Omarchy moves an agent to another mise package, the row follows it.
+
+A discovered agent joins the shipped row whose `command` is its command or whose `tool` list holds its key, which keeps the shipped name and icon; otherwise it gets a row `mise:<command>` with the menu's label. `{"pkg": "mise:<command>", "disabled": true}` in your `apps.json` hides it for good. When the menu cannot be read, the panel footer says "Agent discovery failed" and the shipped rows still show.
+
+`mise outdated` is asked only about the key each row resolved to, and only when `mise ls --backend` puts it on one of mise's own backends: aqua, github, gitlab, forgejo, npm, http, ubi, cargo, go, pipx, gem, core. A tool that resolves through asdf, vfox or another plugin backend shows its installed version and "Update check skipped", and has no Update button: resolving its versions would run the plugin's scripts. `mise ls` itself, which Omabump does call, may still resolve the requests in your mise config before it filters its output.
 
 ## Install
 
@@ -99,7 +116,7 @@ Update opens a floating terminal and runs `bin/omabump-install <pkg>`. The row's
 
 **vendor.** The vendor publishes a ready Arch package (ZCode does). `apps.json` gives its URL and a feed for the newest version. Update refuses unless the feed's version is newer than the installed one, downloads the file over HTTPS, and verifies it against the sha512 the vendor lists for that exact file in its update manifest. It refuses if the manifest has no checksum for the file, and deletes a file that does not match. Then `pacman -Qp` checks the package name and full version, the installed version is read again, and only then is the file staged and installed with `sudo pacman -U`, after pacman asks. pacman does not fetch the URL itself because it would check a remote file against `SigLevel = Required`, and the vendor does not sign the package.
 
-**mise.** Update runs `mise up <tool>` in `$HOME`. The check asked `mise outdated` what that command can reach, so the configured request and mise's release-age cooldown apply to both. A tool pinned below the newest release shows "Pinned to 0.96.1, 0.97.1 exists" and no Update button. Resolving versions can run a tool backend's own scripts (asdf and vfox plugins), so Omabump passes `mise outdated` only the tools from its app table that `mise ls` reports installed, never every tool in your mise config.
+**mise.** Update runs `mise up <tool>` in `$HOME`. The check asked `mise outdated` what that command can reach, so the configured request and mise's release-age cooldown apply to both. A tool pinned below the newest release shows "Pinned to 0.96.1, 0.97.1 exists" and no Update button. Resolving versions can run a tool backend's own scripts (asdf and vfox plugins), so Omabump passes `mise outdated` only the key each row resolved to, on mise's own backends, never every tool in your mise config (see How CLI tools are found).
 
 **indicator.** No Update button. These rows show the installed and newest version. Update them the way you installed them.
 
@@ -113,7 +130,7 @@ Update opens a floating terminal and runs `bin/omabump-install <pkg>`. The row's
 
 | Step | What runs | As whom |
 |---|---|---|
-| Background check (timer, Refresh) | curl of the feeds above; git fetch of the pinned omarchy-pkgs commit; recipes read as text with `git show`; `mise ls` and `mise outdated` for the listed tools; your own `command` feeds | you |
+| Background check (timer, Refresh) | curl of the feeds above; git fetch of the pinned omarchy-pkgs commit; recipes read as text with `git show`; Omarchy's menu and agent wrappers read as text; `mise ls` and `mise outdated` for the listed tools on mise's own backends; your own `command` feeds | you |
 | Update, omarchy row | `bin/sync-upstream` and the recipe's upstream hook from the pinned commit, then makepkg and the PKGBUILD | you; sudo for missing build dependencies |
 | Update, vendor row | download, digest check against the vendor's published list, `pacman -Qp` | you |
 | Install of any built or vendor package | `sudo install` into `/var/cache/omabump`, `pacman -U` on that copy, the package's install script, pacman hooks | root |
@@ -122,7 +139,7 @@ Update opens a floating terminal and runs `bin/omabump-install <pkg>`. The row's
 
 What each guarantee covers, exactly:
 
-- **No fetched code in the background check.** Feeds and recipes are parsed as text; nothing Omabump downloads is executed. Two things in the check do run code that is not Omabump's: `mise outdated` may run a tool backend's own scripts (asdf and vfox plugins) while it resolves versions, and a `command` feed in your own `apps.json` is your code. The shipped table has no command feeds. The whole check runs under `timeout -k 10 600`.
+- **No fetched code in the background check.** Feeds and recipes are parsed as text; nothing Omabump downloads is executed. Two things in the check do run code that is not Omabump's: `mise ls` may resolve the requests in your mise config, which for an asdf or vfox tool runs the plugin's scripts (`mise outdated` is asked only about tools on mise's own backends), and a `command` feed in your own `apps.json` is your code. The shipped table has no command feeds. The whole check runs under `timeout -k 10 600`.
 - **HTTPS only.** Omabump's own downloads allow only HTTPS, redirects included, with connect, total-time and size limits (8 MB for a feed, 4 GB for a package). Code from omarchy-pkgs that Update runs is held to the same rule from outside: `bin/sync-upstream` and its hooks run with `CURL_HOME` pointing at a generated `.curlrc` (`proto = "=https"`, `proto-redir = "=https"`, time and size limits), and makepkg runs with a generated `--config` that sources your makepkg configuration and replaces `DLAGENTS` with an HTTPS-only curl (`http`, `ftp`, `scp` and `rsync` sources fail). A hook that bypasses curl is not covered. `bin/sync-upstream` gets `TMPDIR` under `~/.cache/omabump/scratch` and runs without the maintainer-only `BYPASS_MIN_RELEASE_AGE`.
 - **Checksums are integrity, not authenticity.** The vendor package's digest comes from the vendor's own unsigned manifest or list over HTTPS. It catches a corrupted or swapped download on the way (transport, CDN), not a compromised vendor. The omarchy route likewise takes its hashes from the vendor's unsigned index through `bin/sync-upstream`; voxtype is the exception, its recipe checks a signed `.asc`.
 - **pacman asks before it installs.** Both installs run plain `sudo pacman -U`, so pacman shows the package and asks "Proceed with installation?". sudo may not ask for a password at all (a cached credential, or makepkg's own `sudo pacman -S` a moment earlier), so the pacman prompt is the point where you can still stop.
@@ -192,7 +209,8 @@ Fields:
 - `pkg`: the omarchy-pkgs recipe name, or the package name the vendor's package installs as. Any unique id for mise entries (`mise:<name>`).
 - `source`: `omarchy`, `vendor-pkg`, `mise` or `indicator`.
 - `installed` (optional): package names to look for with `pacman -Q`, default `[pkg]`.
-- `tool` (mise only): the mise tool name, or a list of names; the first one mise has active is used.
+- `tool` (mise only): the mise tool name, or a list of names; the first one mise has active is used. Setting it in your file replaces the list, and discovery then leaves it alone.
+- `command` (mise only, optional): the command Omarchy's agent menu uses for the tool (`grok`, `agy`, `omp`), so a discovered agent joins this row.
 - `vendorPkg` (vendor-pkg): HTTPS package URL per architecture (`uname -m`), with `{version}` replaced by the feed's version.
 - `checksum` (vendor-pkg, required for Update): `"feed"` reads the base64 `sha512` listed next to the file's `url` in the feed document (electron-updater's `latest.yml` format, as ZCode's manifest uses), or `{"url": ..., "algo": "sha256"|"sha512"}` reads a `sha256sum`-style list.
 - `recipeCommit` (optional, omarchy): a 40-hex omarchy-pkgs commit whose recipe tree replaces the pinned one, for a package whose upstream watch is still in an unmerged PR. `recipeFetch` names a ref to fetch it from and `recipeNote` is the text the row shows. Once the pinned commit's own recipe has a watch, it is ignored.
