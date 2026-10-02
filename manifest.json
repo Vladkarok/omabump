@@ -21,7 +21,8 @@
       "notify": true,
       "showMise": true,
       "barIconOnlyWithUpdates": false,
-      "mutedApps": []
+      "mutedApps": [],
+      "skippedVersions": {}
     },
     "schema": [
       { "key": "refreshIntervalSec", "type": "integer", "label": "Check interval (seconds)", "min": 60, "max": 86400, "step": 60, "defaultValue": 900 },

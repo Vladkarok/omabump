@@ -53,7 +53,12 @@ Panel {
   readonly property string quietText: {
     var names = []
     for (var i = 0; i < checker.mutedApps.length; i++) names.push(appName(checker.mutedApps[i]))
-    return names.length > 0 ? "Muted: " + names.join(", ") : ""
+    var skips = []
+    for (var pkg in checker.skippedVersions) skips.push(appName(pkg) + " " + checker.skippedVersions[pkg])
+    var parts = []
+    if (names.length > 0) parts.push("Muted: " + names.join(", "))
+    if (skips.length > 0) parts.push("Skipped: " + skips.join(", "))
+    return parts.join(" · ")
   }
   readonly property var intervalChoices: [300, 900, 1800, 3600, 21600, 86400]
 
@@ -134,12 +139,33 @@ Panel {
 
   // shell.json hot-reloads and the bar injects the new settings, so the
   // controls bind to settings and this only writes the merged entry.
-  function setSetting(key, value) {
+  // Every write also drops skips a newer release has overtaken.
+  function setSettings(changes) {
     if (!root.bar || !root.bar.shell || typeof root.bar.shell.updateEntryInline !== "function") return
     var entry = { id: root.moduleName }
     for (var existing in root.settings) if (existing !== "id") entry[existing] = root.settings[existing]
-    entry[key] = value
+    for (var key in changes) entry[key] = changes[key]
+    var skips = liveSkips(changes.skippedVersions !== undefined ? changes.skippedVersions : checker.skippedVersions)
+    if (Object.keys(skips).length > 0 || entry.skippedVersions !== undefined) entry.skippedVersions = skips
     root.bar.shell.updateEntryInline(root.moduleName, entry)
+  }
+
+  function setSetting(key, value) {
+    var changes = {}
+    changes[key] = value
+    setSettings(changes)
+  }
+
+  // A skip is stale once the row's newest version is past it.
+  function liveSkips(skips) {
+    var out = {}
+    for (var pkg in skips) {
+      var app = null
+      for (var i = 0; i < checker.apps.length; i++) if (checker.apps[i].pkg === pkg) app = checker.apps[i]
+      var stale = !!app && app.updateAvailable === true && app.latest !== skips[pkg] && app.skipped !== true
+      if (!stale) out[pkg] = skips[pkg]
+    }
+    return out
   }
 
   function settingOn(row) { return root.setting(row.key, row.fallback) === true }
@@ -166,8 +192,21 @@ Panel {
     setSetting("mutedApps", list)
   }
 
+  // Skip: the row's current newest version stops signalling; a newer one
+  // signals again. Update and Enter keep working.
+  function toggleSkip(app) {
+    if (!app) return
+    var skips = {}
+    for (var pkg in checker.skippedVersions) if (pkg !== app.pkg) skips[pkg] = checker.skippedVersions[pkg]
+    if (!checker.isSkipped(app)) {
+      if (app.updateAvailable !== true || String(app.latest || "") === "") return
+      skips[app.pkg] = app.latest
+    }
+    setSetting("skippedVersions", skips)
+  }
+
   function clearQuiet() {
-    setSetting("mutedApps", [])
+    setSettings({ mutedApps: [], skippedVersions: {} })
     settingIndex = clamp(settingIndex, 0, settingRows.length)
   }
 
@@ -253,6 +292,7 @@ Panel {
     if (root.settingsOpen) return "Space change · Esc back"
     var app = root.cursorActive ? root.selectedApp() : null
     var mute = app ? (checker.isMuted(app) ? " · m unmute" : " · m mute") : ""
+    if (app && app.updateAvailable === true) mute = (checker.isSkipped(app) ? " · K unskip" : " · K skip") + mute
     if (root.askable(app)) return "Enter ask agent · c copy prompt" + mute
     if (app && app.updateAvailable === true && app.installable === true) return "Enter update" + mute + " · Esc close"
     if (app && app.switchable === true) return "w switch package" + mute + " · Esc close"
@@ -371,6 +411,7 @@ Panel {
     if (String(app.note || "") !== "") lines.push(app.note)
     if (String(app.error || "") !== "") lines.push("Check failed: " + app.error)
     if (checker.isMuted(app)) lines.push("Muted: no badge, no notification")
+    if (checker.isSkipped(app)) lines.push("Skipped " + checker.skippedVersion(app) + ": no badge, no notification until a newer version")
     return lines.join("\n")
   }
 
@@ -509,6 +550,8 @@ Panel {
         else if ((t === "c" || t === "C") && !root.settingsOpen && root.cursorActive) root.promptFor(root.selectedApp(), "copy")
         else if ((t === "w" || t === "W") && !root.settingsOpen && root.cursorActive) root.switchApp(root.selectedApp())
         else if ((t === "m" || t === "M") && !root.settingsOpen && root.cursorActive) root.toggleMute(root.selectedApp())
+        // k moves the cursor up (PanelKeyCatcher), so skip is K.
+        else if (t === "K" && !root.settingsOpen && root.cursorActive) root.toggleSkip(root.selectedApp())
       }
 
       // The hero and the footer stay put; only the rows scroll.
@@ -908,6 +951,7 @@ Panel {
     readonly property bool showAction: hasCursor && (updatable || askable || switchable)
     readonly property bool muted: checker.isMuted(app)
     readonly property bool quiet: checker.isQuiet(app)
+    readonly property bool skipped: checker.isSkipped(app)
     readonly property string extra: root.extraLine(app)
     property bool actionHovered: false
     onShowActionChanged: if (!showAction) actionHovered = false
@@ -1016,6 +1060,15 @@ Panel {
           font.pixelSize: Style.font.caption
           font.bold: !appRow.quiet
         }
+
+        Text {
+          textFormat: Text.PlainText
+          visible: appRow.skipped
+          text: "skipped"
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
       }
 
       Button {
@@ -1067,6 +1120,19 @@ Panel {
         tooltipText: "Open your default agent with a prompt to plan the update; it may change the system  Enter"
         onHovered: function(on) { appRow.actionHovered = on }
         onClicked: root.promptFor(appRow.app, "ask")
+      }
+
+      PanelActionButton {
+        visible: appRow.hasCursor && appRow.hasUpdate
+        Layout.alignment: Qt.AlignVCenter
+        iconText: "󰒭"
+        bordered: appRow.skipped
+        tooltipText: appRow.skipped ? "Unskip " + checker.skippedVersion(appRow.app) + "  K"
+          : appRow.app ? "Skip " + appRow.app.latest + ": quiet until a newer version  K" : ""
+        foreground: appRow.skipped ? root.foreground : root.dim
+        fontFamily: root.fontFamily
+        onHovered: function(on) { appRow.actionHovered = on }
+        onClicked: root.toggleSkip(appRow.app)
       }
 
       PanelActionButton {

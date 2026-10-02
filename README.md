@@ -182,11 +182,17 @@ with the keys `refreshIntervalSec` (seconds), `showMise`, `barIconOnlyWithUpdate
 
 ### Mute
 
-Mute (`m`, or the 󰖁 button on the row under the cursor) keeps a row in the list, dimmed with the same glyph after its name, and takes it out of every signal: no badge, no update count, no urgent icon, no reason to show the bar icon when it is hidden until an update, no notification. Its update stays visible and Update and Enter still work. Mute again to undo, or Clear in the settings, which list the muted rows. The list is the widget setting `mutedApps`, an array of row ids (`pkg`), set with `omarchy bar set io.github.vladkarok.omabump mutedApps '["mise:grok-cli"]' --json`. Omarchy's settings schema has no array type, so the setting appears only in the panel's own settings, not in the bar's widget settings.
+Mute (`m`, or the 󰖁 button on the row under the cursor) keeps a row in the list, dimmed with the same glyph after its name, and takes it out of every signal: no badge, no update count, no urgent icon, no reason to show the bar icon when it is hidden until an update, no notification. Its update stays visible and Update and Enter still work. Mute again to undo, or Clear in the settings, which list the muted rows. The list is the widget setting `mutedApps`, an array of row ids (`pkg`), set with `omarchy bar set io.github.vladkarok.omabump mutedApps '["mise:grok-cli"]' --json`.
+
+### Skip a version
+
+On a row with an update, Skip (`K`, Shift+k since `k` moves the cursor, or the 󰒭 button) silences that one version the same way: the row shows `installed → newest skipped`, dimmed, and Update still works. When a newer version than the skipped one appears, the row counts and notifies again (once), and the old skip is dropped the next time the panel writes a setting. pacman versions are compared with `vercmp`, mise versions must match exactly. Skip again to undo. The setting is `skippedVersions`, an object of row id to version: `omarchy bar set io.github.vladkarok.omabump skippedVersions '{"grok-bot": "0.66.0"}' --json`.
+
+Omarchy's settings schema has no array or object type, so `mutedApps` and `skippedVersions` appear only in the panel's own settings (one line, with Clear), not in the bar's widget settings.
 
 ## Keys
 
-`j`/`k` or arrows select a row, `Enter` updates it (or asks the agent on a row without Update), `w` switches the package, `c` copies the agent prompt, `m` mutes or unmutes the row, `r` checks now, `s` opens the settings, `Esc` closes.
+`j`/`k` or arrows select a row, `Enter` updates it (or asks the agent on a row without Update), `w` switches the package, `c` copies the agent prompt, `m` mutes or unmutes the row, `K` skips or unskips its newest version, `r` checks now, `s` opens the settings, `Esc` closes.
 
 IPC: `omarchy-shell io.github.vladkarok.omabump status|open|close|toggle|refresh|settings`. `status` counts what the bar counts and adds "(+N muted/skipped)" when quiet rows have updates. `refresh` answers `throttled` and starts nothing when a check ended less than a minute ago. The check interval is kept between 60 seconds and a day.
 

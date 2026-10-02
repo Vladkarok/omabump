@@ -60,9 +60,40 @@ parse_muted() {
   done
 }
 
+# A version as mise or a feed prints it, for a skipped version: what
+# version_ok allows plus "-" (mise versions such as 1.0.0-beta.1).
+skip_version_ok() { [[ ${#1} -le 64 && $1 =~ ^[0-9A-Za-z][A-Za-z0-9._+~-]*$ && $1 != *..* ]]; }
+
+# The versions the user skipped in the panel (widget setting
+# skippedVersions), passed as --skipped pkg=version,... Prints them as a JSON
+# object; an entry with a bad id or version is dropped with a line on stderr.
+parse_skipped() {
+  local entry entries=() pkg ver out='{}'
+  IFS=, read -ra entries <<<"$1"
+  for entry in "${entries[@]}"; do
+    [[ -n $entry ]] || continue
+    pkg=${entry%%=*} ver=${entry#*=}
+    if [[ $entry == *=* ]] && app_id_ok "$pkg" && skip_version_ok "$ver"; then
+      out=$(jq -c --arg p "$pkg" --arg v "$ver" '.[$p] = $v' <<<"$out")
+    else
+      echo "ignoring skipped entry '$entry'" >&2
+    fi
+  done
+  echo "$out"
+}
+
+# True when a row's update is the version the user skipped, or older: mise
+# versions must match exactly (mise compares them, not vercmp), the others
+# compare with vercmp. A newer release than the skipped one lights the row
+# up again. $1 source, $2 update (true/false), $3 latest, $4 skipped version.
+row_skipped() {
+  [[ $2 == true && -n $4 && -n $3 ]] || return 1
+  if [[ $1 == mise ]]; then [[ $3 == "$4" ]]; else ! newer "$3" "$4"; fi
+}
+
 # What to do about a row's newer version once per version: "send" a
 # notification, "record" it as announced without one (a quiet row: muted, or
-# at a skipped version, so undoing that does not announce it late), or
+# at a skipped version; undoing either does not announce it late), or
 # nothing (no update, a failed check, or already announced). $1 update
 # (true/false), $2 error text, $3 quiet (true/false), $4 latest, $5 the
 # version last announced.

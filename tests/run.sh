@@ -372,6 +372,27 @@ same "announce_action: a muted row's recorded version stays quiet after unmuting
 same "announce_action: a failed check announces nothing" '' "$(announce_action true 'feed failed' false 1.1 '')"
 same "announce_action: no update, nothing" '' "$(announce_action false '' false 1.1 '')"
 
+# --- skip a version -----------------------------------------------------------------
+
+# The $(id) entries are literal text that must be refused, never expanded.
+# shellcheck disable=SC2016
+same "parse_skipped: valid entries kept, bad ones dropped" '{"mise:grok-cli":"1.0.0-beta.1","grok-bot":"0.66.0"}' \
+  "$(parse_skipped 'mise:grok-cli=1.0.0-beta.1,../x=1,grok-bot=0.66.0,y=$(id),z,w=..,mise:a=1..2' 2>/dev/null)"
+# shellcheck disable=SC2016
+same "parse_skipped: each dropped entry is named on stderr" 5 \
+  "$(parse_skipped '../x=1,y=$(id),z,w=..,mise:a=1..2' 2>&1 >/dev/null | grep -c '^ignoring skipped entry')"
+same "parse_skipped: nothing given" '{}' "$(parse_skipped '')"
+check "row_skipped: mise, the skipped version exactly" row_skipped mise true 1.0.99 1.0.99
+refuse "row_skipped: mise, a different version string" row_skipped mise true 1.0.99 1.0.98
+check "row_skipped: pacman, latest at the skipped version" row_skipped omarchy true 0.66.0 0.66.0
+check "row_skipped: pacman, latest below the skipped version (vercmp)" row_skipped omarchy true 0.66.0 0.67.0
+refuse "row_skipped: pacman, a newer release lights the row up again" row_skipped omarchy true 0.68.0 0.67.0
+refuse "row_skipped: no update, not skipped" row_skipped omarchy false 0.66.0 0.66.0
+refuse "row_skipped: nothing skipped" row_skipped omarchy true 0.66.0 ''
+same "skip: the skipped version is recorded, not notified" record "$(announce_action true '' true 0.66.0 '')"
+same "skip: a newer release than the skipped one is notified once" send "$(announce_action true '' false 0.67.0 0.66.0)"
+same "skip: and not again" '' "$(announce_action true '' false 0.67.0 0.67.0)"
+
 # --- omabump-discover ----------------------------------------------------------
 
 disc=$scratch/discover

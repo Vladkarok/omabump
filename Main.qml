@@ -42,6 +42,16 @@ Item {
         if (typeof list[i] === "string" && list[i] !== "") out.push(list[i])
     return out
   }
+  // {pkg: version} the user skipped. While a row's newest version is that
+  // one it signals nothing; a newer release lights it up again.
+  readonly property var skippedVersions: {
+    var map = setting("skippedVersions", {})
+    var out = {}
+    if (map && typeof map === "object")
+      for (var pkg in map)
+        if (typeof map[pkg] === "string" && map[pkg] !== "") out[pkg] = map[pkg]
+    return out
+  }
 
   property var apps: []
   property string checkedAt: ""
@@ -108,8 +118,18 @@ Item {
   }
 
   function isMuted(app) { return !!app && mutedApps.indexOf(String(app.pkg)) !== -1 }
-  // A row that signals nothing: muted.
-  function isQuiet(app) { return isMuted(app) }
+  // The version skipped for this row, if any.
+  function skippedVersion(app) {
+    return app && skippedVersions.hasOwnProperty(app.pkg) ? skippedVersions[app.pkg] : ""
+  }
+  // Skipped while the newest version is the skipped one: the checker says so
+  // (vercmp for pacman rows) or, right after a skip, the versions match.
+  function isSkipped(app) {
+    var version = skippedVersion(app)
+    return version !== "" && app.updateAvailable === true && (app.latest === version || app.skipped === true)
+  }
+  // A row that signals nothing: muted, or at a skipped version.
+  function isQuiet(app) { return isMuted(app) || isSkipped(app) }
 
   function refresh() {
     if (!settingsReady || checkProcess.running) return
@@ -118,6 +138,9 @@ Item {
     if (!notify) command.push("--no-notify")
     if (!showMise) command.push("--no-mise")
     if (mutedApps.length > 0) command.push("--muted", mutedApps.join(","))
+    var skips = []
+    for (var pkg in skippedVersions) skips.push(pkg + "=" + skippedVersions[pkg])
+    if (skips.length > 0) command.push("--skipped", skips.join(","))
     checkProcess.command = command
     checkProcess.running = true
   }

@@ -12,7 +12,7 @@
 #   mise        `mise outdated`: what `mise up` would reach under the
 #               configured request, and what lies outside it (a pin).
 #
-#   omabump-check [--no-notify] [--no-mise] [--muted pkg,...]
+#   omabump-check [--no-notify] [--no-mise] [--muted pkg,...] [--skipped pkg=version,...]
 #
 # The shell runs it under `timeout -k 10 600` (Main.qml), so a hung feed or
 # tool cannot keep a check alive past ten minutes; the TERM trap below still
@@ -21,20 +21,23 @@ set -euo pipefail
 # shellcheck source=omabump-common
 source "$(dirname "$(readlink -f "$0")")/omabump-common"
 
-usage="usage: omabump-check [--no-notify] [--no-mise] [--muted pkg,...]"
-notify=1 with_mise=1 muted_arg=""
+usage="usage: omabump-check [--no-notify] [--no-mise] [--muted pkg,...] [--skipped pkg=version,...]"
+notify=1 with_mise=1 muted_arg="" skipped_arg=""
 while (( $# )); do
   case $1 in
     --no-notify) notify=0 ;;
     --no-mise) with_mise=0 ;;
     --muted) (( $# > 1 )) || { echo "$usage" >&2; exit 2; }; muted_arg=$2; shift ;;
+    --skipped) (( $# > 1 )) || { echo "$usage" >&2; exit 2; }; skipped_arg=$2; shift ;;
     *) echo "$usage" >&2; exit 2 ;;
   esac
   shift
 done
-# Muted rows (the panel's mutedApps setting) never notify; status.json still
-# says the truth about them, plus "muted": true.
+# Muted rows (the panel's mutedApps setting) and rows at a version the user
+# skipped (skippedVersions) never notify; status.json still says the truth
+# about them, plus "muted" and "skipped".
 muted_json=$(parse_muted "$muted_arg" | jq -Rsc 'split("\n") | map(select(. != ""))')
+skipped_json=$(parse_skipped "$skipped_arg")
 
 mkdir -p "$state_dir"
 # The shell timer and a hand run can overlap; the second one has nothing to add.
@@ -237,7 +240,10 @@ while IFS= read -r app; do
   fi
 
   muted=$(jq --arg pkg "$pkg" 'index($pkg) != null' <<<"$muted_json")
-  quiet=$muted
+  skipped=false
+  row_skipped "$source" "$update" "$latest" "$(jq -r --arg pkg "$pkg" '.[$pkg] // ""' <<<"$skipped_json")" && skipped=true
+  quiet=false
+  [[ $muted == true || $skipped == true ]] && quiet=true
 
   announced=$(jq -r --arg pkg "$pkg" '.[$pkg] // ""' <<<"$notified")
   action=""
@@ -261,13 +267,13 @@ while IFS= read -r app; do
     --arg latest "$(clean_text "$latest")" --arg versionFrom "$from" --argjson update "$update" \
     --argjson installable "$installable" --arg error "$error" --arg note "$(clean_text "$note")" \
     --argjson stale "$stale" --argjson switchable "$switchable" --arg recipe "$(clean_text "$recipe")" --arg recipeCommit "$recipe_commit" \
-    --arg request "$(clean_text "$request")" --argjson muted "$muted" \
+    --arg request "$(clean_text "$request")" --argjson muted "$muted" --argjson skipped "$skipped" \
     --arg icon "$(jq -r '.icon // ""' <<<"$app")" --arg iconLight "$(jq -r '.iconLight // ""' <<<"$app")" \
     '{pkg: $pkg, label: $label, source: $source, installedName: $installedName,
       installed: $installed, latest: $latest, versionFrom: $versionFrom,
       updateAvailable: $update, installable: $installable, error: $error, note: $note,
       stale: $stale, switchable: $switchable, recipe: $recipe, recipeCommit: $recipeCommit,
-      request: $request, muted: $muted,
+      request: $request, muted: $muted, skipped: $skipped,
       icon: $icon, iconLight: $iconLight}')")
   write_status 0
 done < <(jq -c '.[]' <<<"$table")
