@@ -39,6 +39,9 @@ Item {
   property string pkgsError: ""
   property string pkgsNote: ""
   property string checkError: ""
+  // bin/omabump-discover could not read Omarchy's agent menu: the curated
+  // mise rows still show, discovered ones do not.
+  property string discoveryError: ""
   // When this shell's last check ended; IPC refresh is throttled on it.
   property double lastCheckEndMs: 0
   // A run from a terminal marks status.json as in progress too. A run killed
@@ -111,6 +114,7 @@ Item {
       pkgsFollowing = pkgs.following === true
       pkgsError = String(pkgs.error || "")
       pkgsNote = String(pkgs.note || "")
+      discoveryError = parsed ? String(parsed.discoveryError || "") : ""
     } catch (e) {
       console.warn("omabump", "Ignoring bad status file", statusPath, e)
     }

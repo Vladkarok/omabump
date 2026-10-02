@@ -267,13 +267,16 @@ Panel {
   }
 
   readonly property string followingText: checker.pkgsFollowing ? "omarchy-pkgs: following master (unpinned)" : ""
+  readonly property string discoveryText: checker.discoveryError !== "" ? "Agent discovery failed: " + checker.discoveryError : ""
 
   function tooltipText() {
     var summary = summaryText()
     var text = summary === "All current" ? "Omabump up to date"
       : summary !== "" ? "Omabump: " + summary
       : checker.checkedAt === "" ? "Omabump: not checked yet" : "Omabump: none installed"
-    return followingText !== "" ? text + "\n" + followingText : text
+    if (followingText !== "") text += "\n" + followingText
+    if (discoveryText !== "") text += "\n" + discoveryText
+    return text
   }
 
   // The package release (-1) says nothing next to an upstream version, so
@@ -782,6 +785,18 @@ Panel {
             visible: text !== ""
             width: parent.width
             text: root.followingText
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            horizontalAlignment: Text.AlignHCenter
+            elide: Text.ElideRight
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            visible: text !== ""
+            width: parent.width
+            text: root.discoveryText
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption

@@ -88,6 +88,9 @@ pkgs_ready() {
 # One table for the whole run: discovery and the merge happen once.
 load_table
 table=$app_table
+# Shown in the panel: without discovery, only the curated mise rows remain.
+discovery_note=""
+(( with_mise )) && [[ -n $discovery_error ]] && discovery_note=$(clean_text "${discovery_error:0:200}")
 order=$(jq -c 'map(.pkg)' <<<"$table")
 
 # Replaces status.json in one rename. $1 is 0 while checking, 1 for the final
@@ -104,7 +107,7 @@ write_status() {
   printf '%s\n' "${rows[@]}" | jq -s --slurpfile prevs "$tmp/previous.json" --argjson order "$order" \
     --argjson final "$final" --arg at "$at" --arg started "$started" \
     --arg commit "$pkgs_commit" --arg perr "$(clean_text "$pkgs_error")" --arg pnote "$(clean_text "$pkgs_note")" \
-    --argjson following "$pkgs_follow" '
+    --argjson following "$pkgs_follow" --arg derr "$discovery_note" '
     $prevs[0] as $prev
     | (map(.pkg)) as $done
     | (if $final == 1 then .
@@ -112,7 +115,7 @@ write_status() {
     | sort_by([.source == "mise", (.pkg as $p | $order | index($p) // 1e9)])
     | {checkedAt: $at, checking: ($final == 0), startedAt: $started,
        omarchyPkgs: {commit: $commit, following: ($following == 1), error: $perr, note: $pnote},
-       apps: .}' >"$out"
+       discoveryError: $derr, apps: .}' >"$out"
   mv -f "$out" "$status_file"
 }
 
