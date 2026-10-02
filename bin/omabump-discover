@@ -1,0 +1,224 @@
+#!/usr/bin/env python3
+"""Print the coding-agent CLIs Omarchy offers, with the mise key each one
+installs under, as JSON:
+
+  {"agents": [{"command", "label", "key", "source": "wrapper"|"command"}],
+   "errors": ["..."]}
+
+Omarchy lists its agents in the menu, as the immediate entries
+setup.default.agent.<command> of the stock omarchy-menu.jsonc and the user's
+extension (merged by id, user fields over stock ones, as the shell does).
+omarchy-mise-install writes ~/.local/bin/<command> as a four-line wrapper
+that names the mise package; that package, with a trailing [options] suffix
+removed, is the key `mise ls` reports. Both files are read as text only:
+nothing is executed, sourced or evaluated, and of a menu entry only the id
+and the label are used. A wrapper that does not match the template exactly
+is ignored, and the agent falls back to its command name as the key
+(source "command"); the check accepts that key only when mise has exactly it
+installed and active.
+
+  omabump-discover [--debug] [--stock FILE] [--user FILE] [--bin-dir DIR] [--uid N]
+
+--debug prints why a wrapper was rejected on stderr. The other options exist
+for the tests.
+"""
+
+import json
+import os
+import re
+import stat
+import sys
+
+COMMAND_ID = re.compile(r"^setup\.default\.agent\.([a-z0-9][a-z0-9-]{0,40})$")
+# The literals omarchy-mise-install double-quotes: no $ ` " \ ! and no
+# control characters (it switches to printf %q for those, never accepted).
+LITERAL = r'([^$`"\\!\x00-\x1f\x7f]+)'
+WRAPPER = re.compile(
+    r"#!/bin/bash\n"
+    r"export MISE_MINIMUM_RELEASE_AGE=0\n"
+    r'mise use -g --quiet "' + LITERAL + r'" \|\| exit 1\n'
+    r'exec mise x "' + LITERAL + r'" -- "' + LITERAL + r'" "\$@"\n?'
+)
+OPTIONS = re.compile(r"^([^\[\]]*)\[[^\[\]]*\]$")
+# bash tool_name_ok in omabump-common.
+TOOL_NAME = re.compile(r"^[A-Za-z0-9@_+:][A-Za-z0-9@._+:/-]*$")
+MAX_WRAPPER = 4096
+MAX_MENU = 4 * 1024 * 1024
+
+
+def strip_jsonc(text):
+    """JSON from JSONC: // and /* */ comments, then trailing commas, removed
+    outside strings only, so "https://..." inside a string survives."""
+    out, i, n = [], 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == '"':
+            j = _string_end(text, i)
+            out.append(text[i:j])
+            i = j
+        elif text.startswith("//", i):
+            j = text.find("\n", i)
+            i = n if j < 0 else j
+        elif text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            if j < 0:
+                raise ValueError("unterminated comment")
+            out.append(" ")
+            i = j + 2
+        else:
+            out.append(c)
+            i += 1
+    text, out, i = "".join(out), [], 0
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if c == '"':
+            j = _string_end(text, i)
+            out.append(text[i:j])
+            i = j
+            continue
+        if c == ",":
+            j = i + 1
+            while j < n and text[j] in " \t\r\n":
+                j += 1
+            if j < n and text[j] in "}]":
+                i += 1
+                continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def _string_end(text, i):
+    """The index just past the JSON string that starts at text[i]."""
+    j, n = i + 1, len(text)
+    while j < n and text[j] != '"':
+        j += 2 if text[j] == "\\" else 1
+    return j + 1
+
+
+def read_menu(path):
+    """The menu's items by id: a flat object, or one under "items"."""
+    with open(path, "rb") as f:
+        raw = f.read(MAX_MENU + 1)
+    if len(raw) > MAX_MENU:
+        raise ValueError("larger than 4 MiB")
+    text = strip_jsonc(raw.decode("utf-8"))
+    if not text.strip():
+        return {}
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise ValueError("not a JSON object")
+    items = data.get("items")
+    return items if isinstance(items, dict) else data
+
+
+def menu_agents(stock, user, errors):
+    """[(command, label)] in menu order, user fields merged over stock ones."""
+    merged = {}
+    for path, required in ((stock, True), (user, False)):
+        try:
+            items = read_menu(path)
+        except FileNotFoundError:
+            if required:
+                errors.append("no Omarchy menu at %s" % path)
+            continue
+        except (OSError, ValueError, UnicodeDecodeError) as e:
+            errors.append("cannot read the menu %s: %s" % (path, e))
+            continue
+        for key, value in items.items():
+            m = COMMAND_ID.match(key)
+            if not m or not isinstance(value, dict):
+                continue
+            entry = merged.setdefault(m.group(1), {})
+            if "label" in value:
+                entry["label"] = value["label"]
+    return [(c, e["label"]) for c, e in merged.items()
+            if isinstance(e.get("label"), str) and e["label"].strip()]
+
+
+def tool_name_ok(name):
+    return bool(TOOL_NAME.match(name)) and ".." not in name
+
+
+def wrapper_key(path, uid):
+    """The mise key a wrapper installs, or raises ValueError with the reason.
+    The file is opened without following a symlink and checked on the open
+    descriptor, so it cannot be swapped between the check and the read."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+    except FileNotFoundError:
+        raise ValueError("no wrapper")
+    except OSError as e:
+        raise ValueError("cannot open: %s" % e.strerror)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise ValueError("not a regular file")
+        if st.st_uid != uid:
+            raise ValueError("not owned by uid %d" % uid)
+        if st.st_size > MAX_WRAPPER:
+            raise ValueError("larger than %d bytes" % MAX_WRAPPER)
+        raw = os.read(fd, MAX_WRAPPER + 1)
+    finally:
+        os.close(fd)
+    if len(raw) > MAX_WRAPPER:
+        raise ValueError("larger than %d bytes" % MAX_WRAPPER)
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ValueError("not UTF-8")
+    m = WRAPPER.fullmatch(text)
+    if not m:
+        raise ValueError("not the omarchy-mise-install template")
+    pkg, pkg2 = m.group(1), m.group(2)
+    if pkg != pkg2:
+        raise ValueError("the two package literals differ")
+    key = pkg
+    if pkg.endswith("]"):
+        o = OPTIONS.match(pkg)
+        if not o:
+            raise ValueError("malformed [options] suffix")
+        key = o.group(1)
+    if not tool_name_ok(key):
+        raise ValueError("mise key %r has characters Omabump does not accept" % key)
+    return key
+
+
+def main(argv):
+    home = os.environ.get("HOME", "")
+    omarchy = os.environ.get("OMARCHY_PATH") or "/usr/share/omarchy"
+    opts = {
+        "--stock": os.path.join(omarchy, "default/omarchy/omarchy-menu.jsonc"),
+        "--user": os.path.join(home, ".config/omarchy/extensions/omarchy-menu.jsonc"),
+        "--bin-dir": os.path.join(home, ".local/bin"),
+        "--uid": str(os.getuid()),
+    }
+    debug = False
+    args = list(argv)
+    while args:
+        a = args.pop(0)
+        if a == "--debug":
+            debug = True
+        elif a in opts and args:
+            opts[a] = args.pop(0)
+        else:
+            print("usage: omabump-discover [--debug] [--stock FILE] [--user FILE] [--bin-dir DIR] [--uid N]",
+                  file=sys.stderr)
+            return 2
+    errors, agents = [], []
+    for command, label in menu_agents(opts["--stock"], opts["--user"], errors):
+        try:
+            key, source = wrapper_key(os.path.join(opts["--bin-dir"], command), int(opts["--uid"])), "wrapper"
+        except ValueError as e:
+            if debug:
+                print("omabump-discover: %s: %s" % (command, e), file=sys.stderr)
+            key, source = command, "command"
+        agents.append({"command": command, "label": label, "key": key, "source": source})
+    json.dump({"agents": agents, "errors": errors}, sys.stdout)
+    sys.stdout.write("\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
