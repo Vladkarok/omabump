@@ -663,8 +663,14 @@ same "discover: a menu FIFO is refused without waiting for a writer" 'not a regu
   "$(timeout 5 python3 -I "$root/bin/omabump-discover" --stock "$disc/stock.jsonc" --user "$disc/user.jsonc" --bin-dir "$disc/bin" | jq -r '.errors[]' | grep -o 'not a regular file')"
 rm -f "$disc/user.jsonc"; printf '{}' >"$disc/menu-target"; ln -s "$disc/menu-target" "$disc/user.jsonc"
 same "discover: a symlinked menu is followed" '' "$(errors_of)"
-same "discover: a menu owned by another user is refused" 'not owned by uid' \
-  "$(discover --menu-uid "$(( $(id -u) + 1 ))" | jq -r '.errors[0]' | grep -o 'not owned by uid')"
+# Root's files are always accepted (the stock menu is root's), so as root, as
+# in the CI container, every fixture passes the owner check by design.
+if (( $(id -u) == 0 )); then
+  pass "discover: a menu owned by another user is refused (skipped as root)"
+else
+  same "discover: a menu owned by another user is refused" 'not owned by uid' \
+    "$(discover --menu-uid "$(( $(id -u) + 1 ))" | jq -r '.errors[0]' | grep -o 'not owned by uid')"
+fi
 rm -f "$disc/user.jsonc"; : >"$disc/user.jsonc"
 # shellcheck disable=SC2016 # the literal text of the script
 check "discovery runs python3 isolated" grep -q 'python3 -I "$plugin_dir/bin/omabump-discover"' "$root/bin/omabump-common"
