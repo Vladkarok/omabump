@@ -30,8 +30,11 @@ put '#!/bin/bash' '# Written by omarchy-mise-install' '' 'export MISE_MINIMUM_RE
 same "wrapper: comments, blank lines and exports around the two lines" 'github:can1357/oh-my-pi/wrapper' "$(omp_of)"
 put '#!/usr/bin/env bash' 'mise use --yes -g "npm:@scope/omp"' 'exec mise exec "npm:@scope/omp" -- "omp" "$@"'
 same "wrapper: env bash, flags in any order, no || exit, mise exec" 'npm:@scope/omp/wrapper' "$(omp_of)"
+# A colon after the first @ (but a leading one) is the version's, not a
+# backend's.
 for pair in 'npm:@scope/omp@1.2.3|npm:@scope/omp' 'omp@latest|omp' '@scope/omp@2|@scope/omp' 'aqua:o/omp@prefix:1|aqua:o/omp' \
-  'ubi:o/omp[exe=omp]@1.0|ubi:o/omp' 'http:omp[url=https://u@example.com/x]|http:omp'; do
+  'ubi:o/omp[exe=omp]@1.0|ubi:o/omp' 'http:omp[url=https://u@example.com/x]|http:omp' \
+  'omp@prefix:1|omp' '@s/x@ref:main|@s/x' 'npm:@s/x@ref:main|npm:@s/x' 'github:o/omp|github:o/omp'; do
   use_exec "${pair%%|*}"
   same "wrapper: the key of ${pair%%|*}" "${pair#*|}/wrapper" "$(omp_of)"
 done
@@ -67,6 +70,43 @@ same "wrapper: the user's own script that mentions mise is silent" 'omp/command|
 put '#!/bin/bash' '# mise use -g "a"' 'exec /opt/omp/bin/omp "$@"'
 same "wrapper: mise in a comment only is silent" 'omp/command|' "$(omp_of)|$(omp_warning)"
 same "wrapper: a script that does not run mise, owned by another uid, is silent" '' "$(omp_warning --uid "$(( $(id -u) + 1 ))")"
+put '#!/bin/bash' 'echo "run mise use -g omp first" >&2' 'exit 1'
+same "wrapper: mise use in an echo string is silent" 'omp/command|' "$(omp_of)|$(omp_warning)"
+put '#!/bin/bash' 'exec /opt/omp/bin/omp "$@"  # was: exec mise x "omp" -- "omp" "$@"'
+same "wrapper: mise in a trailing comment is silent" 'omp/command|' "$(omp_of)|$(omp_warning)"
+
+# A changed template that still runs mise is named: mise as the command,
+# after exec, command or NAME=value, by path, with global flags first.
+put '#!/bin/bash' 'exec mise -C "$HOME" x "a" -- "omp" "$@"'
+rejected "a changed template: -C DIR before x" 'line 2 is not a line of an omarchy-mise-install wrapper'
+put '#!/bin/bash' 'MISE_YES=1 command ~/.local/bin/mise --cd /tmp -q use -g "a"'
+rejected "a changed template: NAME=value, command and a path to mise" 'line 2 is not a line of an omarchy-mise-install wrapper'
+# Each global flag that takes a value, and mise as a command after env,
+# sudo, if, &&, $( or a backslash-newline.
+for line in 'exec mise -E dev x "a" -- "omp" "$@"' 'mise --jobs 4 use -g "a"' 'mise -j 4 --env dev use -g "a"' \
+  'mise --log-level debug -P dev --profile=x use -g "a"' 'env MISE_YES=1 mise use -g "a"' 'sudo mise use -g "a"' \
+  'if mise use -g "a"; then exit 1; fi' 'cd /tmp && exec mise x "a" -- "omp" "$@"' 'v=$(mise x "a" -- omp --version)' \
+  $'mise use -g \\\n  "a"'; do
+  put '#!/bin/bash' "$line"
+  rejected "a changed template: ${line//$'\n'/ }" 'line 2 is not a line of an omarchy-mise-install wrapper'
+done
+# A script of the user's that only names mise, in a string with ; in it or
+# one over two lines, stays silent.
+put '#!/bin/bash' 'echo "not yet; mise use -g omp first" >&2' 'exit 1'
+same "wrapper: mise after a ; inside a string is silent" 'omp/command|' "$(omp_of)|$(omp_warning)"
+put '#!/bin/bash' 'echo "install it first:' 'mise use -g omp" >&2' 'exit 1'
+same "wrapper: mise on the second line of a string is silent" 'omp/command|' "$(omp_of)|$(omp_warning)"
+
+# Flags that could each be read two ways made the match backtrack
+# exponentially: 40 of them took hours. Each now reads one way.
+put '#!/bin/bash' "mise $(printf -- '--x %.0s' {1..40})y" "mise $(printf -- '-C %.0s' {1..40})y" \
+  "$(printf 'A=1 exec %.0s' {1..40})mise $(printf -- '--cd -x %.0s' {1..40})y"
+t0=$(date +%s%N)
+out=$(timeout 10 python3 -I "$root/bin/omabump-discover" --stock "$d2/stock.jsonc" --user "$d2/user.jsonc" --bin-dir "$d2/bin" \
+  | jq -r '.agents[] | select(.command == "omp") | "\(.key)|\(.warning // "")"')
+ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+same "wrapper: 40 flags that run nothing are silent" 'omp|' "$out"
+check "wrapper: and are read within a second ($ms ms)" test "$ms" -lt 1000
 rm -f "$d2/bin/omp"
 
 # --- discovery: the menus ---------------------------------------------------------
@@ -208,6 +248,17 @@ same "feed_version: one value of several" 2.0 "$(feed_version "$(json_app '.vers
 same "feed_version: a number" 1.5 "$(feed_version "$(json_app .n)")"
 same "feed_version: an object is an odd version" "feed returned an odd version '{\"a\":1}'" "$(feed_version "$(json_app .o)" 2>&1 >/dev/null)"
 same "feed_version: blanks around a version go" 3.1 "$(feed_version "$(json_app .v)")"
+printf '%s\n' '"3.1"' >"$scratch/served/js"
+same "feed_version: a path that fails on the document says so" 'the feed path fails on this feed' \
+  "$(feed_version "$(json_app .version)" 2>&1 >/dev/null)"
+printf '%s\n' '{"version": "1.0"}' '{"version": "2.0"}' >"$scratch/served/js"
+same "feed_version: a json feed of two documents is a sentence, not a bash error" 'the feed holds 2 JSON documents, not one' \
+  "$(feed_version "$(json_app .version)" 2>&1 >/dev/null)"
+: >"$scratch/served/js"
+same "feed_version: an empty json feed" 'the feed is empty' "$(feed_version "$(json_app .version)" 2>&1 >/dev/null)"
+printf '%s\n' '{"version": "1.0"} trailing' >"$scratch/served/js"
+same "feed_version: a json feed with more after the document is not JSON" 'feed is not JSON' \
+  "$(feed_version "$(json_app .version)" 2>&1 >/dev/null)"
 printf 'version: 1.2 3\n' >"$scratch/served/latest.yml"
 same "feed_version: blanks inside a version are an odd version, not 1.23" "feed returned an odd version '1.2 3'" \
   "$(feed_version '{"pkg": "x", "feed": {"type": "latest-yml", "url": "https://example.com/latest.yml"}}' 2>&1 >/dev/null)"
@@ -288,15 +339,17 @@ refuse "run_killable: and the command it ran is stopped" kill -0 "${slept:-0}"
 
 # --- whole runs of omabump-check ----------------------------------------------------------
 
-# Fake pacman (only claude-desktop installed), curl (every fetch fails), git
-# (every call fails) and mise (logs its calls, knows no tool; with
-# $OMABUMP_TEST_HANG set, `mise ls --json` hangs and notes its pid there).
-# HOME, the XDG directories and Omarchy's menu all point into $run_dir, and
-# every run passes --no-notify.
+# Fake pacman (only claude-desktop and foo-old installed), curl (every fetch
+# fails), sudo (only looked for, never run), git (every call fails) and mise
+# (logs its calls, knows no tool; with $OMABUMP_TEST_HANG set, `mise ls
+# --json` hangs and notes its pid there, with $OMABUMP_TEST_LS_FAIL set it
+# fails). HOME, the XDG directories and
+# Omarchy's menu all point into $run_dir, and every run passes --no-notify.
 run_dir=$scratch/check-run
 mkdir -p "$run_dir/bin" "$run_dir/home/.config/omarchy"
-printf '#!/bin/sh\n[ "$1" = -Q ] && [ "$3" = claude-desktop ] && { echo "claude-desktop 1.0-1"; exit 0; }\nexit 1\n' >"$run_dir/bin/pacman"
+printf '#!/bin/sh\n[ "$1" = -Q ] || exit 1\ncase $3 in\n  claude-desktop|foo-old) echo "$3 1.0-1" ;;\n  *) exit 1 ;;\nesac\n' >"$run_dir/bin/pacman"
 printf '#!/bin/sh\nexit 7\n' >"$run_dir/bin/curl"
+printf '#!/bin/sh\nexit 1\n' >"$run_dir/bin/sudo"
 printf '#!/bin/sh\nexit 1\n' >"$run_dir/bin/git"
 cat >"$run_dir/bin/mise" <<'EOF'
 #!/bin/sh
@@ -304,6 +357,10 @@ echo "$*" >>"$OMABUMP_TEST_MISE"
 if [ "$*" = "ls --json" ] && [ -n "${OMABUMP_TEST_HANG:-}" ]; then
   echo $$ >"$OMABUMP_TEST_HANG"
   exec sleep 60
+fi
+if [ "$*" = "ls --json" ] && [ -n "${OMABUMP_TEST_LS_FAIL:-}" ]; then
+  echo "mise: no inventory" >&2
+  exit 1
 fi
 echo '{}'
 EOF
@@ -392,3 +449,111 @@ for pair in INT:130 HUP:129; do
   refuse "${pair%:*}: the hanging mise is stopped too" kill -0 "${hung:-0}"
   [[ -z $hung ]] || kill "$hung" 2>/dev/null
 done
+
+# --- status.json's shape: schemaVersion, the switch, old scratch files ---------------------
+
+# A vendor package installed under another name (foo-old for foo-bin), its
+# version from a command feed in the user's apps.json. The row says that
+# with installedName, switchable and updateAvailable; its note no longer
+# carries the switch clause the panel now writes.
+run_settings ', "showMise": "false"'
+mkdir -p "$run_dir/config/omarchy/omabump"
+foo_app() {
+  jq -cn --arg v "$1" '[{pkg: "foo-bin", label: "Foo", source: "vendor-pkg", installed: ["foo-bin", "foo-old"],
+    vendorPkg: "https://example.com/foo-{version}.pkg.tar.zst", checksum: "feed",
+    feed: {type: "command", command: "echo \($v)"}}]' >"$run_dir/config/omarchy/omabump/apps.json"
+}
+foo_row='.apps[] | select(.pkg == "foo-bin") | "\(.installedName)|\(.installable)|\(.updateAvailable)|\(.switchable)|\(.note)"'
+foo_app 1.0
+check_run
+same "status.json: schemaVersion 1" 1 "$(run_status .schemaVersion)"
+same "switch: at the same version the row is switchable, the note has no switch clause" 'foo-old|true|false|true|' "$(run_status "$foo_row")"
+foo_app 2.0
+check_run
+same "switch: with a newer version Update switches, the note has no switch clause" 'foo-old|true|true|false|' "$(run_status "$foo_row")"
+same "status.json: every row has unchecked" 0 "$(run_status '[.apps[] | select(.unchecked | type != "boolean")] | length')"
+rm -f "$run_dir/config/omarchy/omabump/apps.json"
+
+# status.json, read with the jq filter $1 while a check runs: the check
+# hangs in mise until the file is read, then is stopped.
+status_mid_run() {
+  local pid hung
+  rm -f "$run_dir/hang.pid"
+  OMABUMP_TEST_HANG=$run_dir/hang.pid check_bg
+  pid=$!
+  appears "$run_dir/hang.pid"
+  run_status "$1"
+  kill -TERM "$pid"
+  wait "$pid"
+  hung=$(cat "$run_dir/hang.pid" 2>/dev/null)
+  [[ -z $hung ]] || kill "$hung" 2>/dev/null
+}
+
+# A status.json an older release wrote (no schemaVersion) shows while the
+# next run checks: its notes lose the switch clause, and a skipped mise row
+# is marked unchecked.
+run_settings ''
+cat >"$run_state/status.json" <<'JSON'
+{"checkedAt": "2026-01-01T00:00:00+00:00", "apps": [
+  {"pkg": "foo-bin", "source": "vendor-pkg", "note": "Installed as foo-old, switch to foo-bin; Recipe from omarchy-pkgs 0123456789ab"},
+  {"pkg": "bar-bin", "source": "omarchy", "note": "Installed as bar-old, Update switches to bar-bin"},
+  {"pkg": "baz", "source": "omarchy", "note": "No baz recipe in omarchy-pkgs"},
+  {"pkg": "mise:t", "source": "mise", "note": "Update check skipped: asdf backend"}]}
+JSON
+same "an older status.json: notes lose the switch clause, a skipped mise row is unchecked" \
+  'bar-bin=/false baz=No baz recipe in omarchy-pkgs/false foo-bin=Recipe from omarchy-pkgs 0123456789ab/false mise:t=Update check skipped: asdf backend/true|1' \
+  "$(status_mid_run '"\([.apps[] | "\(.pkg)=\(.note)/\(.unchecked)"] | sort | join(" "))|\(.schemaVersion)"')"
+# When mise's inventory fails, the mise rows of that file stay, failed, to
+# the end of the run, and keep the unchecked the migration gave them.
+cat >"$run_state/status.json" <<'JSON'
+{"checkedAt": "2026-01-01T00:00:00+00:00", "apps": [
+  {"pkg": "mise:t", "source": "mise", "note": "Update check skipped: asdf backend"},
+  {"pkg": "mise:u", "source": "mise", "note": ""}]}
+JSON
+OMABUMP_TEST_LS_FAIL=1 check_run
+same "an older status.json and a failed mise ls: its mise rows stay, stale, with unchecked" \
+  'mise:t=true/true/mise ls failed mise:u=false/true/mise ls failed|1' \
+  "$(run_status '"\([.apps[] | select(.source == "mise") | "\(.pkg)=\(.unchecked)/\(.stale)/\(.error | .[:14])"] | sort | join(" "))|\(.schemaVersion)"')"
+# A file of this release (schemaVersion 1) shows as it is: a note that
+# happens to read like the old clause keeps it, unchecked stays false.
+cat >"$run_state/status.json" <<'JSON'
+{"schemaVersion": 1, "checkedAt": "2026-01-01T00:00:00+00:00", "apps": [
+  {"pkg": "foo-bin", "source": "vendor-pkg", "note": "Installed as a, switch to b", "unchecked": false},
+  {"pkg": "mise:t", "source": "mise", "note": "Update check skipped: asdf backend", "unchecked": false}]}
+JSON
+same "a status.json with schemaVersion 1 is not migrated" \
+  'foo-bin=Installed as a, switch to b/false mise:t=Update check skipped: asdf backend/false' \
+  "$(status_mid_run '[.apps[] | "\(.pkg)=\(.note)/\(.unchecked)"] | sort | join(" ")')"
+rm -f "$run_state/status.json"
+
+# Scratch files an Update makes while it runs, without the check's lock, and
+# an older release's check made outside its run's dir: a check removes only
+# the day-old ones. An older release's .notified file goes at once.
+run_cache=$run_dir/cache/omabump
+mkdir -p "$run_cache/.mise-select.Old123" "$run_cache/.mise-select.New123"
+: >"$run_cache/.mise-select.Old123/ls.json"
+for f in "$run_cache/.mise.Old123" "$run_cache/.feed.Old123" "$run_state/.discovered.Old123" \
+  "$run_cache/.mise.New123" "$run_cache/.feed.New123" "$run_state/.discovered.New123" "$run_state/.notified.Ab12Cd"; do
+  : >"$f"
+done
+touch -d '2 days ago' "$run_cache/.mise.Old123" "$run_cache/.feed.Old123" "$run_state/.discovered.Old123" "$run_cache/.mise-select.Old123"
+# A killed Update's half downloads and sync-upstream's mktemp dirs: the
+# day-old ones go. A whole package and a scratch file by another name stay,
+# however old.
+mkdir -p "$run_cache/packages" "$run_cache/scratch/tmp.Old1234567" "$run_cache/scratch/tmp.New1234567"
+for f in "$run_cache/packages/foo-1.0.pkg.tar.zst.part" "$run_cache/packages/foo-1.1.pkg.tar.zst.part" \
+  "$run_cache/packages/foo-0.9.pkg.tar" "$run_cache/scratch/tmp.Old1234567/x" "$run_cache/scratch/hook.tar"; do
+  : >"$f"
+done
+touch -d '2 days ago' "$run_cache/packages/foo-1.0.pkg.tar.zst.part" "$run_cache/packages/foo-0.9.pkg.tar" \
+  "$run_cache/scratch/tmp.Old1234567" "$run_cache/scratch/hook.tar"
+run_settings ', "showMise": "false"'
+check_run
+same "a run removes day-old scratch files only, and an older release's .notified" \
+  '.discovered.New123 .feed.New123 .mise-select.New123 .mise.New123' "$(leftovers | sort | paste -sd' ')"
+same "a run removes day-old half downloads and sync-upstream dirs only" \
+  'foo-0.9.pkg.tar foo-1.1.pkg.tar.zst.part hook.tar tmp.New1234567' \
+  "$(find "$run_cache/packages" "$run_cache/scratch" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | paste -sd' ')"
+check "and keeps its lock" test -e "$run_state/.check.lock"
+rm -rf "$run_cache/packages" "$run_cache/scratch"
+rm -rf "$run_cache"/.mise.New123 "$run_cache"/.feed.New123 "$run_cache"/.mise-select.New123 "$run_state"/.discovered.New123
