@@ -27,8 +27,9 @@ A wrapper is read line by line: the bash shebang first, then exactly one
 A wrapper that does not parse is ignored, and the agent falls back to its
 command name as the key (source "command"); the check accepts that key only
 when mise has exactly it installed and active. When the rejected file runs
-mise (a command, outside quotes and comments, that is mise use, x or exec,
-also after &&, ;, if, exec, env or NAME=value), the agent carries a
+mise (a command, outside quotes, comments and here-document bodies, that is
+mise use, x or exec, also after &&, ;, if, NAME=value, or exec, sudo, env,
+nice or timeout with their options, by name or by path), the agent carries a
 "warning" naming it, so a changed template shows in the panel (unless the
 user disabled that command's row). Anything else in its place stays silent:
 no file, a symlink, a binary, or a script that does not run mise, even if a
@@ -67,21 +68,36 @@ USE_FLAGS = {"-g", "--global", "-q", "--quiet", "-y", "--yes", "-f", "--force", 
              "--pin", "--fuzzy", "--locked", "-v", "--verbose", "--raw"}
 # A command that runs mise as a wrapper does (use, x or exec), so a file
 # that fails to parse is still worth a warning. The command is one of
-# shell_commands, and its first word, after any exec, command, env, sudo,
-# nohup, time, NAME=value, a keyword (if, then, do, ...), ! or {, is mise
-# or a path ending in /mise. Global flags may come before the subcommand,
-# with the value of those that take one. omarchy-mise-install itself,
-# `mise exec-env`, and mise in an echo or a comment do not count. A flag
-# that takes a value never also matches as a bare flag, so each token
-# matches one way only and a long run of flags cannot make the regex
-# backtrack exponentially.
+# shell_commands, and its first word, after any NAME=value, a keyword (if,
+# then, do, ...), ! or {, or a command that runs another (exec, command,
+# env, sudo, nohup, time, nice, timeout, by name or by path) with its
+# options and numbers (sudo -E, env -i, nice -n 19, timeout 60), is mise or
+# a path ending in /mise. Of those commands' options, the ones in
+# RUNNER_VALUE_FLAG take the next word as their value (sudo -u root, exec
+# -a NAME); any other word ends the options, so `sudo -E echo "mise use"`
+# stays an echo. Global flags may come before the subcommand, with the
+# value of those that take one. omarchy-mise-install itself,
+# `mise exec-env`, and mise in an echo or a comment do not count. Each
+# token matches one way only, so a long run of them cannot make the regex
+# backtrack exponentially: a flag that takes a value never also matches as
+# a bare flag, and a command's path never starts with - or a digit, as an
+# option or a number does.
 MISE_VALUE_FLAG = r"(?:-C|--cd|-E|--env|-P|--profile|-j|--jobs|--log-level)"
+RUNNER_VALUE_FLAG = r"(?:-[aCDfgoRrsTtUu]|--(?:argv0|chdir|format|group|output|signal|unset|user))"
+KEYWORD = r"(?:if|elif|while|until|then|do|else|!|\{)"
+ASSIGNMENT = r"[A-Za-z_]\w*=(?:\"[^\"]*\"|'[^']*'|[^\s\"'])*"
+RUNNER = r"(?![-\d])(?:[^\s\"'=]*/)?(?:exec|command|env|sudo|nohup|time|nice|timeout)"
+MISE = r"(?![-\d])[\"']?(?:[^\s\"'=]*/)?mise[\"']?"
 RUNS_MISE = re.compile(
-    r"(?:(?:exec|command|env|sudo|nohup|time|if|elif|while|until|then|do|else|!|\{)\s+"
-    r"|[A-Za-z_]\w*=(?:\"[^\"]*\"|'[^']*'|[^\s\"'])*\s+)*"
-    r"[\"']?(?:[^\s\"'=]*/)?mise[\"']?"
+    r"(?:" + KEYWORD + r"\s+|" + ASSIGNMENT + r"\s+|" + RUNNER
+    + r"(?:\s+(?:" + RUNNER_VALUE_FLAG + r"\s+\S+|(?!" + RUNNER_VALUE_FLAG + r"\s)-\S*|\d\S*))*\s+)*"
+    + MISE +
     r"(?:\s+(?:" + MISE_VALUE_FLAG + r"\s+\S+|(?!" + MISE_VALUE_FLAG + r"\s)-\S+))*"
     r"\s+(?:use|x|exec)(?![\w-])")
+# A here-document's operator and delimiter word: <<WORD, <<-WORD, <<'WORD',
+# <<"WORD" or <<\WORD, blanks allowed between them. The delimiter is the
+# word without its quotes.
+HEREDOC = re.compile(r"<<(-?)[ \t]*(?:'([^'\n]*)'|\"([^\"\n]*)\"|\\?([^\s;&|()<>'\"\\]+))")
 # Where a new command starts in shell text, outside quotes: after a
 # control operator (; & && | ||), a subshell's or a command substitution's
 # parenthesis, or a newline.
@@ -239,13 +255,32 @@ def tool_name_ok(name):
     return bool(TOOL_NAME.match(name)) and ".." not in name
 
 
+def heredoc_end(text, i, strip_tabs, word):
+    """Where a here-document whose body starts at i ends: just past its
+    delimiter line (which, with <<-, may start with tabs), or -1 when no
+    line is the delimiter."""
+    n = len(text)
+    while i < n:
+        j = text.find("\n", i)
+        end = n if j < 0 else j
+        line = text[i:end]
+        if (line.lstrip("\t") if strip_tabs else line) == word:
+            return min(end + 1, n)
+        i = end + 1
+    return -1
+
+
 def shell_commands(text):
     """The commands of shell text, split where COMMAND_BREAK starts one,
     without comments (an unquoted # that starts a word, to the end of its
-    line) and backslash-newlines. Quotes are only followed, never removed,
-    so mise inside an echo's string stays part of the echo, even across
-    lines. A here-document reads as commands; nothing is expanded."""
-    out, cur, quote, i, n = [], [], None, 0, len(text)
+    line) and backslash-newlines, and whether the text ends outside any
+    quote and here-document. Quotes are only followed, never removed, so
+    mise inside an echo's string stays part of the echo, even across lines.
+    A here-document's body is data and is skipped whole, up to its
+    delimiter line, without following quotes: an apostrophe in it is text,
+    not the start of a string. One that feeds a shell (bash <<EOF) is not
+    followed either. Nothing is expanded."""
+    out, cur, quote, heredocs, i, n = [], [], None, [], 0, len(text)
     while i < n:
         c = text[i]
         if quote == "'":
@@ -259,29 +294,59 @@ def shell_commands(text):
             cur.append(text[i:i + 2])
             i += 2
             continue
-        elif quote == '"':
-            quote = None if c == '"' else quote
+        elif quote is not None:
+            # Inside "..." or $'...', where a backslash escapes (above).
+            quote = None if c == quote[-1] else quote
+        elif c == "'" and cur and cur[-1] == "$":
+            # $'...' ends at a ' that no backslash quotes ($'it\'s').
+            quote = "$'"
         elif c in "'\"":
             quote = c
         elif c == "#" and (not cur or text[i - 1].isspace()):
             j = text.find("\n", i)
             i = n if j < 0 else j
             continue
+        elif c == "<" and text.startswith("<<<", i):
+            # A here-string, not a here-document.
+            cur.append("<<<")
+            i += 3
+            continue
+        elif c == "<" and HEREDOC.match(text, i):
+            m = HEREDOC.match(text, i)
+            word = next(w for w in m.group(2, 3, 4) if w is not None)
+            heredocs.append((m.group(1) == "-", word))
+            cur.append(m.group(0))
+            i = m.end()
+            continue
         elif c in COMMAND_BREAK:
             out.append("".join(cur))
             cur = []
             i += 1
+            # The bodies of the here-documents opened on the line just
+            # ended follow it, one after another.
+            while c == "\n" and heredocs:
+                i = heredoc_end(text, i, *heredocs.pop(0))
+                if i < 0:
+                    return out, False
             continue
         cur.append(c)
         i += 1
     out.append("".join(cur))
-    return out
+    return out, quote is None
 
 
 def runs_mise(text):
     """True when a command in the text runs mise as a wrapper does
-    (RUNS_MISE, from the command's first word)."""
-    return any(RUNS_MISE.match(command.strip()) for command in shell_commands(text))
+    (RUNS_MISE, from the command's first word). When the text ends inside
+    a quote or a here-document without its delimiter line, something was
+    likely misread (a quoting form not followed, an arithmetic << taken for
+    a here-document) and the split may have swallowed real commands, so
+    each line is also tried on its own, as before the split: a stray quote
+    can add a warning, never drop one."""
+    commands, closed = shell_commands(text)
+    if not closed:
+        commands += text.splitlines()
+    return any(RUNS_MISE.match(command.strip()) for command in commands)
 
 
 def parse_wrapper(text):
