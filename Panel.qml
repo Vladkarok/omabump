@@ -6,6 +6,7 @@ import QtQuick.Layouts
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
+import "Model.js" as Model
 
 Panel {
   id: root
@@ -22,9 +23,15 @@ Panel {
   // Qt.darker(foreground, 1.55) on dark themes.
   readonly property color dim: Qt.tint(Qt.rgba(surface.r, surface.g, surface.b, 1), Util.alpha(foreground, 0.6))
   readonly property color surface: Color.popups.background
+  readonly property bool lightSurface: Model.luminance(surface) >= 0.5
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property string glyph: ""
   readonly property string fallbackMark: ""
+
+  // The bar's plugin facade (PluginBarApi) as var: Panel types bar as a
+  // bare QtObject, which has none of its members.
+  readonly property var barApi: bar
+  readonly property var shellApi: barApi ? barApi.shell : null
 
   readonly property var apps: checker.apps
   // Desktop apps first, then the mise CLIs: the keyboard cursor walks
@@ -43,7 +50,7 @@ Panel {
   // every monitor's closed panel too.
   readonly property bool rowsShown: root.opened || panel.visible
   readonly property int updateCount: checker.updateCount
-  readonly property bool iconOnlyWithUpdates: checker.boolSetting("barIconOnlyWithUpdates", false)
+  readonly property bool iconOnlyWithUpdates: Model.boolSetting(root.settings, "barIconOnlyWithUpdates", false)
 
   property int rowIndex: 0
   property bool cursorActive: false
@@ -65,30 +72,13 @@ Panel {
   readonly property int intervalRow: 0
   // The "Muted: …" line with its Clear button, after the toggles, when any.
   readonly property int quietRow: settingRows.length + 1
-  // Only rows the last check listed: a mute or skip for a row hidden by Show
-  // mise tools (or not installed now) is kept but not shown. Only skips the
-  // settings keep (skipKept): one that no longer applies is dropped on the
-  // next write, not listed as active until then.
-  readonly property string quietText: {
-    var names = []
-    for (var i = 0; i < checker.mutedApps.length; i++)
-      if (listed(checker.mutedApps[i])) names.push(appName(checker.mutedApps[i]))
-    var skips = []
-    for (var pkg in checker.skippedVersions)
-      if (listed(pkg) && checker.skipKept(pkg, checker.skippedVersions[pkg]))
-        skips.push(appName(pkg) + " " + checker.skippedVersions[pkg])
-    var parts = []
-    if (names.length > 0) parts.push("Muted: " + names.join(", "))
-    if (skips.length > 0) parts.push("Skipped: " + skips.join(", "))
-    return parts.join(" · ")
-  }
+  readonly property string quietText: Model.quietText(apps, checker.mutedApps, checker.skippedVersions)
   readonly property var intervalChoices: [300, 900, 1800, 3600, 21600, 86400]
 
   // "checked 3 min ago" reads this instead of Date.now() so it keeps moving
   // while the panel sits open.
   property double nowMs: Date.now()
-
-  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)) }
+  readonly property string checkedText: Model.checkedText(checker.checking, checker.checkedAt, nowMs)
 
   function refreshNow() { checker.refresh() }
 
@@ -107,18 +97,55 @@ Panel {
     return "ok"
   }
 
+  // Every monitor's bar builds its own copy of this widget, each with the
+  // same IPC target, and a call reaches whichever copy holds the target,
+  // not the one on the focused monitor. The shell's own summon, hide and
+  // toggle (what `omarchy-shell shell toggle <id>` runs) act on the open
+  // copy, else the focused monitor's. A shell without them leaves this
+  // copy to it, as before.
+  function viaShell(method) {
+    return !!shellApi && typeof shellApi[method] === "function" && shellApi[method](root.moduleName, "") === true
+  }
+
+  function ipcOpen() { if (!viaShell("summon")) root.open() }
+  function ipcClose() { if (!viaShell("hide")) root.close() }
+  function ipcToggle() { if (!viaShell("toggle")) root.toggle() }
+
+  // The settings view, on the copy that opened. The bar keeps one panel
+  // open at a time.
+  function ipcSettings() {
+    if (viaShell("summon")) {
+      var copies = barApi && typeof barApi.moduleWidgets === "function" ? barApi.moduleWidgets(root.moduleName) : []
+      for (var i = 0; i < copies.length; i++) {
+        if (copies[i] && copies[i].opened === true && typeof copies[i].showSettings === "function") {
+          copies[i].showSettings(true, false)
+          return
+        }
+      }
+    }
+    root.open()
+    root.showSettings(true, false)
+  }
+
   function selectedApp() {
-    return orderedApps.length > 0 ? orderedApps[clamp(rowIndex, 0, orderedApps.length - 1)] : null
+    return orderedApps.length > 0 ? orderedApps[Model.clamp(rowIndex, 0, orderedApps.length - 1)] : null
+  }
+
+  // An arrow, j or k: the first one only shows the cursor.
+  function cursorKey(dy) {
+    if (dy === 0) return
+    if (!cursorActive) {
+      cursorActive = true
+      ensureCursorVisible()
+      return
+    }
+    moveCursor(dy)
   }
 
   function moveCursor(dy) {
-    if (settingsOpen) {
-      settingIndex = clamp(settingIndex + dy, 0, settingRows.length + (quietText !== "" ? 1 : 0))
-      return
-    }
-    if (orderedApps.length === 0) return
-    rowIndex = clamp(rowIndex + dy, 0, orderedApps.length - 1)
-    ensureRowVisible()
+    if (settingsOpen) settingIndex = Model.clamp(settingIndex + dy, 0, settingRows.length + (quietText !== "" ? 1 : 0))
+    else if (orderedApps.length > 0) rowIndex = Model.clamp(rowIndex + dy, 0, orderedApps.length - 1)
+    ensureCursorVisible()
   }
 
   function rowItem(index) {
@@ -127,58 +154,64 @@ Panel {
     return pluginRepeater.itemAt(index - desktopApps.length - cliApps.length)
   }
 
-  // Keeps the keyboard cursor on screen when the list scrolls.
-  function ensureRowVisible() {
-    var item = rowItem(rowIndex)
-    if (!item) return
-    var top = item.mapToItem(body, 0, 0).y
+  function cursorItem() {
+    if (!settingsOpen) return rowItem(rowIndex)
+    if (settingIndex === intervalRow) return intervalSurface
+    if (settingIndex === quietRow) return quietSurface
+    return settingsRepeater.itemAt(settingIndex - 1)
+  }
+
+  // The section whose first row holds the cursor: its header comes into
+  // view with that row.
+  function cursorSection() {
+    if (settingsOpen) return null
+    if (rowIndex === 0 && desktopApps.length > 0) return desktopSection
+    if (rowIndex === desktopApps.length && cliApps.length > 0) return cliSection
+    if (rowIndex === desktopApps.length + cliApps.length && pluginApps.length > 0) return pluginSection
+    return null
+  }
+
+  // Keeps the keyboard cursor on screen: on open, back from the settings
+  // and on every move. Columns lay their children out once per frame, and
+  // rows the panel built a moment ago (it builds them only while it shows)
+  // have no place yet, so they are laid out here first, innermost first.
+  // A hover moves the cursor too, but onto a row already in view.
+  function ensureCursorVisible() {
+    var item = cursorItem()
+    if (!item || !panelFlick) return
+    var columns = [desktopRows, cliRows, pluginRows, desktopSection, cliSection, pluginSection, settingsSection, body, header, footer]
+    for (var i = 0; i < columns.length; i++) columns[i].forceLayout()
+    if (panelFlick.height <= 0) return
+    var section = cursorSection()
+    var bottom = item.mapToItem(body, 0, item.height).y
+    var top = section ? section.mapToItem(body, 0, 0).y : bottom - item.height
     if (top < panelFlick.contentY) panelFlick.contentY = top
-    else if (top + item.height > panelFlick.contentY + panelFlick.height)
-      panelFlick.contentY = top + item.height - panelFlick.height
+    else if (bottom > panelFlick.contentY + panelFlick.height)
+      panelFlick.contentY = Math.min(bottom - panelFlick.height, Math.max(0, panelFlick.contentHeight - panelFlick.height))
   }
 
   function showSettings(on, withCursor) {
     settingsOpen = on
     settingIndex = 0
+    if (panelFlick) panelFlick.contentY = 0
     if (on) cursorActive = withCursor
     else resetCursor()
-    if (panelFlick) panelFlick.contentY = 0
   }
 
-  function listed(pkg) { return checker.appFor(pkg) !== null }
-
-  // A row's label by pkg, from the last check, else the pkg itself.
-  function appName(pkg) {
-    var app = checker.appFor(pkg)
-    return app ? String(app.label || pkg) : pkg
-  }
-
-  function hasAction(app) {
-    return !!app && ((app.updateAvailable === true && app.installable === true)
-      || askable(app) || app.switchable === true)
-  }
-
-  // A fresh list puts the cursor on the first row with something to do (else
-  // the first row), so Enter acts without an arrow key first.
+  // A fresh list puts the cursor on the first row with something to do.
   function resetCursor() {
-    var first = 0
-    for (var i = 0; i < orderedApps.length; i++)
-      if (hasAction(orderedApps[i]) && !checker.isQuiet(orderedApps[i])) { first = i; break }
-    rowIndex = first
+    rowIndex = Model.firstActionIndex(orderedApps, checker.mutedApps, checker.skippedVersions)
     cursorActive = orderedApps.length > 0
+    Qt.callLater(ensureCursorVisible)
   }
 
   // shell.json hot-reloads and the bar injects the new settings, so the
-  // controls bind to settings and this only writes the merged entry.
-  // Every write also drops skips that no longer apply.
+  // controls bind to settings and this only writes the merged entry
+  // (Model.settingsEntry, which also drops skips that no longer apply).
   function setSettings(changes) {
-    if (!root.bar || !root.bar.shell || typeof root.bar.shell.updateEntryInline !== "function") return
-    var entry = { id: root.moduleName }
-    for (var existing in root.settings) if (existing !== "id") entry[existing] = root.settings[existing]
-    for (var key in changes) entry[key] = changes[key]
-    var skips = liveSkips(changes.skippedVersions !== undefined ? changes.skippedVersions : checker.skippedVersions)
-    if (Object.keys(skips).length > 0 || entry.skippedVersions !== undefined) entry.skippedVersions = skips
-    root.bar.shell.updateEntryInline(root.moduleName, entry)
+    if (!shellApi || typeof shellApi.updateEntryInline !== "function") return
+    shellApi.updateEntryInline(root.moduleName,
+      Model.settingsEntry(root.moduleName, root.settings, changes, apps, checker.skippedVersions))
   }
 
   function setSetting(key, value) {
@@ -187,16 +220,7 @@ Panel {
     setSettings(changes)
   }
 
-  // A skip goes once its row shows it no longer applies: a newer release
-  // than the skipped one, or that version (or a later one) installed. One
-  // the last check cannot judge stays: see skipKept in Main.qml.
-  function liveSkips(skips) {
-    var out = {}
-    for (var pkg in skips) if (checker.skipKept(pkg, skips[pkg])) out[pkg] = skips[pkg]
-    return out
-  }
-
-  function settingOn(row) { return checker.boolSetting(row.key, row.fallback) }
+  function settingOn(row) { return Model.boolSetting(root.settings, row.key, row.fallback) }
 
   function activateSetting() {
     if (settingIndex === intervalRow) {
@@ -215,64 +239,25 @@ Panel {
   // Mute: the row stays, its update keeps Update and Enter, but it adds no
   // badge, no count and no notification until unmuted.
   function toggleMute(app) {
-    if (!app) return
-    var list = checker.mutedApps.filter(function(pkg) { return pkg !== app.pkg })
-    if (!checker.isMuted(app)) list.push(app.pkg)
-    setSetting("mutedApps", list)
+    if (app) setSetting("mutedApps", Model.mutedToggled(checker.mutedApps, app))
   }
 
   // Skip: the row's current newest version stops signalling; a newer one
   // signals again. Update and Enter keep working.
   function toggleSkip(app) {
-    if (!app) return
-    var skips = {}
-    for (var pkg in checker.skippedVersions) if (pkg !== app.pkg) skips[pkg] = checker.skippedVersions[pkg]
-    if (!checker.isSkipped(app)) {
-      if (app.updateAvailable !== true || String(app.latest || "") === "") return
-      if (!skipVersionOk(String(app.latest))) {
-        setActionNote(app.pkg, "Cannot skip " + app.latest + ": not a version Omabump stores")
-        return
-      }
-      skips[app.pkg] = app.latest
-    }
-    setSetting("skippedVersions", skips)
+    var result = app ? Model.skipToggled(checker.skippedVersions, app) : null
+    if (!result) return
+    if (result.note) setActionNote(app.pkg, result.note)
+    else setSetting("skippedVersions", result.skips)
   }
 
-  // skip_version_ok in bin/omabump-common: the checker drops anything else.
-  function skipVersionOk(v) {
-    return v.length <= 64 && /^[0-9A-Za-z][A-Za-z0-9._+~-]*$/.test(v) && v.indexOf("..") === -1
-  }
-
-  // Clears what the quiet line lists, nothing more: a mute or skip for a row
-  // it leaves out (hidden by Show mise tools, not installed now) stays.
-  function clearQuiet() {
-    var muted = checker.mutedApps.filter(function(pkg) { return !root.listed(pkg) })
-    var skips = {}
-    for (var pkg in checker.skippedVersions)
-      if (!listed(pkg)) skips[pkg] = checker.skippedVersions[pkg]
-    setSettings({ mutedApps: muted, skippedVersions: skips })
-  }
-
-  function intervalLabel(sec) {
-    if (sec % 3600 === 0) return (sec / 3600) + " h"
-    if (sec % 60 === 0) return (sec / 60) + " min"
-    return sec + " s"
-  }
-
-  // A value set by hand that is not one of the choices stays selectable.
-  function intervalOptions() {
-    var list = intervalChoices.slice()
-    if (list.indexOf(checker.refreshIntervalSec) === -1) {
-      list.push(checker.refreshIntervalSec)
-      list.sort(function(a, b) { return a - b })
-    }
-    return list.map(function(sec) { return { value: String(sec), label: root.intervalLabel(sec) } })
-  }
+  // Clears what the quiet line lists (Model.quietCleared).
+  function clearQuiet() { setSettings(Model.quietCleared(apps, checker.mutedApps, checker.skippedVersions)) }
 
   // The launcher joins its arguments into one bash -c string, so the command
   // is quoted once for that inner shell and once more for bar.run's own shell.
   function updateApp(app) {
-    if (!app || app.updateAvailable !== true || app.installable !== true || !root.bar) return
+    if (!Model.updatable(app) || !root.bar) return
     var inner = Util.shellQuote(checker.installScript) + " " + Util.shellQuote(app.pkg)
     root.bar.run("omarchy-launch-floating-terminal-with-presentation " + Util.shellQuote(inner))
     root.close()
@@ -287,20 +272,6 @@ Panel {
     root.close()
   }
 
-  // An update exists but the plugin cannot install it: an indicator row, a
-  // recipe without a watch, or a feed that failed with a newer version known.
-  // Or a mise tool whose request holds it below a newer release. Not a
-  // release omarchy-pkgs still holds (held): Update comes back by itself.
-  // Not an AUR package omarchy update already updates (omarchyUpdate, its
-  // note says so): there is nothing to plan.
-  function askable(app) {
-    if (!app || app.installable === true || app.source === "self" || app.held === true
-      || app.omarchyUpdate === true) return false
-    if (app.updateAvailable === true) return true
-    return app.source === "mise" && String(app.error || "") === ""
-      && String(app.latest || "") !== "" && app.latest !== app.installed
-  }
-
   function setActionNote(pkg, text) {
     var notes = {}
     for (var key in actionNotes) notes[key] = actionNotes[key]
@@ -310,212 +281,33 @@ Panel {
 
   // Enter: Update when the plugin can install the row, else Ask agent.
   function primaryAction(app) {
-    if (askable(app)) promptFor(app, "ask")
-    else updateApp(app)
+    var action = Model.primaryAction(app)
+    if (action === "ask") promptFor(app, "ask")
+    else if (action === "update") updateApp(app)
   }
 
   // mode "ask" opens the default agent with the prompt (or copies it when no
   // default agent is set), "copy" only copies it.
   function promptFor(app, mode) {
-    if (!askable(app) || promptProcess.running) return
+    if (!Model.askable(app) || promptProcess.running) return
     promptProcess.pkg = app.pkg
     promptProcess.command = ["bash", "-c", promptProcess.script, "omabump-prompt", checker.promptScript, app.pkg, mode]
     promptProcess.running = true
   }
 
+  // omarchy-agent-prompt is the public way in, the one the agents panel
+  // uses; omarchy-agent --prompt is its internal flag.
   function promptDone(pkg, output) {
-    var newline = output.indexOf("\n")
-    var kind = newline < 0 ? output.trim() : output.substring(0, newline)
-    var rest = newline < 0 ? "" : output.substring(newline + 1)
-    // omarchy-agent-prompt is the public way in, the one the agents panel
-    // uses; omarchy-agent --prompt is its internal flag.
-    if (kind === "agent") {
-      Util.execArgv(["omarchy-agent-prompt", rest])
+    var outcome = Model.promptOutcome(output)
+    if (outcome.prompt !== undefined) {
+      Util.execArgv(["omarchy-agent-prompt", outcome.prompt])
       root.close()
-    } else if (kind === "copied") setActionNote(pkg, "Prompt copied")
-    else if (kind === "noagent") setActionNote(pkg, "No default agent set, prompt copied")
-    else setActionNote(pkg, "Prompt failed: " + (rest.trim() || kind || "no output"))
+    } else setActionNote(pkg, outcome.note)
   }
 
-  function hintText() {
-    if (root.settingsOpen) return "Space change · Esc back"
-    var app = root.cursorActive ? root.selectedApp() : null
-    var mute = app ? (checker.isMuted(app) ? " · m unmute" : " · m mute") : ""
-    if (app && app.updateAvailable === true) mute = (checker.isSkipped(app) ? " · K unskip" : " · K skip") + mute
-    if (root.askable(app)) return "Enter ask agent · c copy prompt" + mute
-    if (app && app.updateAvailable === true && app.installable === true) return "Enter update" + mute + " · Esc close"
-    if (app && app.switchable === true) return "w switch package" + mute + " · Esc close"
-    return (root.orderedApps.length > 0 ? "↑↓ select · " : "") + "r refresh · s settings" + mute
-  }
-
-  function checkedText() {
-    if (checker.checking) return "checking"
-    if (checker.checkedAt === "") return "not checked yet"
-    var ms = new Date(checker.checkedAt).getTime()
-    if (!isFinite(ms)) return ""
-    var minutes = Math.floor(Math.max(0, root.nowMs - ms) / 60000)
-    if (minutes < 1) return "checked just now"
-    if (minutes < 60) return "checked " + minutes + " min ago"
-    var hours = Math.floor(minutes / 60)
-    if (hours < 24) return "checked " + hours + " h ago"
-    return "checked " + Math.floor(hours / 24) + " d ago"
-  }
-
-  // What quiet rows hold back, in one wording for the header, the tooltip
-  // and IPC status: " (+N muted/skipped)" for their updates. The tooltip and
-  // IPC status (withFailures) also say when a muted row's check failed; the
-  // header and the bar leave that out, as they leave out its update.
-  function quietNote(withFailures) {
-    var parts = []
-    if (checker.quietCount > 0) parts.push("+" + checker.quietCount + " muted/skipped")
-    var failed = withFailures ? checker.mutedErrorCount : 0
-    if (failed > 0) parts.push("check failed for " + failed + " muted " + (failed === 1 ? "app" : "apps"))
-    return parts.length > 0 ? " (" + parts.join(", ") + ")" : ""
-  }
-
-  // The hero says one thing (heroState), then what quiet rows hold back.
-  function heroMeta() {
-    if (root.settingsOpen) return "Settings"
-    if (checker.checking) return "Checking…"
-    var state = heroState()
-    return state !== "" && state !== "Not checked yet" ? state + quietNote(false) : state
-  }
-
-  // All current, N updates, check failed, or last known (rows from an
-  // earlier run because this one failed for them).
-  function heroState() {
-    if (checker.checkFailed) return "Check failed"
-    var updates = updateCount + checker.waitingCount
-    if (updates > 0) return updates + (updates === 1 ? " update" : " updates")
-    if (checker.staleCount > 0) return "Last known, " + checkedText()
-    if (checker.errorCount > 0) return "Check failed"
-    if (checker.checkedAt === "") return "Not checked yet"
-    if (checker.uncheckedCount > 0) return "All checked current, " + checker.uncheckedCount + " unchecked"
-    return apps.length > 0 ? "All current" : ""
-  }
-
-  // The bar tooltip and the status IPC call keep the full count.
-  function summaryText() {
-    var parts = []
-    if (updateCount > 0) parts.push(updateCount + (updateCount === 1 ? " update" : " updates"))
-    if (checker.waitingCount > 0) parts.push(checker.waitingCount + " newer without an install path")
-    var failed = checker.errorCount
-    if (checker.checkFailed) parts.push("check failed")
-    else if (failed > 0) parts.push("check failed for " + failed + (failed === 1 ? " app" : " apps"))
-    if (checker.staleCount > 0) parts.push("last known for " + checker.staleCount + (checker.staleCount === 1 ? " app" : " apps"))
-    var unchecked = checker.uncheckedCount > 0 ? checker.uncheckedCount + " unchecked" : ""
-    var text = parts.length > 0 ? parts.concat(unchecked !== "" ? [unchecked] : []).join(", ")
-      : checker.checkedAt === "" || apps.length === 0 ? ""
-      : unchecked !== "" ? "All checked current, " + unchecked : "All current"
-    return text !== "" ? text + quietNote(true) : text
-  }
-
-  readonly property string followingText: checker.pkgsFollowing ? "omarchy-pkgs: following master (unpinned)" : ""
-  // A failure or a warning (a wrapper Omabump no longer recognises).
-  readonly property string discoveryText: checker.discoveryError !== "" ? "Agent discovery: " + checker.discoveryError : ""
-
-  function tooltipText() {
-    var summary = summaryText()
-    var text = summary.indexOf("All current") === 0 ? "Omabump up to date" + summary.substring(11)
-      : summary !== "" ? "Omabump: " + summary
-      : checker.checkedAt === "" ? "Omabump: not checked yet" : "Omabump: none installed"
-    if (followingText !== "") text += "\n" + followingText
-    if (discoveryText !== "") text += "\n" + discoveryText
-    return text
-  }
-
-  // The package release (-1) says nothing next to an upstream version, so
-  // rows drop it unless it is the only difference.
-  function installedText(app) {
-    if (!app) return ""
-    var full = String(app.installed || "")
-    if (app.source === "mise") return full
-    var short = full.replace(/-[0-9.]+$/, "")
-    return app.updateAvailable === true && short === String(app.latest || "") ? full : short
-  }
-
-  // Notes from the checker carry the route ("switch to …"); the tooltip
-  // keeps that, the row keeps the first clause.
-  function shortNote(note) {
-    var first = String(note || "").split("; ")[0]
-    return first.replace(/, (Update switches|switch) to \S+$/, "")
-  }
-
-  // The second line of a row: exceptions only.
-  function extraLine(app) {
-    if (!app) return ""
-    if (app.checking === true) return "Checking…"
-    var action = actionNotes[app.pkg]
-    if (action) return action
-    if (String(app.error || "") !== "") return "Check failed: " + app.error
-    var note = shortNote(app.note)
-    if (note !== "") return note
-    if (askable(app)) return "No install route"
-    if (app.stale === true) return "Last known version"
-    return ""
-  }
-
-  function sourceLabel(app) {
-    if (app.stale === true) return "an earlier check"
-    if (app.versionFrom === "mise") return "mise"
-    if (app.versionFrom === "feed") return "the vendor's release feed"
-    return String(app.versionFrom || "")
-  }
-
-  // How the row knows what it shows and what Update would do. A row with no
-  // Update says so, with the reason its second line gives, instead of a
-  // route it cannot take.
-  function rowTooltip(app) {
-    if (!app) return ""
-    var lines = []
-    var note = String(app.note || "")
-    var name = String(app.installedName || "")
-    lines.push("Installed " + String(app.installed || "")
-      + (name !== "" && name !== app.pkg && app.source !== "mise" ? " as " + name : ""))
-    if (String(app.latest || "") !== "") {
-      var from = sourceLabel(app)
-      lines.push("Newest " + app.latest + (from !== "" ? " from " + from : ""))
-    }
-    if (app.source === "self") lines.push(app.installable === true
-      ? "Updates to the release's tagged commit, after showing its log and asking"
-      : "omarchy update does not update plugins")
-    else if (app.installable !== true) {
-      // A held release gets its Update once the hold ends.
-      var why = shortNote(note)
-      lines.push((app.held === true ? "No Update yet" : "No Update here") + (why !== "" ? ": " + why : ""))
-      if (why === note) note = ""
-    } else if (app.source === "mise") lines.push("Updates with mise up")
-    else if (app.source === "omarchy") {
-      var commit = String(app.recipeCommit || checker.pkgsCommit || "")
-      lines.push("Updates through Omarchy's recipe"
-        + (String(app.recipe || "") !== "" ? " " + app.recipe : "")
-        + (commit !== "" ? " at " + commit.substring(0, 7) : ""))
-    } else if (app.source === "vendor-pkg") lines.push("Updates with the vendor's Arch package")
-    if (note !== "") lines.push(note)
-    if (String(app.error || "") !== "") lines.push("Check failed: " + app.error)
-    if (checker.isMuted(app)) lines.push("Muted: no badge, no notification")
-    if (checker.isSkipped(app)) lines.push("Skipped " + checker.skippedVersion(app) + ": no badge, no notification until a newer version")
-    return lines.join("\n")
-  }
-
-  function colorLuminance(c) {
-    function channel(v) { return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4) }
-    return 0.2126 * channel(c.r) + 0.7152 * channel(c.g) + 0.0722 * channel(c.b)
-  }
-
-  // White marks ship a dark twin for light themes, the same convention the
-  // first-party agents panel uses. Only relative paths inside this plugin
-  // load: an absolute path, a URL or a ".." component shows the fallback.
-  function iconPathOk(path) {
-    return path !== "" && path.charAt(0) !== "/" && path.indexOf(":") === -1
-      && path.indexOf("\\") === -1 && path.split("/").indexOf("..") === -1
-  }
   function iconUrl(app) {
-    if (!app) return ""
-    var path = String(app.icon || "")
-    var light = String(app.iconLight || "")
-    if (light !== "" && colorLuminance(root.surface) >= 0.5) path = light
-    return iconPathOk(path) ? Qt.resolvedUrl(path) : ""
+    var path = Model.iconPath(app, root.lightSurface)
+    return path !== "" ? Qt.resolvedUrl(path) : ""
   }
 
   // Like the system update icon, it can stay out of the bar until there is
@@ -530,19 +322,19 @@ Panel {
   onOpenedChanged: if (opened) {
     actionNotes = {}
     settingsOpen = false
+    if (panelFlick) panelFlick.contentY = 0
     resetCursor()
     nowMs = Date.now()
-    if (panelFlick) panelFlick.contentY = 0
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
   // The plugin loader hands the widget an empty settings object while it is
   // built; the bar later sets bar, then the entry's settings, with
   // Qt.callLater. The first settings to arrive with a bar are the real ones.
   onSettingsChanged: if (root.bar) checker.settingsReady = true
-  onOrderedAppsChanged: rowIndex = clamp(rowIndex, 0, Math.max(0, orderedApps.length - 1))
+  onOrderedAppsChanged: rowIndex = Model.clamp(rowIndex, 0, Math.max(0, orderedApps.length - 1))
   // Clear, or a settings change from elsewhere, can leave the quiet line
   // empty, and then it hides: the settings cursor must not stay on it.
-  onQuietTextChanged: if (quietText === "") settingIndex = clamp(settingIndex, 0, settingRows.length)
+  onQuietTextChanged: if (quietText === "") settingIndex = Model.clamp(settingIndex, 0, settingRows.length)
 
   Main {
     id: checker
@@ -552,8 +344,7 @@ Panel {
   Process {
     id: promptProcess
     property string pkg: ""
-    // The first output line says what happened: agent (the prompt follows),
-    // copied, noagent (copied instead) or error (the message follows).
+    // The first output line says what happened (Model.promptOutcome).
     // wl-copy stays behind to serve the clipboard, so its output goes to
     // /dev/null or the collector would never see the end of the stream.
     readonly property string script: 'out=$("$1" "$2" 2>&1) || { printf "error\\n%s" "$out"; exit 0; }\n'
@@ -580,14 +371,14 @@ Panel {
   // qs ipc fallback instead of the shell socket.
   IpcHandler {
     target: root.ipcTarget
-    function open(): void { root.open() }
-    function close(): void { root.close() }
-    function show(): void { root.open() }
-    function hide(): void { root.close() }
-    function toggle(): void { root.toggle() }
+    function open(): void { root.ipcOpen() }
+    function close(): void { root.ipcClose() }
+    function show(): void { root.ipcOpen() }
+    function hide(): void { root.ipcClose() }
+    function toggle(): void { root.ipcToggle() }
     function refresh(): string { return root.ipcRefresh() }
-    function status(): string { return root.tooltipText() }
-    function settings(): void { root.open(); root.showSettings(true, false) }
+    function status(): string { return Model.tooltipText(checker.summary) }
+    function settings(): void { root.ipcSettings() }
   }
 
   BarIconButton {
@@ -596,7 +387,7 @@ Panel {
     bar: root.bar
     text: root.glyph
     active: root.updateCount > 0
-    tooltipText: root.tooltipText()
+    tooltipText: Model.tooltipText(checker.summary)
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.MiddleButton || buttonCode === Qt.RightButton) root.refreshNow()
       else root.toggle()
@@ -619,11 +410,7 @@ Panel {
       // The open dropdown list takes the keys until it closes.
       blocked: intervalDropdown.popupOpen
 
-      onMoveRequested: function(dx, dy) {
-        if (dy === 0) return
-        if (!root.cursorActive) { root.cursorActive = true; return }
-        root.moveCursor(dy)
-      }
+      onMoveRequested: function(dx, dy) { root.cursorKey(dy) }
       onActivateRequested: {
         if (!root.cursorActive) return
         if (root.settingsOpen) root.activateSetting()
@@ -631,14 +418,19 @@ Panel {
       }
       onCloseRequested: root.settingsOpen ? root.showSettings(false, false) : root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
-      onTextKey: function(t) {
-        if (t === "s" || t === "S") root.showSettings(!root.settingsOpen, true)
+      // k moves the cursor up (PanelKeyCatcher), so skip is Shift+K, a
+      // settings write. With CapsLock on, j and k arrive as J and K without
+      // Shift and move the cursor as j and k do. A shell whose catcher
+      // passes no modifiers keeps K as skip.
+      onTextKey: function(t, modifiers) {
+        var shifted = modifiers === undefined || (modifiers & Qt.ShiftModifier) !== 0
+        if ((t === "J" || t === "K") && !shifted) root.cursorKey(t === "J" ? 1 : -1)
+        else if (t === "s" || t === "S") root.showSettings(!root.settingsOpen, true)
         else if (t === "\b" && root.settingsOpen) root.showSettings(false, false)
         else if ((t === "r" || t === "R") && !root.settingsOpen) root.refreshNow()
         else if ((t === "c" || t === "C") && !root.settingsOpen && root.cursorActive) root.promptFor(root.selectedApp(), "copy")
         else if ((t === "w" || t === "W") && !root.settingsOpen && root.cursorActive) root.switchApp(root.selectedApp())
         else if ((t === "m" || t === "M") && !root.settingsOpen && root.cursorActive) root.toggleMute(root.selectedApp())
-        // k moves the cursor up (PanelKeyCatcher), so skip is K.
         else if (t === "K" && !root.settingsOpen && root.cursorActive) root.toggleSkip(root.selectedApp())
       }
 
@@ -656,7 +448,7 @@ Panel {
           PanelHero {
             width: parent.width
             title: "Omabump"
-            meta: root.heroMeta()
+            meta: Model.heroMeta(checker.summary, root.settingsOpen, root.checkedText)
             foreground: root.foreground
             fontFamily: root.fontFamily
 
@@ -681,7 +473,7 @@ Panel {
 
                   PanelToolTip {
                     visible: refreshButton.hot
-                    text: root.checkedText() + " · Refresh  r"
+                    text: root.checkedText + " · Refresh  r"
                     fontFamily: root.fontFamily
                     x: refreshButton.width - width
                   }
@@ -785,6 +577,7 @@ Panel {
             }
 
             Column {
+              id: desktopSection
               visible: !root.settingsOpen && root.desktopApps.length > 0
               width: parent.width
               spacing: Style.space(10)
@@ -796,6 +589,7 @@ Panel {
               }
 
               Column {
+                id: desktopRows
                 width: parent.width
                 spacing: Style.spacing.xxs
 
@@ -820,6 +614,7 @@ Panel {
             }
 
             Column {
+              id: cliSection
               visible: !root.settingsOpen && root.cliApps.length > 0
               width: parent.width
               spacing: Style.space(10)
@@ -831,6 +626,7 @@ Panel {
               }
 
               Column {
+                id: cliRows
                 width: parent.width
                 spacing: Style.spacing.xxs
 
@@ -857,6 +653,7 @@ Panel {
             // omarchy update does not update plugins, so Omabump says when
             // a newer release of itself exists.
             Column {
+              id: pluginSection
               visible: !root.settingsOpen && root.pluginApps.length > 0
               width: parent.width
               spacing: Style.space(10)
@@ -868,6 +665,7 @@ Panel {
               }
 
               Column {
+                id: pluginRows
                 width: parent.width
                 spacing: Style.spacing.xxs
 
@@ -887,6 +685,7 @@ Panel {
             }
 
             Column {
+              id: settingsSection
               visible: root.settingsOpen
               width: parent.width
               spacing: Style.space(6)
@@ -932,7 +731,7 @@ Panel {
                   anchors.rightMargin: intervalSurface.borderRight + Style.spacing.rowPaddingX
                   width: Style.space(110)
                   showLabel: false
-                  options: root.intervalOptions()
+                  options: Model.intervalOptions(root.intervalChoices, checker.refreshIntervalSec)
                   value: String(checker.refreshIntervalSec)
                   foreground: root.foreground
                   fontFamily: root.fontFamily
@@ -947,6 +746,7 @@ Panel {
               }
 
               Repeater {
+                id: settingsRepeater
                 model: root.settingRows
 
                 Toggle {
@@ -1030,7 +830,8 @@ Panel {
           Text {
             textFormat: Text.PlainText
             width: parent.width
-            text: root.hintText()
+            text: Model.hintText(root.settingsOpen, root.cursorActive ? root.selectedApp() : null, root.orderedApps.length,
+              checker.mutedApps, checker.skippedVersions)
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -1042,7 +843,7 @@ Panel {
             textFormat: Text.PlainText
             visible: text !== ""
             width: parent.width
-            text: root.followingText
+            text: Model.followingText(checker.summary)
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -1054,7 +855,7 @@ Panel {
             textFormat: Text.PlainText
             visible: text !== ""
             width: parent.width
-            text: root.discoveryText
+            text: Model.discoveryText(checker.summary)
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -1077,13 +878,13 @@ Panel {
     property int rowIndex: 0
     readonly property bool hasUpdate: !!app && app.updateAvailable === true
     readonly property bool updatable: hasUpdate && app.installable === true
-    readonly property bool askable: root.askable(app)
+    readonly property bool askable: Model.askable(app)
     readonly property bool switchable: !!app && app.switchable === true && !updatable
     readonly property bool showAction: hasCursor && (updatable || askable || switchable)
-    readonly property bool muted: checker.isMuted(app)
-    readonly property bool quiet: checker.isQuiet(app)
-    readonly property bool skipped: checker.isSkipped(app)
-    readonly property string extra: root.extraLine(app)
+    readonly property bool muted: Model.isMuted(checker.mutedApps, app)
+    readonly property bool quiet: Model.isQuiet(checker.mutedApps, checker.skippedVersions, app)
+    readonly property bool skipped: Model.isSkipped(checker.skippedVersions, app)
+    readonly property string extra: Model.extraLine(app, checker.schemaVersion, app ? root.actionNotes[app.pkg] : "")
     property bool actionHovered: false
     onShowActionChanged: if (!showAction) actionHovered = false
 
@@ -1104,7 +905,7 @@ Panel {
 
     PanelToolTip {
       visible: rowMouse.containsMouse && !appRow.actionHovered
-      text: root.rowTooltip(appRow.app)
+      text: Model.rowTooltip(appRow.app, checker.schemaVersion, checker.mutedApps, checker.skippedVersions, checker.pkgsCommit)
       fontFamily: root.fontFamily
     }
 
@@ -1176,7 +977,7 @@ Panel {
 
         Text {
           textFormat: Text.PlainText
-          text: root.installedText(appRow.app)
+          text: Model.installedText(appRow.app)
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
@@ -1211,7 +1012,7 @@ Panel {
         foreground: root.urgent
         fontFamily: root.fontFamily
         fontSize: Style.font.bodySmall
-        tooltipText: appRow.app ? root.installedText(appRow.app) + " → " + appRow.app.latest + ", in a terminal  Enter" : ""
+        tooltipText: appRow.app ? Model.installedText(appRow.app) + " → " + appRow.app.latest + ", in a terminal  Enter" : ""
         onHovered: function(on) { appRow.actionHovered = on }
         onClicked: root.updateApp(appRow.app)
       }
@@ -1258,7 +1059,7 @@ Panel {
         Layout.alignment: Qt.AlignVCenter
         iconText: "󰒭"
         bordered: appRow.skipped
-        tooltipText: appRow.skipped ? "Unskip " + checker.skippedVersion(appRow.app) + "  K"
+        tooltipText: appRow.skipped ? "Unskip " + Model.skippedVersion(checker.skippedVersions, appRow.app) + "  K"
           : appRow.app ? "Skip " + appRow.app.latest + ": quiet until a newer version  K" : ""
         foreground: appRow.skipped ? root.foreground : root.dim
         fontFamily: root.fontFamily

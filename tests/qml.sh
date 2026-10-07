@@ -1,6 +1,7 @@
 # shellcheck shell=bash disable=SC2154 # root and the helpers come from tests/run.sh
-# Sourced by tests/run.sh: where Main.qml repeats a rule of the scripts, the
-# two must agree. The QML itself needs a shell to run, so these read it.
+# Sourced by tests/run.sh: where Main.qml or Model.js repeats a rule of the
+# scripts, the two must agree. The QML itself needs a shell to run, so these
+# read it; Model.js runs under node (tests/model.test.mjs), when node is here.
 
 # --- Main.qml and the scripts -------------------------------------------------
 
@@ -48,7 +49,7 @@ same "waitScript: a held lock is waited for, then the command runs" "started|rel
   "$(run_wait "$wait_lock" 5 cat "$scratch/wait/released")"
 let_go
 hold_lock
-same "waitScript: a lock held past the wait runs nothing and exits 0" "exit 0" \
+same "waitScript: a lock held past the wait runs nothing and exits 75" "exit 75" \
   "$(bash -c "$wait_script" omabump-wait "$wait_lock" 0.2 echo ran; echo "exit $?")"
 let_go
 same "waitScript: no lock directory yet, nothing to wait for" "started|ran" \
@@ -58,16 +59,107 @@ same "waitScript: the command's exit status is the run's" "started|exit 3" \
 
 # The panel decides skips between checks: mise and self versions as strings,
 # every other source with vercmp, as row_skipped does.
-qml_strings=$(grep -o 'if (app.source === "[a-z-]*" || app.source === "[a-z-]*") return app.updateAvailable === true && latest === version' "$root/Main.qml" \
+qml_strings=$(grep -o '^function stringVersions(source) { return source === "[a-z-]*" || source === "[a-z-]*" }$' "$root/Model.js" \
   | grep -o '"[a-z-]*"' | tr -d '"' | sort | paste -sd' ')
 script_strings=$(for source in $(jq -r '.[].source' "$root/apps.json" | sort -u) self; do
   string_versions "$source" && echo "$source"
 done | sort | paste -sd' ')
-same "Main.qml compares the same sources' skips as strings as the checker" "$script_strings" "$qml_strings"
+same "Model.js compares the same sources' skips as strings as the checker" "$script_strings" "$qml_strings"
+check "Model.js decides skips by stringVersions" grep -q 'if (stringVersions(app.source)) return app.updateAvailable === true && latest === version' "$root/Model.js"
 
 # status.json's runError: the checker writes the field (tests/check.sh runs
-# it), and Main.qml must read the same name.
-check "Main.qml reads the runError field bin/omabump-check writes" \
-  grep -q 'parsed.runError' "$root/Main.qml"
+# it), and Model.js must read the same name.
+check "Model.js reads the runError field bin/omabump-check writes" \
+  grep -q 'file.runError' "$root/Model.js"
 check "bin/omabump-check writes runError into status.json" \
   grep -q 'runError: \$rerr' "$root/bin/omabump-check"
+
+# The widget reads states from status.json's fields, never from the
+# checker's wording: no "Update check skipped" prefix for unchecked, no
+# pattern that strips a switch clause out of a note.
+refuse "the widget recognises no state by the checker's wording" \
+  grep -qE 'Update check skipped|\(Update switches\|switch\)' "$root/Main.qml" "$root/Panel.qml" "$root/Model.js"
+
+# Every Model.x the QML reads is a function or value Model.js defines: a
+# typo would show only as a binding error in the shell's log.
+model_missing=$(comm -23 \
+  <(grep -ho 'Model\.[A-Za-z]*' "$root/Main.qml" "$root/Panel.qml" | grep -vx 'Model\.js' | sed 's/^Model\.//' | sort -u) \
+  <(sed -n 's/^function \([A-Za-z]*\)(.*/\1/p; s/^var \([A-Za-z]*\) = .*/\1/p' "$root/Model.js" | sort -u) | paste -sd' ')
+same "Main.qml and Panel.qml read only what Model.js defines" "" "$model_missing"
+check "and they read some" grep -q 'Model\.tooltipText(' "$root/Panel.qml"
+
+same "Model.js caps the quiet settings where load_quiet does" "$quiet_max" \
+  "$(sed -n 's/^var quietMax = \([0-9]*\)$/\1/p' "$root/Model.js")"
+
+# tests/vercmp.tsv holds vercmp's own answers, so Model.js's port is tested
+# against the real thing (tests/model.test.mjs). The fields are split by
+# hand: read would merge the tabs around an empty version.
+vercmp_wrong=""
+while IFS= read -r line; do
+  [[ $line == '#'* || -z $line ]] && continue
+  a=${line%%$'\t'*} rest=${line#*$'\t'}
+  b=${rest%%$'\t'*} want=${rest#*$'\t'}
+  got=$(vercmp "$a" "$b")
+  (( got > 0 )) && got=1
+  (( got < 0 )) && got=-1
+  [[ $got == "$want" ]] || vercmp_wrong+="[$a $b: $got, not $want] "
+done <"$root/tests/vercmp.tsv"
+same "tests/vercmp.tsv: every pair is what vercmp answers" "" "$vercmp_wrong"
+
+# --- Model.js under node -------------------------------------------------------
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "SKIP - Model.js tests and their checks against the scripts: node is not installed"
+else
+  # One harness test per line tests/model.test.mjs prints.
+  model_out=$(node "$root/tests/model.test.mjs" </dev/null 2>&1)
+  model_rc=$? model_done=0 model_failed=0
+  while IFS=$'\t' read -r verdict name why; do
+    case $verdict in
+      ok) pass "Model.js: $name" ;;
+      "not ok") fail "Model.js: $name" "$why"; model_failed=1 ;;
+      done) model_done=1 ;;
+    esac
+  done <<<"$model_out"
+  if (( ! model_done || (model_rc != 0 && ! model_failed) )); then
+    fail "Model.js: tests/model.test.mjs ran to the end" "exit $model_rc: $(head -c 400 <<<"$model_out")"
+  fi
+
+  # model_call <function>: Model.js's answer to each line of stdin, a JSON
+  # array of arguments.
+  model_call() { node "$root/tests/model.mjs" "$1"; }
+
+  # The ids and versions load_quiet keeps, by the scripts' own functions.
+  model_ids=(claude-desktop z-code-bin mise:claude mise: mise:-x mise:npm:x self:omabump self:other github:x
+    -x .x _x @x +x a..b A a.B 'a b' a/b é '' x:y 0)
+  same "Model.appIdOk accepts the ids app_id_ok accepts" \
+    "$(for id in "${model_ids[@]}"; do if app_id_ok "$id"; then echo true; else echo false; fi; done)" \
+    "$(for id in "${model_ids[@]}"; do jq -cn --arg v "$id" '[$v]'; done | model_call appIdOk)"
+  model_versions=(1.0 1.0.0-beta.1 v1 1.0~rc1 1+2_3 -1 .1 1..2 1:2 '1 0' '' é1 1é
+    "$(printf '1%.0s' {1..64})" "$(printf '1%.0s' {1..65})")
+  same "Model.skipVersionOk accepts the versions skip_version_ok accepts" \
+    "$(for v in "${model_versions[@]}"; do if skip_version_ok "$v"; then echo true; else echo false; fi; done)" \
+    "$(for v in "${model_versions[@]}"; do jq -cn --arg v "$v" '[$v]'; done | model_call skipVersionOk)"
+
+  # load_quiet and Model.js read the same shell.json entry alike: wrong
+  # types, refused ids and versions, and the cap on each setting. Prints
+  # load_quiet's mutes and skips, then Model.js's, one line each.
+  model_quiet() {
+    local entry
+    jq '{plugins: [{id: "io.github.vladkarok.omabump"} + .]}' >"$shell_json"
+    load_quiet 2>/dev/null
+    echo "$(jq -c 'sort' <<<"$muted_json") $(jq -cS . <<<"$skipped_json")"
+    entry=$(jq -c '[.plugins[0]]' "$shell_json")
+    echo "$(model_call mutedApps <<<"$entry" | jq -c 'sort') $(model_call skippedVersions <<<"$entry" | jq -cS .)"
+  }
+  model_pair=$(jq -n '{mutedApps: ["a", 1, "Bad", "mise:x", "", "a", "self:omabump", "x y", null, "mise:"],
+    skippedVersions: {a: "1.0", "mise:b": "2.0-beta.1", Bad: "1.0", c: "1..2", d: 3, e: "", "self:omabump": "0.2.0", f: "v1 "}}' | model_quiet)
+  same "Model.js keeps the mutes and skips load_quiet keeps" "$(sed -n 1p <<<"$model_pair")" "$(sed -n 2p <<<"$model_pair")"
+  model_pair=$(jq -n '{mutedApps: ([range(150) | "Bad\(.)", .] + [range(100) | "ok\(.)"]),
+    skippedVersions: ([range(150) | {key: "bad-\(.)", value: "1..2"}, {key: "num-\(.)", value: 1}]
+      + [range(100) | {key: "ok-\(.)", value: "1.0"}] | from_entries)}' | model_quiet)
+  same "Model.js caps the mutes and skips as load_quiet does" "$(sed -n 1p <<<"$model_pair")" "$(sed -n 2p <<<"$model_pair")"
+  same "and the cap leaves 50 of each" "50 50" "$(sed -n 2p <<<"$model_pair" | jq -rs '"\(.[0] | length) \(.[1] | length)"')"
+  rm -f "$shell_json"
+  load_quiet
+fi
