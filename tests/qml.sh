@@ -48,10 +48,15 @@ hold_lock
 same "waitScript: a held lock is waited for, then the command runs" "started|released" \
   "$(run_wait "$wait_lock" 5 cat "$scratch/wait/released")"
 let_go
+# Its exit for a lock held past the wait is the one Model.js reads as a
+# check that never ran: the -E, the test and the exit in it all count.
+busy_exit=$(sed -n 's/^var lockBusyExit = \([0-9]*\)$/\1/p' "$root/Model.js")
 hold_lock
-same "waitScript: a lock held past the wait runs nothing and exits 75" "exit 75" \
+same "waitScript: a lock held past the wait runs nothing and exits Model.lockBusyExit" "exit ${busy_exit:-none}" \
   "$(bash -c "$wait_script" omabump-wait "$wait_lock" 0.2 echo ran; echo "exit $?")"
 let_go
+check "Main.qml reads a check's exit through Model.checkOutcome" \
+  grep -q 'Model.checkOutcome(exitCode, root.runWaiting, root.runForRefresh)' "$root/Main.qml"
 same "waitScript: no lock directory yet, nothing to wait for" "started|ran" \
   "$(run_wait "$scratch/wait/none/.check.lock" 5 echo ran)"
 same "waitScript: the command's exit status is the run's" "started|exit 3" \
@@ -109,7 +114,12 @@ same "tests/vercmp.tsv: every pair is what vercmp answers" "" "$vercmp_wrong"
 # --- Model.js under node -------------------------------------------------------
 
 if ! command -v node >/dev/null 2>&1; then
-  echo "SKIP - Model.js tests and their checks against the scripts: node is not installed"
+  # A skip there would pass unseen: CI must install node.
+  if [[ ${GITHUB_ACTIONS:-} == true ]]; then
+    fail "Model.js tests run on CI" "node is not installed"
+  else
+    echo "SKIP - Model.js tests and their checks against the scripts: node is not installed"
+  fi
 else
   # One harness test per line tests/model.test.mjs prints.
   model_out=$(node "$root/tests/model.test.mjs" </dev/null 2>&1)

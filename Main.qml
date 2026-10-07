@@ -34,11 +34,10 @@ Item {
   // checker's lock, $2 how long to wait for it (lockWaitSec), then the
   // command. It takes the lock and lets go at once, says "started" on
   // stdout and runs the command. A lock still held after the wait is left
-  // be, and the script exits 75 (lockBusyExit) having run nothing; a lock
-  // file that cannot be opened (no check has made its directory yet) has
-  // no check behind it.
+  // be, and the script exits 75 (Model.lockBusyExit) having run nothing; a
+  // lock file that cannot be opened (no check has made its directory yet)
+  // has no check behind it.
   readonly property string waitScript: 'flock -E 75 -w "$2" "$1" true 2>/dev/null; (( $? == 75 )) && exit 75; echo started; shift 2; exec "$@"'
-  readonly property int lockBusyExit: 75
   // The checker's own --wait (flock -w in bin/omabump-check).
   readonly property int lockWaitSec: 660
 
@@ -56,12 +55,12 @@ Item {
   // behind. Turned off, the run keeps status.json free of CLI rows;
   // parse() filters them out meanwhile. Before the timer's first tick (the
   // bar is still handing the settings over), that tick reads the setting as
-  // it is then.
+  // it is then (Model.showMiseRun).
   onShowMiseChanged: {
     parse(statusFile.text())
-    if (!settingsReady || !timerTicked) return
-    if (checkProcess.running) refreshQueued = true
-    else runCheck(true, false)
+    var run = Model.showMiseRun(settingsReady, timerTicked, checkProcess.running)
+    if (run === "queue") refreshQueued = true
+    else if (run === "wait") runCheck(true, false)
   }
   // Rows the user muted (pkg ids): no badge, no count, no notification.
   // Their update stays visible in the panel and installable. And {pkg:
@@ -83,9 +82,15 @@ Item {
   property string pkgsError: ""
   property string pkgsNote: ""
   // This shell's own check exited non-zero, or could not start for the lock.
-  // Kept until a run that started after it completes, from here or anywhere
-  // else.
+  // Kept until a run that started after checkErrorAfterMs completes, from
+  // here or anywhere else (Model.answersError).
   property string checkError: ""
+  // When the failed check ended, or when the run that could not start was
+  // asked for: the check that held the lock then started before it, and
+  // its answer is not the one asked for.
+  property double checkErrorAfterMs: 0
+  // When this shell's running check was asked for.
+  property double runAskedMs: 0
   // status.json says its run stopped part way (killed, timed out, a failed
   // command), whoever started it: every bar and a run from a terminal see it.
   property string runError: ""
@@ -178,6 +183,7 @@ Item {
     refreshQueued = false
     runForRefresh = wait && own
     runWaiting = wait
+    runAskedMs = Date.now()
     // An overall deadline: ten minutes, then TERM, then KILL ten seconds
     // later. A Refresh waits for a running check before it (waitScript), so
     // the deadline bounds its own run alone, like any other: other waiters
@@ -227,11 +233,9 @@ Item {
       discoveryError = status.discoveryError
       miseError = status.miseError
       runError = status.runError
-      // A run that started after this shell's failed one ended, and
-      // completed, has the answer that one could not give. startedAt has
-      // whole seconds, so a run in that same second does not count.
-      if (checkError !== "" && !fileCheckingRaw && runError === "" && fileStartedMs > lastCheckEndMs)
-        checkError = ""
+      // A run that started after this shell's failed one, and completed,
+      // has the answer that one could not give.
+      if (checkError !== "" && Model.answersError(status, checkErrorAfterMs)) checkError = ""
     } catch (e) {
       console.warn("omabump", "Ignoring bad status file", statusPath, e)
     }
@@ -256,17 +260,18 @@ Item {
     // The checker replaces status.json with a rename, which a watch on the
     // old inode can miss; reading it back here covers that.
     onExited: function(exitCode) {
-      var waited = root.runWaiting
+      var outcome = Model.checkOutcome(exitCode, root.runWaiting, root.runForRefresh)
       root.runWaiting = false
-      if (waited && exitCode === root.lockBusyExit) {
-        // waitScript gave up on the lock and ran nothing: this shell's last
-        // check and when it ended stand, and the Refresh says it was not
-        // done rather than pass for one that was.
-        root.checkError = "Check not run: another check held the lock for over "
-          + Math.round(root.lockWaitSec / 60) + " min"
+      root.checkError = Model.checkErrorText(outcome, exitCode, root.lockWaitSec)
+      if (outcome === "notRun") {
+        // Nothing ran: this shell's last check and when it ended stand, and
+        // the Refresh says it was not done rather than pass for one that
+        // was. The check that held the lock started before it was asked
+        // for, so only a later one clears that.
+        root.checkErrorAfterMs = root.runAskedMs
       } else {
         root.lastCheckEndMs = Date.now()
-        root.checkError = exitCode === 0 ? "" : "Check failed (exit " + exitCode + "), see the shell log"
+        root.checkErrorAfterMs = root.lastCheckEndMs
       }
       statusFile.reload()
       Qt.callLater(root.runQueued)

@@ -331,6 +331,37 @@ test("checkDue: counts from the start, unless the run died past its end; a futur
     m.checkDue(now, "2026-10-07T13:00:00Z", 0, 3600)], [true, false, true])
 })
 
+// --- this shell's checks ------------------------------------------------------------
+
+test("checkOutcome: a lock wait that gave up ran nothing; else the exit code says", () => {
+  const busy = model.lockBusyExit
+  same(busy, 75)
+  same([m.checkOutcome(busy, true, false), m.checkOutcome(busy, true, true), m.checkOutcome(busy, false, true),
+    m.checkOutcome(busy, false, false), m.checkOutcome(0, true, true), m.checkOutcome(0, false, false),
+    m.checkOutcome(1, false, true), m.checkOutcome(124, false, true)],
+    ["notRun", "notRun", "notRun", "failed", "ok", "ok", "failed", "failed"])
+})
+
+test("checkErrorText: none for a check that ran, else why", () => {
+  same([m.checkErrorText("ok", 0, 660), m.checkErrorText("failed", 3, 660), m.checkErrorText("notRun", 75, 660)],
+    ["", "Check failed (exit 3), see the shell log", "Check not run: another check held the lock for over 11 min"])
+})
+
+test("answersError: a completed run that started after the failure, not one that held the lock before", () => {
+  const after = Date.parse("2026-10-07T12:00:05.300Z")
+  const status = startedAt => m.parseStatus(JSON.stringify({ startedAt: startedAt, checking: false, runError: "" }), true)
+  same([m.answersError(status("2026-10-07T12:00:06Z"), after), m.answersError(status("2026-10-07T12:00:05Z"), after),
+    m.answersError(status("2026-10-07T11:50:00Z"), after),
+    m.answersError(Object.assign(status("2026-10-07T12:00:06Z"), { checking: true }), after),
+    m.answersError(Object.assign(status("2026-10-07T12:00:06Z"), { runError: "killed" }), after),
+    m.answersError(null, after)], [true, false, false, false, false, false])
+})
+
+test("showMiseRun: nothing before the first tick, queued behind this shell's check, else a waiting run", () => {
+  same([m.showMiseRun(false, false, false), m.showMiseRun(true, false, false), m.showMiseRun(false, true, true),
+    m.showMiseRun(true, true, true), m.showMiseRun(true, true, false)], ["", "", "", "queue", "wait"])
+})
+
 test("failureText: the checker's error first, a source failure only while not all muted", () => {
   const f = { checkError: "", runError: "", pkgsError: "", miseError: "" }
   const apps = [row({ pkg: "a" }), row({ pkg: "mise:b", source: "mise" })]
@@ -387,6 +418,15 @@ test("switchClause: none for mise, an indicator, no install path, the same name 
 test("fullNote: the clause, then the checker's note; an older file has it already", () => {
   same([m.fullNote(renamed, 1), m.fullNote(sameVersion, 1), m.fullNote(row({ note: "n" }), 1), m.fullNote(renamed, 0)],
     ["Installed as chatgpt-desktop, Update switches to chatgpt; Recipe at abc", "Installed as z-code-bin, switch to z-code", "n", "Recipe at abc"])
+})
+
+test("fullNote: a row carried over from an older file keeps its clause once", () => {
+  const carried = Object.assign({}, renamed, { checking: true, note: "Installed as chatgpt-desktop, Update switches to chatgpt; Recipe at abc" })
+  same([m.fullNote(carried, 1), m.fullNote(Object.assign({}, sameVersion, { note: "Installed as z-code-bin, switch to z-code" }), 1),
+    m.fullNote(Object.assign({}, renamed, { note: "Installed as chatgpt-desktop, Update switches to chatgpt-x" }), 1)],
+    ["Installed as chatgpt-desktop, Update switches to chatgpt; Recipe at abc", "Installed as z-code-bin, switch to z-code",
+      "Installed as chatgpt-desktop, Update switches to chatgpt; Installed as chatgpt-desktop, Update switches to chatgpt-x"])
+  assert.equal(m.rowTooltip(carried, 1, [], {}, "").split("Update switches").length, 2)
 })
 
 test("shortNote: the name it is installed as, else the note's first clause", () => {
@@ -461,6 +501,23 @@ test("promptOutcome: the wrapper's first line says what happened", () => {
 
 test("clamp", () => {
   same([m.clamp(5, 0, 3), m.clamp(-1, 0, 3), m.clamp(2, 0, 3)], [3, 0, 2])
+})
+
+test("keyAction: CapsLock J and K move the cursor, Shift+K skips", () => {
+  const shift = model.shiftModifier
+  same(shift, 0x02000000)
+  same([m.keyAction("K", 0, false, true), m.keyAction("J", 0, false, true), m.keyAction("K", shift, false, true),
+    m.keyAction("J", shift, false, true), m.keyAction("K", shift | 0x04000000, false, true), m.keyAction("K", undefined, false, true),
+    m.keyAction("K", shift, false, false), m.keyAction("K", shift, true, true), m.keyAction("K", 0, true, true)],
+    ["up", "down", "skip", "", "skip", "skip", "", "", "up"])
+})
+
+test("keyAction: the panel's letter keys, in the settings view and without a cursor", () => {
+  const keys = ["s", "S", "\b", "r", "R", "c", "C", "w", "W", "m", "M", "x", "k"]
+  same(keys.map(k => m.keyAction(k, 0, false, true)),
+    ["settings", "settings", "", "refresh", "refresh", "copy", "copy", "switch", "switch", "mute", "mute", "", ""])
+  same(keys.map(k => m.keyAction(k, 0, true, true)), ["settings", "settings", "back", "", "", "", "", "", "", "", "", "", ""])
+  same(keys.map(k => m.keyAction(k, 0, false, false)), ["settings", "settings", "", "refresh", "refresh", "", "", "", "", "", "", "", ""])
 })
 
 test("hintText: the keys the cursor's row takes", () => {

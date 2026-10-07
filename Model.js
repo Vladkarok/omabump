@@ -406,6 +406,45 @@ function checkDue(nowMs, checkedAt, startedMs, intervalSec) {
   return !(isFinite(age) && age >= 0 && age < (intervalSec - 30) * 1000)
 }
 
+// --- this shell's checks ------------------------------------------------------------
+
+// What Main.qml's waitScript exits with when the lock stayed held past its
+// wait and it ran nothing. bin/omabump-check's own --wait leaving on the
+// lock should say the same.
+var lockBusyExit = 75
+
+// What a check's exit means for this shell (Main.qml's onExited): "notRun"
+// when it never took the lock: waitScript gave up on it (waited: it had not
+// said "started"), or the checker's own --wait did, which only a Refresh's
+// run passes. "ok" or "failed" otherwise.
+function checkOutcome(exitCode, waited, forRefresh) {
+  if (exitCode === lockBusyExit && (waited || forRefresh)) return "notRun"
+  return exitCode === 0 ? "ok" : "failed"
+}
+
+// checkError for that outcome: "" once a check of this shell's ran.
+function checkErrorText(outcome, exitCode, lockWaitSec) {
+  if (outcome === "notRun")
+    return "Check not run: another check held the lock for over " + Math.round(lockWaitSec / 60) + " min"
+  return outcome === "ok" ? "" : "Check failed (exit " + exitCode + "), see the shell log"
+}
+
+// Whether status.json (parseStatus's answer) holds the answer this shell's
+// check could not give: a run that started after afterMs and completed.
+// startedAt has whole seconds, so a run in that same second does not count.
+function answersError(status, afterMs) {
+  return !!status && !status.checking && status.runError === "" && status.startedMs > afterMs
+}
+
+// What a change of Show mise tools starts (Main.qml's onShowMiseChanged):
+// "" before the timer's first tick, which reads the setting as it is then;
+// "queue" behind this shell's own check; else "wait", a run that waits for
+// any check holding the lock and starts after it.
+function showMiseRun(settingsReady, timerTicked, running) {
+  if (!settingsReady || !timerTicked) return ""
+  return running ? "queue" : "wait"
+}
+
 // Why no summary may read as up to date, or "": the checker itself failed,
 // omarchy-pkgs could not be fetched, or mise could not list its tools. A
 // failure only muted rows share (the omarchy-pkgs fetch with every omarchy
@@ -468,11 +507,16 @@ function switchClause(app) {
 }
 
 // The row's whole note: the switch clause, then the checker's own. A file
-// from before schemaVersion 1 has the clause in its note already.
+// from before schemaVersion 1 has the clause in its note already. So do
+// rows the first check after an upgrade carries over from such a file
+// (write_status copies the rows it has not reached, and a run that dies
+// half way keeps them): a note that already starts with the clause this
+// composes from the row's fields keeps it once.
 function fullNote(app, schema) {
   var note = String(app.note || "")
   var clause = schema >= 1 ? switchClause(app) : ""
-  return clause !== "" && note !== "" ? clause + "; " + note : clause + note
+  if (clause === "" || note === clause || note.indexOf(clause + "; ") === 0) return note
+  return note !== "" ? clause + "; " + note : clause
 }
 
 // The row's second line keeps the first clause, and of a switch only the
@@ -590,6 +634,28 @@ function promptOutcome(output) {
 // --- panel text ------------------------------------------------------------------
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)) }
+
+// Qt.ShiftModifier, in the modifiers the key catcher passes.
+var shiftModifier = 0x02000000
+
+// What a key the panel's catcher hands over as text does (Panel.qml's
+// onTextKey), or "". k moves the cursor up (PanelKeyCatcher), so skip is
+// Shift+K, a settings write. With CapsLock on, j and k arrive as J and K
+// without Shift and move the cursor as j and k do. A shell whose catcher
+// passes no modifiers keeps K as skip.
+function keyAction(text, modifiers, settingsOpen, cursorActive) {
+  var shifted = modifiers === undefined || modifiers === null || (modifiers & shiftModifier) !== 0
+  if ((text === "J" || text === "K") && !shifted) return text === "J" ? "down" : "up"
+  if (text === "s" || text === "S") return "settings"
+  if (text === "\b") return settingsOpen ? "back" : ""
+  if (settingsOpen) return ""
+  if (text === "r" || text === "R") return "refresh"
+  if (!cursorActive) return ""
+  if (text === "c" || text === "C") return "copy"
+  if (text === "w" || text === "W") return "switch"
+  if (text === "m" || text === "M") return "mute"
+  return text === "K" ? "skip" : ""
+}
 
 function hintText(settingsOpen, app, rowCount, muted, skipped) {
   if (settingsOpen) return "Space change · Esc back"

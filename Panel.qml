@@ -30,7 +30,7 @@ Panel {
 
   // The bar's plugin facade (PluginBarApi) as var: Panel types bar as a
   // bare QtObject, which has none of its members.
-  readonly property var barApi: bar
+  readonly property var barApi: root.bar
   readonly property var shellApi: barApi ? barApi.shell : null
 
   readonly property var apps: checker.apps
@@ -418,20 +418,18 @@ Panel {
       }
       onCloseRequested: root.settingsOpen ? root.showSettings(false, false) : root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
-      // k moves the cursor up (PanelKeyCatcher), so skip is Shift+K, a
-      // settings write. With CapsLock on, j and k arrive as J and K without
-      // Shift and move the cursor as j and k do. A shell whose catcher
-      // passes no modifiers keeps K as skip.
+      // Skip is Shift+K, and CapsLock j and k move the cursor
+      // (Model.keyAction).
       onTextKey: function(t, modifiers) {
-        var shifted = modifiers === undefined || (modifiers & Qt.ShiftModifier) !== 0
-        if ((t === "J" || t === "K") && !shifted) root.cursorKey(t === "J" ? 1 : -1)
-        else if (t === "s" || t === "S") root.showSettings(!root.settingsOpen, true)
-        else if (t === "\b" && root.settingsOpen) root.showSettings(false, false)
-        else if ((t === "r" || t === "R") && !root.settingsOpen) root.refreshNow()
-        else if ((t === "c" || t === "C") && !root.settingsOpen && root.cursorActive) root.promptFor(root.selectedApp(), "copy")
-        else if ((t === "w" || t === "W") && !root.settingsOpen && root.cursorActive) root.switchApp(root.selectedApp())
-        else if ((t === "m" || t === "M") && !root.settingsOpen && root.cursorActive) root.toggleMute(root.selectedApp())
-        else if (t === "K" && !root.settingsOpen && root.cursorActive) root.toggleSkip(root.selectedApp())
+        var action = Model.keyAction(t, modifiers, root.settingsOpen, root.cursorActive)
+        if (action === "down" || action === "up") root.cursorKey(action === "down" ? 1 : -1)
+        else if (action === "settings") root.showSettings(!root.settingsOpen, true)
+        else if (action === "back") root.showSettings(false, false)
+        else if (action === "refresh") root.refreshNow()
+        else if (action === "copy") root.promptFor(root.selectedApp(), "copy")
+        else if (action === "switch") root.switchApp(root.selectedApp())
+        else if (action === "mute") root.toggleMute(root.selectedApp())
+        else if (action === "skip") root.toggleSkip(root.selectedApp())
       }
 
       // The hero and the footer stay put; only the rows scroll.
