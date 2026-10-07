@@ -18,6 +18,9 @@
 # that one: the installer's refresh needs a check that starts after its
 # install, since the running one may have read the old version.
 #
+# Exit 75: no check ran. Without --wait another check held the lock, and
+# that one writes status.json; with --wait, it held the lock past the wait.
+#
 # Muted rows and skipped versions come from the widget's settings in
 # Omarchy's shell.json (load_quiet), whoever runs the check. So do the
 # notify and showMise settings when no flag says otherwise: the shell passes
@@ -25,10 +28,12 @@
 # the installer's refresh or an agent passes none and still honours them.
 #
 # The shell runs it under `timeout -k 10 600` (Main.qml), so a hung feed or
-# tool cannot keep a check alive past ten minutes; the TERM trap below still
-# writes status.json as a failed run, with runError saying so. Every command
-# under its own `timeout` runs through run_killable, so the trap is not held
-# until that command ends.
+# tool cannot keep a check alive past ten minutes. The shell never passes
+# --wait: it waits for the lock itself, before that deadline starts, since a
+# long wait under it would end in the deadline's kill instead of exit 75. The
+# TERM trap below still writes status.json as a failed run, with runError
+# saying so. Every command under its own `timeout` runs through
+# run_killable, so the trap is not held until that command ends.
 set -euo pipefail
 # shellcheck source=omabump-common
 source "$(dirname "$(readlink -f "$0")")/omabump-common"
@@ -53,13 +58,16 @@ load_quiet
 
 mkdir -p "$state_dir"
 # The shell timer and a hand run can overlap; the second one has nothing to
-# add, unless it was asked to --wait. A check lasts at most ten minutes; a
-# wait that outlasts that exits 75, as the widget's own wait does: no check ran.
+# add, unless it was asked to --wait. It exits 75, not 0, so a caller can
+# tell it from a check that ran. A check lasts at most ten minutes; a wait
+# that outlasts that exits 75 too, as the widget's own wait does.
 exec 9>"$state_dir/.check.lock"
 if (( wait_lock )); then
-  flock -n 9 || { echo "Waiting for the running check to end..." >&2; flock -w 660 9; } || exit 75
-else
-  flock -n 9 || exit 0
+  flock -n 9 || { echo "Waiting for the running check to end..." >&2; flock -w 660 9; } \
+    || { echo "omabump-check: the running check held the lock for over 11 min; no check ran" >&2; exit 75; }
+elif ! flock -n 9; then
+  echo "omabump-check: another check is running and will write status.json; no check ran (--wait runs one after it)" >&2
+  exit 75
 fi
 # Only a check makes these, and only under the lock: any left over is from
 # a run that was killed outright. .check.?????? and .notified.?????? are an

@@ -408,9 +408,16 @@ appears "$run_dir/hang.pid"
 same "TERM: the check reached the hanging mise" yes "$([[ -s $run_dir/hang.pid ]] && echo yes)"
 # A second check while the first runs (a shell reload starts one per bar):
 # the lock is still there and held, so it ends at once without a mise call,
-# and its start leaves the first one's scratch dir alone.
-check_run; rc=$?
-same "a second check while one runs: exit 0, mise never called" '0|' "$rc|$(cat "$run_dir/mise.log")"
+# and its start leaves the first one's scratch dir alone. It exits 75, the
+# exit Model.js reads as a run that left on the lock (no check ran, and
+# none failed), and says why in one line.
+lock_busy_exit=$(sed -n 's/^var lockBusyExit = \([0-9]*\)$/\1/p' "$root/Model.js")
+: >"$run_dir/mise.log"
+env "${run_env[@]}" timeout -k 5 120 "$root/bin/omabump-check" --no-notify >/dev/null 2>"$run_dir/busy.err"; rc=$?
+same "a second check while one runs: exits Model.lockBusyExit, mise never called" "${lock_busy_exit:-none}|" \
+  "$rc|$(cat "$run_dir/mise.log")"
+same "a second check while one runs: one line on stderr says no check ran" '1|no check ran' \
+  "$(wc -l <"$run_dir/busy.err")|$(grep -o 'no check ran' "$run_dir/busy.err")"
 same "a second check while one runs: the first one's scratch dir is still there" 1 \
   "$(find "$run_state" -maxdepth 1 -name '.run.*' | wc -l)"
 check "a second check while one runs: the first one still runs" kill -0 "$pid"
@@ -449,6 +456,35 @@ for pair in INT:130 HUP:129; do
   refuse "${pair%:*}: the hanging mise is stopped too" kill -0 "${hung:-0}"
   [[ -z $hung ]] || kill "$hung" 2>/dev/null
 done
+
+# --wait (the installer's refresh) waits for a held lock instead, says so,
+# and runs once the lock is free. The holder lets go by itself within 10 s,
+# so a test that breaks cannot hang the suite.
+rm -f "$run_dir/held" "$run_dir/go"
+( exec 8>"$run_state/.check.lock" && flock 8 && echo held >"$run_dir/held" && appears "$run_dir/go" ) &
+holder=$!
+appears "$run_dir/held"
+env "${run_env[@]}" timeout -k 5 120 "$root/bin/omabump-check" --no-notify --wait >/dev/null 2>"$run_dir/wait.err" &
+waiter=$!
+appears "$run_dir/wait.err"
+check "--wait: still waiting while the lock is held" kill -0 "$waiter"
+echo go >"$run_dir/go"
+wait "$holder"
+wait "$waiter"; rc=$?
+same "--wait: says it waits, then runs once the lock is free" '0|Waiting for the running check to end...|false|' \
+  "$rc|$(head -1 "$run_dir/wait.err")|$(run_status '"\(.checking)|\(.runError)"')"
+# A wait that gives up (a flock that always fails stands in for 11 minutes
+# of a held lock) exits 75 too, says so, and leaves status.json as it was.
+mkdir -p "$run_dir/busy"
+printf '#!/bin/sh\nexit 1\n' >"$run_dir/busy/flock"
+chmod +x "$run_dir/busy/flock"
+before=$(md5sum <"$run_state/status.json")
+env "${run_env[@]}" PATH="$run_dir/busy:$run_dir/bin:$PATH" timeout -k 5 120 "$root/bin/omabump-check" --no-notify --wait \
+  >/dev/null 2>"$run_dir/wait.err"; rc=$?
+same "--wait: a wait that gives up exits Model.lockBusyExit, saying no check ran" "${lock_busy_exit:-none}|no check ran" \
+  "$rc|$(tail -1 "$run_dir/wait.err" | grep -o 'no check ran')"
+same "--wait: and leaves status.json as it was" "$before" "$(md5sum <"$run_state/status.json")"
+rm -rf "$run_dir/busy" "$run_dir/held" "$run_dir/go" "$run_dir/wait.err" "$run_dir/busy.err"
 
 # --- status.json's shape: schemaVersion, the switch, old scratch files ---------------------
 

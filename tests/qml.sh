@@ -11,6 +11,13 @@
 same "Main.qml runs checks under the deadline bin/omabump-check names" \
   "$(grep -o 'under `timeout -k [0-9]* [0-9]*`' "$root/bin/omabump-check" | grep -o 'timeout[^`]*')" \
   "$(grep -o '"timeout", "-k", "[0-9]*", "[0-9]*", checkScript' "$root/Main.qml" | sed 's/, checkScript//' | tr -d '",')"
+# Every wait for the lock comes before that deadline, never under it: a
+# wait the deadline cut short would read as a failed check (exit 124), not
+# as one that never ran (exit 75). So waitScript comes first, and the
+# checker never gets --wait.
+check "Main.qml waits for the lock before the deadline starts" \
+  grep -q 'command = \["bash", "-c", waitScript, "omabump-wait", lockPath, String(lockWaitSec)\].concat(command)$' "$root/Main.qml"
+refuse "Main.qml never passes the checker --wait" grep -q -- '"--wait"' "$root/Main.qml"
 
 # A Refresh waits for a running check on the checker's lock, as long as the
 # checker's own --wait would.
@@ -56,7 +63,7 @@ same "waitScript: a lock held past the wait runs nothing and exits Model.lockBus
   "$(bash -c "$wait_script" omabump-wait "$wait_lock" 0.2 echo ran; echo "exit $?")"
 let_go
 check "Main.qml reads a check's exit through Model.checkOutcome" \
-  grep -q 'Model.checkOutcome(exitCode, root.runWaiting, root.runForRefresh)' "$root/Main.qml"
+  grep -q 'Model.checkOutcome(exitCode, root.runWaiting)' "$root/Main.qml"
 same "waitScript: no lock directory yet, nothing to wait for" "started|ran" \
   "$(run_wait "$scratch/wait/none/.check.lock" 5 echo ran)"
 same "waitScript: the command's exit status is the run's" "started|exit 3" \
@@ -81,9 +88,17 @@ check "bin/omabump-check writes runError into status.json" \
 
 # The widget reads states from status.json's fields, never from the
 # checker's wording: no "Update check skipped" prefix for unchecked, no
-# pattern that strips a switch clause out of a note.
+# pattern that strips a switch clause out of a note, but on one legacy path:
+# a file from before schemaVersion 1 still has the clause in its notes, and
+# Model.legacyFirstClause cuts it from the row's second line, as that
+# release's panel did; only shortNote calls it, for such a file alone.
+model_current=$(sed '/^function legacyFirstClause(/,/^}$/d' "$root/Model.js")
 refuse "the widget recognises no state by the checker's wording" \
-  grep -qE 'Update check skipped|\(Update switches\|switch\)' "$root/Main.qml" "$root/Panel.qml" "$root/Model.js"
+  grep -qE 'Update check skipped|\(Update switches\|switch\)|(Update switches|switch) to "\)' \
+  "$root/Main.qml" "$root/Panel.qml" <(printf '%s\n' "$model_current")
+same "only shortNote reads an older file's switch clause, and only in such a file" \
+  "  if (schema < 1) return legacyFirstClause(app.note)" \
+  "$(grep -h 'legacyFirstClause(' "$root/Main.qml" "$root/Panel.qml" <(printf '%s\n' "$model_current"))"
 
 # Every Model.x the QML reads is a function or value Model.js defines: a
 # typo would show only as a binding error in the shell's log.

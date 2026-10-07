@@ -30,15 +30,16 @@ Item {
   readonly property string checkScript: binDir + "/omabump-check"
   readonly property string installScript: binDir + "/omabump-install"
   readonly property string promptScript: binDir + "/omabump-prompt"
-  // A run that waits for the lock runs this before the checker: $1 the
-  // checker's lock, $2 how long to wait for it (lockWaitSec), then the
-  // command. It takes the lock and lets go at once, says "started" on
-  // stdout and runs the command. A lock still held after the wait is left
-  // be, and the script exits 75 (Model.lockBusyExit) having run nothing; a
-  // lock file that cannot be opened (no check has made its directory yet)
-  // has no check behind it.
+  // A run that waits for the lock runs this before the checker's deadline
+  // (runCheck): $1 the checker's lock, $2 how long to wait for it
+  // (lockWaitSec), then the command. It takes the lock and lets go at once,
+  // says "started" on stdout and runs the command. A lock still held after
+  // the wait is left be, and the script exits 75 (Model.lockBusyExit)
+  // having run nothing; a lock file that cannot be opened (no check has
+  // made its directory yet) has no check behind it.
   readonly property string waitScript: 'flock -E 75 -w "$2" "$1" true 2>/dev/null; (( $? == 75 )) && exit 75; echo started; shift 2; exec "$@"'
-  // The checker's own --wait (flock -w in bin/omabump-check).
+  // As long as the checker's own --wait (flock -w in bin/omabump-check),
+  // which the installer's refresh passes: a check lasts at most ten minutes.
   readonly property int lockWaitSec: 660
 
   readonly property int refreshIntervalSec: Model.refreshIntervalSec(settings)
@@ -48,18 +49,20 @@ Item {
   // shell's own, and one from a terminal or the installer too, since
   // bin/omabump-check reads showMise from shell.json itself. Turned on,
   // such a run lists no CLI rows, so one more must start after it: behind
-  // this shell's own check it is queued; otherwise each monitor's copy of
-  // the widget waits for the lock, then starts one that leaves on the lock
-  // (runCheck(true, false)), and the first to take it runs for all. The
-  // wait asks the lock, not status.json's mark, which a killed run leaves
-  // behind. Turned off, the run keeps status.json free of CLI rows;
-  // parse() filters them out meanwhile. Before the timer's first tick (the
-  // bar is still handing the settings over), that tick reads the setting as
-  // it is then (Model.showMiseRun).
+  // this shell's own check it is queued; otherwise it waits for the lock
+  // (runCheck(true, false)). Either way each monitor's copy of the widget
+  // starts one once the lock is free, the first to take it runs for all
+  // and the others leave on the lock. It is not a Refresh's run: an IPC
+  // refresh during it still gets one after it, as during the timer's
+  // (refreshRunning). The wait asks the lock, not status.json's mark,
+  // which a killed run leaves behind. Turned off, the run keeps
+  // status.json free of CLI rows; parse() filters them out meanwhile.
+  // Before the timer's first tick (the bar is still handing the settings
+  // over), that tick reads the setting as it is then (Model.showMiseRun).
   onShowMiseChanged: {
     parse(statusFile.text())
     var run = Model.showMiseRun(settingsReady, timerTicked, checkProcess.running)
-    if (run === "queue") refreshQueued = true
+    if (run === "queue") checkQueued = true
     else if (run === "wait") runCheck(true, false)
   }
   // Rows the user muted (pkg ids): no badge, no count, no notification.
@@ -81,9 +84,10 @@ Item {
   property bool pkgsFollowing: false
   property string pkgsError: ""
   property string pkgsNote: ""
-  // This shell's own check exited non-zero, or could not start for the lock.
-  // Kept until a run that started after checkErrorAfterMs completes, from
-  // here or anywhere else (Model.answersError).
+  // This shell's own check failed, or gave up waiting for the lock. One that
+  // left on the lock (Model.checkOutcome's "left") neither sets nor clears
+  // it. Kept until a run that started after checkErrorAfterMs completes,
+  // from here or anywhere else (Model.answersError).
   property string checkError: ""
   // When the failed check ended, or when the run that could not start was
   // asked for: the check that held the lock then started before it, and
@@ -100,20 +104,24 @@ Item {
   property string discoveryError: ""
   // mise could not list its tools: no CLI row could be read this run.
   property string miseError: ""
-  // When this shell's last check ended; IPC refresh is throttled on it.
+  // When this shell's last check ended, not counting a run that never took
+  // the lock; IPC refresh is throttled on it.
   property double lastCheckEndMs: 0
-  // A Refresh that came while this shell's own check ran: that run may have
-  // read versions from before the request, so one more runs after it.
-  property bool refreshQueued: false
-  // This shell's running check is for a Refresh (it runs with --wait; the
-  // timer's does not).
+  // A Refresh or a change of Show mise tools that came while this shell's
+  // own check ran: that run may have read versions or the setting from
+  // before it, so one more runs after it.
+  property bool checkQueued: false
+  // That one is for a Refresh (runForRefresh), not for Show mise tools alone.
+  property bool queuedForRefresh: false
+  // This shell's running check is for a Refresh, not the timer's or one for
+  // Show mise tools.
   property bool runForRefresh: false
   // That run still waits for another check to end (waitScript has not said
   // "started"): a Refresh now needs nothing more, that run starts after it.
   property bool runWaiting: false
   // IPC refresh is throttled on these two. A check that starts after now is
   // on its way already:
-  readonly property bool refreshPending: refreshQueued || checkProcess.running && runWaiting
+  readonly property bool refreshPending: checkQueued || checkProcess.running && runWaiting
   // and this shell's own check for a Refresh is past its wait.
   readonly property bool refreshRunning: checkProcess.running && runForRefresh && !runWaiting
   // A run from a terminal marks status.json as in progress too. A run killed
@@ -154,44 +162,51 @@ Item {
   // Refresh (click, r, IPC) always gets a check that starts after it. While
   // this shell's own check runs, one more is queued for when it ends, unless
   // that one is still waiting for another check and so starts later anyway.
-  // Otherwise it runs with --wait: a check already running (another
+  // Otherwise it waits for the lock: a check already running (another
   // monitor's bar, a terminal, the installer) may have read versions from
   // before the request, and this one then runs after it instead of leaving
   // at once on the lock. With the lock free it runs at once.
   function refresh() {
     if (!settingsReady) return
     if (checkProcess.running) {
-      if (!runWaiting) refreshQueued = true
+      if (!runWaiting) {
+        checkQueued = true
+        queuedForRefresh = true
+      }
       return
     }
     runCheck(true, true)
   }
 
-  // A queued Refresh waits too: the run it came during may have left at
-  // once on the lock (the timer's does) while a check from before the
-  // request held it.
+  // A queued run waits too: the run it came during may have left at once
+  // on the lock (the timer's does) while a check from before the request
+  // held it.
   function runQueued() {
-    if (refreshQueued && !checkProcess.running) runCheck(true, true)
+    if (checkQueued && !checkProcess.running) runCheck(true, queuedForRefresh)
   }
 
   // wait: wait for a check that holds the lock now (waitScript) instead of
-  // leaving at once on it, as the timer's run does. own: a Refresh's, which
-  // also runs after a check that takes the lock between the wait and its
-  // start (the checker's --wait); without it, that check, which started
-  // after the wait, answers instead and this one leaves on the lock.
+  // leaving at once on it, as the timer's run does. own: a Refresh's
+  // (refreshRunning). The checker itself never waits (no --wait): one that
+  // finds the lock taken after waitScript's wait lost it to a check that
+  // started after the request (or to another bar's waitScript, whose check
+  // starts next), and leaves the answer to that one (Model.checkOutcome's
+  // "left"). So every bar's copy that waited for the same check leaves on
+  // the lock once one of them holds it.
   function runCheck(wait, own) {
-    refreshQueued = false
+    checkQueued = false
+    queuedForRefresh = false
     runForRefresh = wait && own
     runWaiting = wait
     runAskedMs = Date.now()
     // An overall deadline: ten minutes, then TERM, then KILL ten seconds
-    // later. A Refresh waits for a running check before it (waitScript), so
-    // the deadline bounds its own run alone, like any other: other waiters
-    // (the installer, another bar) count on a check ending by then.
+    // later; other waiters (the installer, another bar) count on a check
+    // ending by then. Every wait for the lock comes before it (waitScript),
+    // so it bounds the check alone, and a wait that gives up says so (exit
+    // 75) instead of ending in the deadline's kill.
     var command = ["timeout", "-k", "10", "600", checkScript]
     if (!notify) command.push("--no-notify")
     if (!showMise) command.push("--no-mise")
-    if (wait && own) command.push("--wait")
     if (wait)
       command = ["bash", "-c", waitScript, "omabump-wait", lockPath, String(lockWaitSec)].concat(command)
     checkProcess.command = command
@@ -260,19 +275,23 @@ Item {
     // The checker replaces status.json with a rename, which a watch on the
     // old inode can miss; reading it back here covers that.
     onExited: function(exitCode) {
-      var outcome = Model.checkOutcome(exitCode, root.runWaiting, root.runForRefresh)
+      var outcome = Model.checkOutcome(exitCode, root.runWaiting)
       root.runWaiting = false
-      root.checkError = Model.checkErrorText(outcome, exitCode, root.lockWaitSec)
       if (outcome === "notRun") {
         // Nothing ran: this shell's last check and when it ended stand, and
         // the Refresh says it was not done rather than pass for one that
         // was. The check that held the lock started before it was asked
         // for, so only a later one clears that.
+        root.checkError = Model.checkErrorText(outcome, exitCode, root.lockWaitSec)
         root.checkErrorAfterMs = root.runAskedMs
-      } else {
+      } else if (outcome !== "left") {
+        root.checkError = Model.checkErrorText(outcome, exitCode, root.lockWaitSec)
         root.lastCheckEndMs = Date.now()
         root.checkErrorAfterMs = root.lastCheckEndMs
       }
+      // A run that left on the lock changes neither checkError nor
+      // lastCheckEndMs: the check holding it answers, and clears an error
+      // by the same rule as any other's (parse()).
       statusFile.reload()
       Qt.callLater(root.runQueued)
     }
