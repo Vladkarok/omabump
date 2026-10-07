@@ -130,12 +130,22 @@ mkpkg() { run_unlocked makepkg --config "$cache_dir/makepkg.conf" "$@"; }
 # removes them (clean_after_install). self_before is set only while
 # install_self moves the plugin clone (self_apply), which holds Ctrl-C and
 # the like until its step is done and rolls back itself; anything else that
-# ends the run there puts the clone back from here.
-restore_clone=0 started=0 self_before=""
+# ends the run there puts the clone back from here. staged_copy names the
+# root-owned copy in $staging_dir while it exists (stage_and_install). A run
+# that ends with it there (the terminal closed or TERM at pacman's prompt,
+# which end this script at once) removes it with sudo -n, which works while
+# sudo still holds your password from pacman -U; otherwise the message names
+# the copy and the command that removes it. The removal comes first and the
+# message last: with the terminal gone, a failed write would end on_exit.
+restore_clone=0 started=0 self_before="" staged_copy=""
 on_exit() {
-  local rc=$?
+  local rc=$? left=""
+  if [[ -n $staged_copy && -e $staged_copy ]]; then
+    run_unlocked sudo -n rm -f -- "$staged_copy" 2>/dev/null </dev/null || left=$staged_copy
+  fi
   (( restore_clone )) && pkgs_restore "$pkg"
   [[ -z $self_before ]] || self_rollback "the update stopped part way"
+  [[ -z $left ]] || echo "omabump: the staged copy stays in $left; remove it with: sudo rm -f -- $left" >&2
   if (( rc != 0 && started )); then
     echo "omabump: the build and download files stay in $cache_dir/{build,packages,sources}" >&2
   fi
@@ -291,11 +301,12 @@ check_target() {
 # user between the last check and the moment pacman opens it. The copy is
 # checked again (digest when $3/$4 give one, name and full version always),
 # and pacman asks before it installs. Once pacman is done the copy goes,
-# whether it installed or not (packages can be gigabytes); only a copy that
-# fails its check stays, and the message says where. $1 is the verified
-# file, $2 the expected "<name> <full version>". With --prepare it prints
-# the commands and calls no sudo. Run as a command, nothing changes the
-# directory: the tests source this file and set staging_dir themselves.
+# whether it installed or not (packages can be gigabytes), and so does one
+# a stopped run leaves (on_exit); only a copy that fails its check stays,
+# and the message says where. $1 is the verified file, $2 the expected
+# "<name> <full version>". With --prepare it prints the commands and calls
+# no sudo. Run as a command, nothing changes the directory: the tests
+# source this file and set staging_dir themselves.
 staging_dir=/var/cache/omabump
 stage_and_install() {
   local file=$1 expect=$2 algo=${3:-} want=${4:-} staged got line now
@@ -315,14 +326,17 @@ stage_and_install() {
   local src
   exec {src}<"$file" || die "cannot open $file"
   [[ -f /proc/self/fd/$src ]] || { exec {src}<&-; die "$file is not a regular file; not installing"; }
+  # From here on_exit removes the copy if the run ends early, a copy cut
+  # short included; one that fails its check is kept and named instead.
+  staged_copy=$staged
   run_unlocked sudo install -o root -g root -m 0644 -D /dev/stdin "$staged" <&"$src" || { exec {src}<&-; die "could not copy $file to $staged"; }
   exec {src}<&-
   if [[ -n $algo ]]; then
     got=$("${algo}sum" -- "$staged" | cut -d' ' -f1)
-    [[ $got == "$want" ]] || die "$algo of the staged copy is $got, expected $want; not installing (the copy stays in $staged)"
+    [[ $got == "$want" ]] || { staged_copy=""; die "$algo of the staged copy is $got, expected $want; not installing (the copy stays in $staged)"; }
   fi
-  line=$(pacman -Qp -- "$staged") || die "cannot read $staged"
-  [[ $line == "$expect" ]] || die "the staged copy is '$line', expected '$expect'; not installing (the copy stays in $staged)"
+  line=$(pacman -Qp -- "$staged") || { staged_copy=""; die "cannot read $staged; not installing (the copy stays there)"; }
+  [[ $line == "$expect" ]] || { staged_copy=""; die "the staged copy is '$line', expected '$expect'; not installing (the copy stays in $staged)"; }
   echo "Staged copy checked: $staged"
   # pacman asks "Proceed with installation?": that prompt is where you can
   # still stop. sudo need not ask for a password, makepkg -s may have used it.
@@ -347,6 +361,7 @@ stage_and_install() {
 # pacman has finished either way.
 unstage() {
   run_unlocked sudo rm -f -- "$1" || echo "omabump: could not remove the staged copy; remove it with: sudo rm -f -- $1" >&2
+  staged_copy=""
 }
 
 # Builds the recipe in the current directory, checks the result and installs it.
@@ -550,9 +565,14 @@ install_mise() {
   mise_key_safe "$tool" || die "$(mise_skip_note "$tool"); Omabump updates mise tools on mise's own backends only. Update $tool with mise up yourself."
   [[ -z $mise_error ]] || die "$mise_error"
   [[ -z ${mise_fetch_failed[$tool]:-} ]] || die "mise could not fetch the versions of $tool: ${mise_fetch_failed[$tool]}"
+  # An entry mise_outdated_table could not read has no fields: read as such,
+  # it would say newest or held where the check (mise_row) says the answer
+  # could not be read. Each table is checked before its fields are read.
+  mise_entry_ok "$mise_outdated_json" "$tool" || die "mise outdated gave an entry for $tool that is not an object"
   target=$(mise_field "$mise_outdated_json" "$tool" latest)
   if [[ -z $target ]]; then
     [[ -z $mise_bump_error ]] || die "$mise_bump_error"
+    mise_entry_ok "$mise_bump_json" "$tool" || die "mise outdated --bump gave an entry for $tool that is not an object"
     # The release itself, as the panel's row shows it; bump is only the
     # request rewritten to reach it.
     request=$(mise_field "$mise_bump_json" "$tool" requested)
@@ -586,6 +606,14 @@ install_mise() {
 # Set by self_apply: what its merge creates, and whether a signal came.
 self_new=() self_stop=0
 
+# self_git for the steps that must not stop part way, the merge and the
+# rollback: git under timeout, in a process group of its own that Ctrl-C
+# and a closing terminal do not reach, and with nothing that passes INT or
+# HUP on to it (self_git runs through run_killable, which stops git on
+# either). Each step is still bounded by the timeout. A signal that comes
+# meanwhile runs self_apply's trap once git is done.
+self_git_held() { run_unlocked timeout -k 10 120 env GIT_ALLOW_PROTOCOL=https GIT_TERMINAL_PROMPT=0 git "${git_safe[@]}" -C "$plugin_dir" "$@" </dev/null; }
+
 # Fast-forwards the plugin clone from the commit $1 to $self_target and
 # validates the result with the command "${@:2}" <plugin dir>. From the
 # merge until the validation passed, any end of the run (a merge that fails
@@ -609,12 +637,14 @@ self_apply() {
     self_new+=("$p")
   done
   self_before=$before self_stop=0
-  # A signal waits for the step it comes in: git runs under timeout, in a
-  # process group of its own that Ctrl-C and a closing terminal do not
-  # reach, so stopping at once would roll back under a merge that carries
-  # on and lands. Each step is bounded, the merge by self_git's timeout.
+  # A signal waits for the step it comes in: the merge runs through
+  # self_git_held, out of reach of Ctrl-C, a closing terminal and a TERM
+  # sent to this script, so stopping at once would roll back under a merge
+  # that carries on and lands. The rollback's git runs the same way, so a
+  # second Ctrl-C cannot cut its reset short and leave the release in
+  # place. Each step is bounded, the merge by self_git_held's timeout.
   trap 'self_stop=1' HUP INT TERM
-  self_git merge -q --ff-only "$self_target" || rc=$?
+  self_git_held merge -q --ff-only "$self_target" || rc=$?
   (( ! self_stop )) || self_rollback "the update stopped part way"
   (( rc == 0 )) || self_rollback "git merge --ff-only $self_target failed"
   run_unlocked "$@" "$plugin_dir" </dev/null || rc=$?
@@ -638,17 +668,18 @@ self_rollback() {
 }
 
 # True once the clone is at $1 with a clean work tree and nothing the merge
-# created is left.
+# created is left. git runs held (self_git_held): Ctrl-C or the terminal
+# closing during the rollback waits for it.
 self_restore() {
   local p
-  self_git reset -q --hard "$1" || return 1
+  self_git_held reset -q --hard "$1" || return 1
   if (( ${#self_new[@]} )); then
-    self_git --literal-pathspecs clean -qfdx -- "${self_new[@]}" || return 1
+    self_git_held --literal-pathspecs clean -qfdx -- "${self_new[@]}" || return 1
   fi
   for p in "${self_new[@]}"; do
     [[ ! -e $plugin_dir/$p && ! -L $plugin_dir/$p ]] || return 1
   done
-  [[ $(self_git rev-parse HEAD) == "$1" && -z $(self_git status --porcelain) ]]
+  [[ $(self_git_held rev-parse HEAD) == "$1" && -z $(self_git_held status --porcelain) ]]
 }
 
 # Omabump itself: the plugin's own clone, fast-forwarded to the commit the

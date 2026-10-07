@@ -4,12 +4,17 @@
 # copy of the plugin whose bin/omabump-check is a stub, staging in a test
 # directory instead of /var/cache/omabump, with these first on PATH:
 #   pacman    -Q and -Qi from a fixture database, -Qp and -Qip from the
-#             package's .PKGINFO, -U as $STUB_PACMAN_U says (ok, no, hookfail)
-#   sudo      records its arguments and runs only the installer's three
-#             commands, as you, on files in the test staging directory;
-#             anything else fails loudly
+#             package's .PKGINFO, -U as $STUB_PACMAN_U says (ok, no,
+#             hookfail, or HUP or TERM: that signal to the installer at
+#             the prompt)
+#   sudo      records its arguments and runs only the installer's four
+#             commands, as you, on files in the test staging directory
+#             (sudo -n fails with $STUB_SUDO_N=fail, as when sudo wants
+#             the password again); anything else fails loudly
 #   curl      serves files from a local directory
 #   makepkg   reads the test recipe's PKGBUILD and "builds" a plain tar
+#   mise      answers for one tool, testtool 1.0.0 on a safe backend, with
+#             $STUB_MISE_OUTDATED and $STUB_MISE_BUMP as its outdated tables
 #   omarchy-plugin-validate, omarchy-shell, omarchy   record, and change nothing
 # The omarchy route reads a local omarchy-pkgs clone at the commit the test
 # pins.json names, so nothing reaches the network or needs root.
@@ -52,6 +57,9 @@ case $1 in
         echo "$name $(field pkgver "$info")" >>"$STUB_DB/installed.new"
         mv "$STUB_DB/installed.new" "$STUB_DB/installed"
         [[ $STUB_PACMAN_U == ok ]] || { echo "error: command failed to execute correctly" >&2; exit 1; } ;;
+      # The terminal closing or kill while pacman asks. The sudo stub
+      # exec'd this, so the parent is the installer.
+      HUP|TERM) echo ":: Proceed with installation? [Y/n]"; kill "-$STUB_PACMAN_U" "$PPID"; sleep 1; exit 1 ;;
       *) echo ":: Proceed with installation? [Y/n] n"; exit 1 ;;
     esac ;;
   *) echo "pacman stub: unexpected $*" >&2; exit 99 ;;
@@ -68,6 +76,9 @@ case "$*" in
     [[ -z ${STUB_TAMPER:-} ]] || printf 'x' >>"$dest" ;;
   "pacman -U -- $dest") exec pacman -U -- "$dest" ;;
   "rm -f -- $dest") exec rm -f -- "$dest" ;;
+  "-n rm -f -- $dest")
+    [[ ${STUB_SUDO_N:-} != fail ]] || { echo "sudo: a password is required" >&2; exit 1; }
+    exec rm -f -- "$dest" ;;
   *) echo "sudo stub: refusing $*" >&2; exit 97 ;;
 esac
 EOF
@@ -105,6 +116,18 @@ case " $* " in
     [[ -z $install ]] || { cp "$install" "$d/.INSTALL"; files+=(.INSTALL); }
     bsdtar -cf "$file" -C "$d" "${files[@]}" ;;
   *) echo "makepkg stub: unexpected $*" >&2; exit 99 ;;
+esac
+EOF
+cat >"$istubs/mise" <<'EOF'
+#!/bin/bash
+echo "mise $*" >>"$STUB_LOG/calls"
+none='{}'
+case "$*" in
+  "settings get disable_backends") echo '[]' ;;
+  "ls --json"|"ls --json --backend "*) echo '{"testtool": [{"version": "1.0.0", "active": true, "installed": true}]}' ;;
+  "outdated --json -- testtool") printf '%s\n' "${STUB_MISE_OUTDATED:-$none}" ;;
+  "outdated --bump --json -- testtool") printf '%s\n' "${STUB_MISE_BUMP:-$none}" ;;
+  *) echo "mise stub: unexpected $*" >&2; exit 99 ;;
 esac
 EOF
 cat >"$istubs/omarchy-plugin-validate" <<'EOF'
@@ -171,7 +194,8 @@ cat >"$ihome/.config/omarchy/omabump/apps.json" <<'EOF'
    "feed": {"type": "latest-yml", "url": "https://example.invalid/latest.yml"},
    "vendorPkg": "https://example.invalid/testapp-{version}-1-x86_64.pkg.tar", "checksum": "feed", "configDir": "~/.config/TestApp"},
   {"pkg": "testpkg", "label": "Test Pkg", "source": "omarchy", "installed": ["testpkg", "testpkg-bin"]},
-  {"pkg": "nocon", "label": "No Conflict", "source": "omarchy", "installed": ["nocon", "nocon-bin"]}
+  {"pkg": "nocon", "label": "No Conflict", "source": "omarchy", "installed": ["nocon", "nocon-bin"]},
+  {"pkg": "mise:testtool", "label": "Test Tool", "source": "mise", "tool": "testtool"}
 ]
 EOF
 
@@ -210,6 +234,24 @@ check "install, n at pacman's prompt: the verified file stays in the user cache"
 same "install, n at pacman's prompt: nothing installed" 'testapp 1.0.0-1' "$(<"$idb/installed")"
 no_call "install, n at pacman's prompt: no panel refresh" 'omabump-check'
 
+# The terminal closing at pacman's prompt ends the installer there and
+# then; the staged copy goes all the same, through sudo -n.
+fresh 'testapp 1.0.0-1'
+STUB_PACMAN_U=HUP inst testapp
+same "install, the terminal closed at pacman's prompt: the run ends" 129 "$irc"
+calls "install, the terminal closed at pacman's prompt: removes the staged copy with sudo -n" "sudo -n rm -f -- $vstaged"
+check "install, the terminal closed at pacman's prompt: no staged copy left" test ! -e "$vstaged"
+same "install, the terminal closed at pacman's prompt: nothing installed" 'testapp 1.0.0-1' "$(<"$idb/installed")"
+
+# kill at the prompt, with sudo wanting the password again: the copy and
+# the command that removes it are named.
+fresh 'testapp 1.0.0-1'
+STUB_PACMAN_U=TERM STUB_SUDO_N=fail inst testapp
+same "install, TERM at pacman's prompt: the run ends" 143 "$irc"
+says "install, TERM at pacman's prompt, sudo -n refused: names the staged copy and how to remove it" \
+  "omabump: the staged copy stays in $vstaged; remove it with: sudo rm -f -- $vstaged"
+check "install, TERM at pacman's prompt, sudo -n refused: the copy is there, as said" test -e "$vstaged"
+
 fresh 'testapp 1.0.0-1'
 STUB_PACMAN_U=hookfail inst testapp
 same "install, a hook fails after pacman installed: a success" 0 "$irc"
@@ -232,6 +274,8 @@ STUB_PACMAN_U=ok STUB_TAMPER=1 inst testapp
 same "install (vendor): a staged copy that differs is a failure" 1 "$irc"
 says "install (vendor): its digest is checked" 'sha512 of the staged copy is'
 no_call "install (vendor): and pacman -U never runs" 'pacman -U'
+check "install (vendor): the copy that failed its check stays, as the message says" test -f "$vstaged"
+no_call "install (vendor): the exit does not remove it" 'rm -f --'
 
 # The feed knows no epoch; the file's full version must still be newer.
 fresh 'testapp 1:1.0.0-1'
@@ -248,6 +292,21 @@ says "install --prepare --switch (vendor): the declared conflict" 'pacman will a
 says "install --prepare --switch (vendor): the package's install script" '--- testapp install script (.INSTALL), run as root:'
 says "install --prepare --switch (vendor): the app's settings directory" 'Test App keeps its settings in ~/.config/TestApp.'
 rm -f "$vcached"
+
+# --- the mise route --------------------------------------------------------------
+
+# An outdated entry that is not an object, which mise_outdated_table keeps
+# as {"odd": true}, is the error the check shows, not "newest" or "held".
+fresh
+STUB_MISE_OUTDATED='{"testtool": "1.1.0"}' inst mise:testtool
+same "install (mise): an outdated entry that is not an object is a failure" 1 "$irc"
+says "install (mise): worded as the check words it" 'mise outdated gave an entry for testtool that is not an object'
+STUB_MISE_BUMP='{"testtool": ["1.1.0"]}' inst mise:testtool
+same "install (mise): so is a --bump entry that is not an object" 1 "$irc"
+says "install (mise): also worded as the check words it" 'mise outdated --bump gave an entry for testtool that is not an object'
+no_call "install (mise): mise up never runs then" 'mise up'
+STUB_MISE_OUTDATED='{"testtool": {"latest": "1.1.0"}}' STUB_MISE_BUMP='{"testtool": 5}' inst --prepare mise:testtool
+says "install --prepare (mise): an update mise up reaches does not read the --bump table" 'Would run: mise up -- testtool (in '
 
 # --- functions, sourced ---------------------------------------------------------------
 
@@ -421,8 +480,8 @@ check "self_apply: back at the installed commit, the release's files gone" at_be
 # A merge that moved HEAD and then failed.
 self_reset
 # shellcheck disable=SC2016 # expanded by the child bash
-inst_src 'eval "$(declare -f self_git | sed "1s/^self_git/real_self_git/")"
-  self_git() { real_self_git "$@" || return; [[ $1 != merge ]]; }
+inst_src 'eval "$(declare -f self_git_held | sed "1s/^self_git_held/real_self_git_held/")"
+  self_git_held() { real_self_git_held "$@" || return; [[ $1 != merge ]]; }
   self_target=$T_TARGET; self_apply "$T_BEFORE" omarchy-plugin-validate' self:omabump
 says "self_apply: a merge that fails after moving HEAD rolls back" "git merge --ff-only $target failed; rolled back to ${before:0:12}"
 check "self_apply: back at the installed commit" at_before
@@ -468,5 +527,21 @@ rm -f "$istubs/git"
 says "self_apply: a run stopped while git merges rolls back" "the update stopped part way; rolled back to ${before:0:12}"
 check "self_apply: once the merge is done, not under it" at_before
 no_call "self_apply: and validates nothing" 'validate'
+
+# Ctrl-C during the rollback, sent as a terminal sends it, to the
+# installer's whole process group: git, slow here, still finishes the reset.
+self_reset
+cat >"$istubs/git" <<'EOF'
+#!/bin/bash
+for a; do [[ $a != reset ]] || { kill -INT -- "-$T_PGID"; sleep 1; }; done
+PATH=${PATH#*:} exec git "$@"   # the real git, after the stubs directory
+EOF
+chmod +x "$istubs/git"
+# shellcheck disable=SC2016 # expanded by the child bash
+STUB_VALIDATE=fail inst_src 'T_PGID=$(ps -o pgid= -p $$) && export T_PGID=${T_PGID// /}
+  self_target=$T_TARGET; self_apply "$T_BEFORE" omarchy-plugin-validate' self:omabump
+rm -f "$istubs/git"
+says "self_apply: Ctrl-C during the rollback does not cut it short" "the new version failed validation; rolled back to ${before:0:12}"
+check "self_apply: the reset finished under Ctrl-C" at_before
 self_reset
 unset T_BEFORE T_TARGET
