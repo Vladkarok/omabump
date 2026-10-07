@@ -401,7 +401,7 @@ Item {
     try {
       var parsed = JSON.parse(String(content || ""))
       var all = parsed && Array.isArray(parsed.apps) ? parsed.apps : []
-      // A check run from a terminal lists mise tools whatever the setting says.
+      // A check that ran before Show mise tools was turned off still lists them.
       var list = showMise ? all : all.filter(function(app) { return app.source !== "mise" })
       // A check rewrites the file once per row, and the file watch and the
       // end of the check both read it. A new array re-runs everything bound

@@ -441,7 +441,7 @@ install_omarchy() {
     recipe_materialise "$pkg" "$recipe_rev" || die "could not lay out the recipe from $recipe_rev"
     echo "Recipe tree taken whole from $recipe_rev"
   fi
-  blocker=$(recipe_blocker "$recipe_rev" "$pkg")
+  blocker=$(recipe_blocker "$recipe_rev" "$pkg") || die "could not read the $pkg recipe at ${recipe_rev:0:12}"
   [[ -z $blocker ]] || die "$blocker; wait for the [omarchy] repo"
 
   # The first fetched code that runs: omarchy-pkgs' sync tool and the
@@ -553,9 +553,15 @@ install_mise() {
   target=$(mise_field "$mise_outdated_json" "$tool" latest)
   if [[ -z $target ]]; then
     [[ -z $mise_bump_error ]] || die "$mise_bump_error"
+    # The release itself, as the panel's row shows it; bump is only the
+    # request rewritten to reach it.
     request=$(mise_field "$mise_bump_json" "$tool" requested)
-    now=$(mise_field "$mise_bump_json" "$tool" bump)
-    [[ -n $now ]] && die "$label is held at $installed by its mise request '$request' ($now exists); mise up would not move it. Change the request with mise use."
+    now=$(mise_field "$mise_bump_json" "$tool" latest)
+    [[ -n $now ]] || now=$(mise_field "$mise_bump_json" "$tool" bump)
+    if [[ -n $now && $now != "$installed" ]]; then
+      [[ $request == latest ]] && die "$label is held back at $installed by your mise settings ($now exists); mise up would not move it. See mise settings."
+      die "$label is held at $installed by its mise request '$request' ($now exists); mise up would not move it. Change the request with mise use."
+    fi
     echo "$label $installed is the newest mise up can install."
     exit 0
   fi

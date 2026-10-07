@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+Checks and the panel:
+
+- A check you ask for while one runs is no longer dropped: it runs after that one. With the hour-long interval, rows could stay stale until the next tick.
+- A check that stops part way (killed, Ctrl-C, closed terminal) writes `runError` into status.json, and every bar reads it as failed, not only the one that started it. A TERM no longer waits for a running git, mise or feed command; that command is stopped and rows are never left "checking".
+- "Hide icon until an update" no longer hides a failed check.
+- A muted row's failed check stays on its row and in the tooltip; it no longer makes the header or bar read as failed.
+- A skip ends once that version or a later one is installed, and the settings list only skips that still apply. The header shows "(+N muted/skipped)" like the tooltip.
+- Notify and Show mise tools apply to checks started from a terminal or by the installer too.
+- Discovery reads wrappers line by line, warns only about files that run mise but cannot be read, never about another installer's launcher, your own script or a disabled row, and drops an `@version` from the key. A deeply nested menu or a menu with no agent entries is reported instead of crashing or silently listing none.
+- mise: Omabump's disabled backends now include yours; a pinned row shows the real newest release; an odd entry in mise's answer is a row error, not a crash; Update asks mise only about its own tool.
+- A malformed `pins.json` is a pin error on the omarchy rows instead of stopping every check and install. A recipe file the blob-less clone cannot download is a check error, not "no recipe".
+- Feeds: a regex that matched nothing and a JSON path with several values are errors, not the versions "None" or two versions run together.
+
+Update:
+
+- Answering n at pacman's prompt says so, removes the staged copy and keeps the verified package for a retry; a hook failing after the install is reported as done with a warning.
+- The omarchy route checks the staged copy against the sha256 of the package makepkg built.
+- Switch (and Update replacing a package installed under another name) reads the declared conflict from the recipe before building.
+- A self update that fails or is stopped part way rolls back fully, waiting for git first, and says whether the rollback worked.
+
+Earlier in this release:
+
 - mise runs with `MISE_MINIMUM_RELEASE_AGE=0` in the check and in Update, as Omarchy's own agent wrappers and `omarchy update` do: a new agent CLI release shows and installs at once instead of after mise's cooldown.
 
 - A `mise outdated` call that failed without an error message (killed by its timeout) aborted the whole check, and an Update of a mise row stopped without a word. It is now a failed check for the mise rows only.

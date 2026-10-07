@@ -64,3 +64,10 @@ script_strings=$(for source in $(jq -r '.[].source' "$root/apps.json" | sort -u)
   string_versions "$source" && echo "$source"
 done | sort | paste -sd' ')
 same "Main.qml compares the same sources' skips as strings as the checker" "$script_strings" "$qml_strings"
+
+# status.json's runError: the checker writes the field (tests/check.sh runs
+# it), and Main.qml must read the same name.
+check "Main.qml reads the runError field bin/omabump-check writes" \
+  grep -q 'parsed.runError' "$root/Main.qml"
+check "bin/omabump-check writes runError into status.json" \
+  grep -q 'runError: \$rerr' "$root/bin/omabump-check"
