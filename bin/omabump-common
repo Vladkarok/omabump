@@ -28,22 +28,31 @@ run_unlocked() { "$@" 7>&- 8>&- 9>&-; }
 # command left running. So the command runs as a background job of a
 # subshell that waits for it with the wait builtin, which returns at once on
 # a trapped signal: TERM stops the command's whole group and ends the
-# subshell. INT (Ctrl-C in the installer's terminal) reaches neither that
-# group nor timeout, which ignores it in a background job, so it stops the
-# command with TERM too, and the step fails with the command's status. The
-# exit status is the command's.
+# subshell. INT (Ctrl-C in a terminal) and HUP (the terminal closed) reach
+# neither that group nor timeout, which ignores INT in a background job, so
+# they stop the command with TERM too. Once it has ended, the subshell dies
+# of that same signal: bash then stops the calling script as it would had
+# the command itself been interrupted, rather than going on to the next
+# step as if one command had merely failed. Otherwise the exit status is
+# the command's.
 run_killable() (
-  local pid="" rc
+  local pid="" rc sig=""
   trap '[[ -z $pid ]] || kill -TERM -- "-$pid" "$pid" 2>/dev/null; exit 143' TERM
-  trap '[[ -z $pid ]] || kill -TERM -- "-$pid" "$pid" 2>/dev/null' INT
+  trap 'sig=INT; [[ -z $pid ]] || kill -TERM -- "-$pid" "$pid" 2>/dev/null' INT
+  trap 'sig=HUP; [[ -z $pid ]] || kill -TERM -- "-$pid" "$pid" 2>/dev/null' HUP
   "$@" 7>&- 8>&- 9>&- &
   pid=$!
   while :; do
-    wait "$pid" && exit 0
+    wait "$pid" && rc=0 && break
     rc=$?
-    # A wait cut short by the INT trap: the command is still running.
-    kill -0 "$pid" 2>/dev/null || exit "$rc"
+    # A wait cut short by the INT or HUP trap: the command is still running.
+    kill -0 "$pid" 2>/dev/null || break
   done
+  if [[ -n $sig ]]; then
+    trap - "$sig"
+    kill "-$sig" "$BASHPID"
+  fi
+  exit "$rc"
 )
 
 plugin_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -574,7 +583,12 @@ mise_select() {
   local d out rc=0
   mise_query=()
   mkdir -p "$cache_dir"
-  d=$(mktemp -d "${run_tmp:-$cache_dir}/.mise-select.XXXXXX")
+  # Called as `mise_select || ...`, where set -e does not stop a failed
+  # mktemp: without this the files would go to /.
+  if ! d=$(mktemp -d "${run_tmp:-$cache_dir}/.mise-select.XXXXXX"); then
+    mise_error="could not select the mise tools to check"
+    return 1
+  fi
   printf '%s\n' "$mise_ls_json" >"$d/ls.json"
   printf '%s\n' "$mise_safe_json" >"$d/safe.json"
   out=$(jq -r --slurpfile ls "$d/ls.json" --slurpfile safe "$d/safe.json" "$mise_jq_active"'

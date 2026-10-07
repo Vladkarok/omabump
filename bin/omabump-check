@@ -61,8 +61,10 @@ else
   flock -n 9 || exit 0
 fi
 # Only a check makes these, and only under the lock: any left over is from
-# a run that was killed outright.
-rm -rf -- "$state_dir"/.check.* "$state_dir"/.status.* "$state_dir"/.state.*
+# a run that was killed outright. .check.?????? is the scratch dir of an
+# older release; the lock itself, .check.lock, matches none of them, and
+# deleting it would let a second check take a new lock beside this one.
+rm -rf -- "$state_dir"/.run.* "$state_dir"/.check.?????? "$state_dir"/.status.* "$state_dir"/.state.*
 
 # Last run's results, used only when they have the shape this script writes.
 previous='{"apps":[]}'
@@ -79,7 +81,7 @@ started=$(date -Iseconds)
 rows=() order='[]' status_done=0
 # Every scratch file of the run, the helpers' included (run_tmp), is in
 # $tmp, which the EXIT trap removes however the run ends.
-tmp=$(mktemp -d "$state_dir/.check.XXXXXX")
+tmp=$(mktemp -d "$state_dir/.run.XXXXXX")
 run_tmp=$tmp
 cleanup() {
   local rc=$?
@@ -87,7 +89,11 @@ cleanup() {
   rm -rf "$tmp"
 }
 trap cleanup EXIT
+# Without these, a run stopped by Ctrl-C or a closed terminal would reach
+# the EXIT trap with the status of the last command, often 0.
 trap 'exit 143' TERM
+trap 'exit 130' INT
+trap 'exit 129' HUP
 # write_status reads the previous run from a file (--slurpfile), so a large
 # status.json never becomes a command-line argument.
 printf '%s\n' "$previous" >"$tmp/previous.json"

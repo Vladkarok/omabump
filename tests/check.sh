@@ -2,9 +2,9 @@
 # Tests for the background check: the agent wrapper parser and its
 # warnings, mise answers of odd shapes, pins.json of the wrong shape, feed
 # outputs that are not versions, recipe reads in a blob-less clone, and
-# whole runs of bin/omabump-check against fake tools (runError, TERM,
-# scratch files, the shell.json settings). Sourced by tests/run.sh, whose
-# helpers, stubs and $scratch it uses.
+# whole runs of bin/omabump-check against fake tools (runError, TERM, INT
+# and HUP, the lock, scratch files, the shell.json settings). Sourced by
+# tests/run.sh, whose helpers, stubs and $scratch it uses.
 # Variables set here are read by the functions under test, and those read
 # here are set by tests/run.sh and omabump-common, which shellcheck does not
 # see from this file; stubs are called by the functions under test:
@@ -263,6 +263,29 @@ same "run_killable: the command's output and exit status" 'out|3' "$(run_killabl
 same "run_killable: the lock fds are closed for the command" 'closed' \
   "$( (exec 9>"$scratch/fd9"; run_killable timeout 10 sh -c '{ true >&9; } 2>/dev/null && echo open || echo closed') )"
 
+# Waits up to ten seconds for the file $1 to have something in it.
+appears() { for _ in $(seq 100); do [[ -s $1 ]] && return 0; sleep 0.1; done; return 1; }
+# Ctrl-C in a terminal: INT to the whole group of a job whose INT is not
+# ignored (set -m), while the script runs a command directly, not in
+# $(...). The command's own group is stopped, and the script stops too
+# instead of going on to its next step as if one command had failed.
+cat >"$scratch/int-step.sh" <<'EOF'
+set -euo pipefail
+source "$1/bin/omabump-common"
+run_killable timeout 30 sh -c 'echo $$ >"$1"; exec sleep 30' _ "$2"
+echo "the next step"
+EOF
+rm -f "$scratch/int.pid"
+rc=$( set -m
+  bash "$scratch/int-step.sh" "$root" "$scratch/int.pid" >"$scratch/int.out" 2>&1 &
+  appears "$scratch/int.pid"
+  kill -INT -- "-$!"
+  wait "$!"; echo "$?" ) 2>/dev/null
+same "run_killable: Ctrl-C stops the script, not only the command" '130|' "$rc|$(cat "$scratch/int.out")"
+slept=$(cat "$scratch/int.pid" 2>/dev/null)
+refuse "run_killable: and the command it ran is stopped" kill -0 "${slept:-0}"
+[[ -z $slept ]] || kill "$slept" 2>/dev/null
+
 # --- whole runs of omabump-check ----------------------------------------------------------
 
 # Fake pacman (only claude-desktop installed), curl (every fetch fails), git
@@ -287,13 +310,14 @@ EOF
 chmod +x "$run_dir/bin/"*
 run_state=$run_dir/state/omarchy/plugins/io.github.vladkarok.omabump
 run_settings() { printf '{"plugins": [{"id": "io.github.vladkarok.omabump"%s}]}' "$1" >"$run_dir/home/.config/omarchy/shell.json"; }
+run_env=(HOME="$run_dir/home" XDG_CONFIG_HOME="$run_dir/config" XDG_STATE_HOME="$run_dir/state"
+  XDG_CACHE_HOME="$run_dir/cache" OMARCHY_PATH="$run_dir/omarchy" PATH="$run_dir/bin:$PATH"
+  OMABUMP_TEST_MISE="$run_dir/mise.log")
 # The check under `timeout -k 5 120`, as Main.qml runs it, in the background:
-# $! is the timeout's pid.
+# $! is the timeout's pid (env execs it).
 check_bg() {
   : >"$run_dir/mise.log"
-  HOME=$run_dir/home XDG_CONFIG_HOME=$run_dir/config XDG_STATE_HOME=$run_dir/state XDG_CACHE_HOME=$run_dir/cache \
-    OMARCHY_PATH=$run_dir/omarchy PATH=$run_dir/bin:$PATH OMABUMP_TEST_MISE=$run_dir/mise.log \
-    timeout -k 5 120 "$root/bin/omabump-check" --no-notify "$@" >/dev/null 2>&1 &
+  env "${run_env[@]}" timeout -k 5 120 "$root/bin/omabump-check" --no-notify "$@" >/dev/null 2>&1 &
 }
 check_run() { check_bg "$@"; wait "$!"; }
 run_status() { jq -r "$1" "$run_state/status.json" 2>&1; }
@@ -307,6 +331,7 @@ same "a run: exit 0, runError empty, nothing left checking" '0||false|0' \
   "$rc|$(run_status '"\(.runError)|\(.checking)|\([.apps[] | select(.checking == true)] | length)"')"
 same "a run with no --no-mise flag honours showMise false in shell.json: mise never runs" '' "$(cat "$run_dir/mise.log")"
 same "a run leaves no scratch files" '' "$(leftovers)"
+check "a run keeps its lock file: the leftover sweep spares it" test -e "$run_state/.check.lock"
 run_settings ''
 check_run
 same "without the setting the mise rows are checked, mise's setting read first" 'settings get disable_backends|ls --json' \
@@ -317,12 +342,21 @@ same "--no-mise wins over showMise true" '' "$(cat "$run_dir/mise.log")"
 
 # TERM while a command under its own timeout runs (mise here; git, curl
 # feeds and discovery go the same way): the trap must not wait for it.
-mkdir -p "$run_state/.check.stale" && : >"$run_state/.status.stale" && : >"$run_state/.state.stale"
+# The .check.XXXXXX dir is an older release's scratch dir.
+mkdir -p "$run_state/.run.stale" "$run_state/.check.Ab12Cd" && : >"$run_state/.status.stale" && : >"$run_state/.state.stale"
 rm -f "$run_dir/hang.pid"
 OMABUMP_TEST_HANG=$run_dir/hang.pid check_bg
 pid=$!
-for _ in $(seq 100); do [[ -s $run_dir/hang.pid ]] && break; sleep 0.1; done
+appears "$run_dir/hang.pid"
 same "TERM: the check reached the hanging mise" yes "$([[ -s $run_dir/hang.pid ]] && echo yes)"
+# A second check while the first runs (a shell reload starts one per bar):
+# the lock is still there and held, so it ends at once without a mise call,
+# and its start leaves the first one's scratch dir alone.
+check_run; rc=$?
+same "a second check while one runs: exit 0, mise never called" '0|' "$rc|$(cat "$run_dir/mise.log")"
+same "a second check while one runs: the first one's scratch dir is still there" 1 \
+  "$(find "$run_state" -maxdepth 1 -name '.run.*' | wc -l)"
+check "a second check while one runs: the first one still runs" kill -0 "$pid"
 term_at=$(date +%s%N)
 kill -TERM "$pid"
 wait "$pid"; rc=$?
@@ -335,3 +369,26 @@ hung=$(cat "$run_dir/hang.pid" 2>/dev/null)
 refuse "TERM: the hanging mise is stopped too" kill -0 "${hung:-0}"
 same "TERM: no scratch files are left, an earlier killed run's included" '' "$(leftovers)"
 [[ -z $hung ]] || kill "$hung" 2>/dev/null
+
+# Ctrl-C (INT) or a closed terminal (HUP) on a check run from a terminal:
+# the signal reaches the check's whole process group, which is a job of its
+# own whose INT is not ignored (set -m), as in an interactive shell.
+# status.json says how the run ended, never "exit 0", and the hanging mise
+# is stopped.
+check_signalled() {
+  rm -f "$run_dir/hang.pid"
+  ( set -m
+    env "${run_env[@]}" OMABUMP_TEST_HANG="$run_dir/hang.pid" "$root/bin/omabump-check" --no-notify >/dev/null 2>&1 &
+    appears "$run_dir/hang.pid"
+    kill "-$1" -- "-$!"
+    wait "$!"; echo "$?" ) 2>/dev/null
+}
+for pair in INT:130 HUP:129; do
+  rc=$(check_signalled "${pair%:*}")
+  same "${pair%:*}: the check ends with ${pair#*:} and status.json says so" \
+    "${pair#*:}|The check stopped early (exit ${pair#*:})|0" \
+    "$rc|$(run_status '"\(.runError)|\([.apps[] | select(.checking == true)] | length)"')"
+  hung=$(cat "$run_dir/hang.pid" 2>/dev/null)
+  refuse "${pair%:*}: the hanging mise is stopped too" kill -0 "${hung:-0}"
+  [[ -z $hung ]] || kill "$hung" 2>/dev/null
+done
