@@ -53,10 +53,11 @@ load_quiet
 
 mkdir -p "$state_dir"
 # The shell timer and a hand run can overlap; the second one has nothing to
-# add, unless it was asked to --wait. A check lasts at most ten minutes.
+# add, unless it was asked to --wait. A check lasts at most ten minutes; a
+# wait that outlasts that exits 75, as the widget's own wait does: no check ran.
 exec 9>"$state_dir/.check.lock"
 if (( wait_lock )); then
-  flock -n 9 || { echo "Waiting for the running check to end..." >&2; flock -w 660 9; } || exit 0
+  flock -n 9 || { echo "Waiting for the running check to end..." >&2; flock -w 660 9; } || exit 75
 else
   flock -n 9 || exit 0
 fi

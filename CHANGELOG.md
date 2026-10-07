@@ -13,14 +13,24 @@ Checks and the panel:
 - Discovery reads wrappers line by line, warns only about files that run mise but cannot be read, never about another installer's launcher, your own script or a disabled row, and drops an `@version` from the key. A deeply nested menu or a menu with no agent entries is reported instead of crashing or silently listing none.
 - mise: Omabump's disabled backends now include yours; a pinned row shows the real newest release; an odd entry in mise's answer is a row error, not a crash; Update asks mise only about its own tool.
 - A malformed `pins.json` is a pin error on the omarchy rows instead of stopping every check and install. A recipe file the blob-less clone cannot download is a check error, not "no recipe".
-- Feeds: a regex that matched nothing and a JSON path with several values are errors, not the versions "None" or two versions run together.
+- Feeds: a regex that matched nothing and a JSON path with several values are errors, not the versions "None" or two versions run together. A JSON feed body must be exactly one document; an empty body or several documents give a plain error instead of a bash arithmetic error.
+- Turning Show mise tools on or off while another check runs gets a check after it, so the CLI rows no longer stay missing until the next timer tick. A Refresh that waited over 11 minutes behind another check says "Check not run" instead of passing as done.
+- The panel applies mutes and skips by the checker's rules (valid ids and versions, the first 200 entries), so the two no longer disagree about a row.
+- Skip needs Shift+K: with CapsLock on, j and k move the cursor. The selected row scrolls into view on open and on every move. IPC open, toggle and settings open the panel on the focused monitor.
+- Discovery: `mise` in an `echo` string or a comment no longer counts as running mise, while mise after `&&`, `env`, `sudo` or with value flags (`-C dir`) still does; a long line of flags no longer stalls discovery; an `@version` holding a colon is dropped from the key.
+- Checks remove the day-old scratch files a killed Update or an older release left in `~/.cache/omabump` and the state directory.
+- status.json has `"schemaVersion": 1`. A row's note no longer carries "Installed as X, switch to Y"; the panel writes that from `installedName`, `switchable`, `updateAvailable` and `installable`. An older file is read as before.
+- The widget's logic moved into `Model.js`, tested with node, `vercmp` included against a table taken from `/usr/bin/vercmp`. CI installs node.
 
 Update:
 
 - Answering n at pacman's prompt says so, removes the staged copy and keeps the verified package for a retry; a hook failing after the install is reported as done with a warning.
 - The omarchy route checks the staged copy against the sha256 of the package makepkg built.
 - Switch (and Update replacing a package installed under another name) reads the declared conflict from the recipe before building.
-- A self update that fails or is stopped part way rolls back fully, waiting for git first, and says whether the rollback worked.
+- A self update that fails or is stopped part way rolls back fully, waiting for git first, and says whether the rollback worked. A second Ctrl-C or a closed terminal no longer cuts the rollback's git reset short.
+- A run stopped at pacman's prompt removes its staged copy (`sudo -n rm`); if the terminal was closed, the next Update of that app removes it and says so.
+- Update on a mise row whose `mise outdated` entry is not an object fails with the check's wording instead of calling the tool newest or held.
+- `omabump-check --wait` exits 75 when its wait for a running check times out, as the widget's own wait does.
 
 Earlier in this release:
 

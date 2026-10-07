@@ -121,8 +121,8 @@ jq_name_rules='
     and ([.tool // empty] | flatten | all(.[]; tool_ok));'
 
 # A version as mise or a feed prints it, for a skipped version: what
-# version_ok allows plus "-" (mise versions such as 1.0.0-beta.1). Panel.qml
-# checks the same rule before it stores a skip.
+# version_ok allows plus "-" (mise versions such as 1.0.0-beta.1). Model.js
+# (skipToggled) checks the same rule before it stores a skip.
 skip_version_ok() { [[ ${#1} -le 64 && $1 =~ ^[0-9A-Za-z][A-Za-z0-9._+~-]*$ && $1 != *..* ]]; }
 
 # The rows the user muted (widget setting mutedApps, an array of pkg ids) and

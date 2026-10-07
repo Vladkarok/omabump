@@ -173,3 +173,6 @@ else
   rm -f "$shell_json"
   load_quiet
 fi
+check "bin/omabump-check writes schemaVersion 1, the shape Model.parseStatus reads" \
+  grep -q '{schemaVersion: 1,' "$root/bin/omabump-check"
+check "Model.js reads status.json's schemaVersion" grep -q 'schemaVersion' "$root/Model.js"
