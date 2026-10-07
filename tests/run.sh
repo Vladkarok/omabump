@@ -1,6 +1,6 @@
 #!/bin/bash
-# Unit tests for bin/omabump-common. Plain bash: one line per test, stops at
-# the first failure with a non-zero exit. Nothing touches the network: fetch,
+# Unit tests for bin/omabump-common. Plain bash: one line per test, every
+# test runs, and any failure makes the exit non-zero. Nothing touches the network: fetch,
 # mise_run and the git network wrapper are stubbed below, and every XDG
 # directory points into a scratch directory.
 #
@@ -33,9 +33,9 @@ pgit_net() { echo "pgit_net called in a test" >&2; return 1; }
 discover_out='{"agents":[],"errors":[]}'
 discover_run() { printf '%s\n' "$discover_out"; }
 
-n=0
+n=0 failed=0
 pass() { n=$((n + 1)); echo "ok $n - $1"; }
-fail() { n=$((n + 1)); echo "FAIL $n - $1${2:+: $2}"; exit 1; }
+fail() { n=$((n + 1)) failed=$((failed + 1)); echo "FAIL $n - $1${2:+: $2}"; }
 # check <name> <command...>: the command must succeed.
 check() { local name=$1; shift; if "$@" >/dev/null; then pass "$name"; else fail "$name"; fi; }
 # refuse <name> <command...>: the command must fail.
@@ -77,6 +77,9 @@ same "feed checksum: a basename match when the url differs" \
   "sha512 $(hexsum sha512 byname)" "$(vendor_checksum "$feed_app" https://mirror.example.com/app-1.2.3-x86_64.pkg.tar.zst 1.2.3 "$scratch/feed.yml")"
 refuse "feed checksum: a file the feed does not list" \
   vendor_checksum "$feed_app" https://cdn.example.com/other.pkg.tar.zst 1.2.3 "$scratch/feed.yml"
+sed 's/$/\r/' "$scratch/feed.yml" >"$scratch/crlf.yml"
+same "feed checksum: a CRLF feed" \
+  "sha512 $(hexsum sha512 exact)" "$(vendor_checksum "$feed_app" "$url" 1.2.3 "$scratch/crlf.yml")"
 printf 'files:\n  - url: %s\n    sha512: not*base64!\n' "$url" >"$scratch/bad.yml"
 refuse "feed checksum: malformed base64" vendor_checksum "$feed_app" "$url" 1.2.3 "$scratch/bad.yml"
 printf 'files:\n  - url: %s\n    sha512: %s\n' "$url" "$(printf 'short' | sha256sum | cut -d' ' -f1 | python3 -c 'import base64, sys; print(base64.b64encode(bytes.fromhex(sys.stdin.read().strip())).decode())')" >"$scratch/short.yml"
@@ -143,6 +146,9 @@ EOF
 same "apps_table: entries with bad pkg, installed or tool names are dropped" \
   'a b c mise:g' "$(apps_table 2>/dev/null | jq -r 'map(.pkg) | join(" ")')"
 same "apps_table: each dropped entry is named on stderr" 5 "$(apps_table 2>&1 >/dev/null | grep -c '^ignoring app')"
+# jq's $ matches before a final newline; bash's =~ and the rules here do not.
+printf '[{"pkg": "a\\n", "source": "indicator"}, {"pkg": "mise:j", "source": "mise", "tool": "j\\n"}]\n' >"$user_apps"
+same "apps_table: a name ending in a newline is dropped" 'a b c' "$(apps_table 2>/dev/null | jq -r 'map(.pkg) | join(" ")')"
 check "pkg_name_ok: claude-desktop" pkg_name_ok claude-desktop
 check "pkg_name_ok: lib32-foo+bar@x_y.z" pkg_name_ok lib32-foo+bar@x_y.z
 refuse "pkg_name_ok: a leading dot" pkg_name_ok .foo
@@ -770,4 +776,8 @@ mise_ls_json='{"grok":[{"version":"1.0.46","installed":true,"active":true}]}'
 same "the Grok CLI row finds mise's first-party grok" "grok 1.0.46" "$(mise_active "$(app_json mise:grok-cli)")"
 mise_ls_json='{}'
 
+if (( failed )); then
+  echo "$failed of $n tests failed"
+  exit 1
+fi
 echo "all $n tests passed"

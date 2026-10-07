@@ -31,7 +31,9 @@ seen_file=$state_dir/seen.json
 save_json() {
   local out
   out=$(mktemp "$state_dir/.state.XXXXXX")
-  jq . <<<"$1" >"$out" && mv -f "$out" "$2" || { rm -f "$out"; return 1; }
+  if jq . <<<"$1" >"$out" && mv -f "$out" "$2"; then return 0; fi
+  rm -f "$out"
+  return 1
 }
 cache_dir=${XDG_CACHE_HOME:-$HOME/.cache}/omabump
 pkgs_dir=$cache_dir/omarchy-pkgs
@@ -64,11 +66,12 @@ pkg_name_ok() { [[ $1 =~ ^[a-z0-9@_+][a-z0-9@._+-]*$ ]]; }
 app_id_ok() { pkg_name_ok "$1" || { [[ $1 == mise:* ]] && pkg_name_ok "${1#mise:}"; } || [[ $1 == "$self_pkg" ]]; }
 tool_name_ok() { [[ $1 =~ ^[A-Za-z0-9@_+:][A-Za-z0-9@._+:/-]*$ && $1 != *..* ]]; }
 ref_ok() { [[ $1 =~ ^refs/[A-Za-z0-9._/-]+$ && $1 != *..* ]]; }
-# The same rules as jq definitions, for apps_table.
+# The same rules as jq definitions, for apps_table. \z, not $: in jq's
+# regexes $ also matches before a final newline, which bash's =~ refuses.
 jq_name_rules='
-  def pkg_ok: type == "string" and test("^[a-z0-9@_+][a-z0-9@._+-]*$");
+  def pkg_ok: type == "string" and test("^[a-z0-9@_+][a-z0-9@._+-]*\\z");
   def id_ok: pkg_ok or (type == "string" and startswith("mise:") and (.[5:] | pkg_ok));
-  def tool_ok: type == "string" and test("^[A-Za-z0-9@_+:][A-Za-z0-9@._+:/-]*$") and (contains("..") | not);
+  def tool_ok: type == "string" and test("^[A-Za-z0-9@_+:][A-Za-z0-9@._+:/-]*\\z") and (contains("..") | not);
   def entry_ok: (.pkg | id_ok) and ((.pkg | pkg_ok) or .source == "mise")
     and (.source | IN("omarchy", "vendor-pkg", "mise", "indicator"))
     and ((.installed // []) | type == "array" and all(.[]; pkg_ok))
@@ -630,6 +633,7 @@ vendor_checksum() {
       # The exact url wins; the fallback is an entry whose url is the bare
       # file name, as electron-updater's latest.yml lists files.
       b64=$(awk -v url="$url" -v name="$name" '
+        { sub(/\r$/, "") }
         /^[[:space:]]*-[[:space:]]+url:/ { u = $NF; next }
         /^[[:space:]]+sha512:/ && u != "" { if (u == url) { exact = $2; exit } if (u == name && byname == "") byname = $2; u = "" }
         END { if (exact != "") print exact; else if (byname != "") print byname }' "$feed_file")
@@ -642,7 +646,7 @@ vendor_checksum() {
       sums_url=${sums_url//\{version\}/$version}
       [[ $sums_url == https://* ]] || { echo "no https checksum url for $(uname -m)" >&2; return 1; }
       body=$(fetch -fsSL "$sums_url" 2>/dev/null) || { echo "could not fetch $sums_url (curl exit $?)" >&2; return 1; }
-      hex=$(awk -v name="$name" '{ f = $2; sub(/^\*/, "", f) } f == name { print tolower($1); exit }' <<<"$body") ;;
+      hex=$(awk -v name="$name" '{ sub(/\r$/, ""); f = $2; sub(/^\*/, "", f) } f == name { print tolower($1); exit }' <<<"$body") ;;
     "")
       echo "apps.json names no checksum source for the vendor package" >&2; return 1 ;;
     *)
@@ -738,7 +742,7 @@ feed_version() {
       want=$(jq -r '.feed.package // .pkg' <<<"$app")
       v=$(apt_newest "$body" "$want") || { echo "no $want in the apt index" >&2; return 1; } ;;
     zcode-manifest|latest-yml)
-      v=$(sed -n 's/^version: *//p' <<<"$body" | head -1) ;;
+      v=$(sed -n 's/\r$//; s/^version: *//p' <<<"$body" | head -1) ;;
     regex)
       v=$(regex_first "$(jq -r '.feed.pattern // ""' <<<"$app")" <<<"$body" 2>/dev/null) \
         || { echo "bad feed pattern" >&2; return 1; } ;;

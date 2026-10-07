@@ -9,6 +9,14 @@
 - openclaw and voxtype hold new releases for 24 h in omarchy-pkgs (`min_release_age`), and Update failed with "nothing to do" until then. Such a row now says from when Update works, and notifies then.
 - A `url.*.insteadOf` rule for github.com in your git config made every check re-create the omarchy-pkgs clone, and the omarchy route never worked. The clone now ignores your and the system's git config, except its `http.*` settings (proxy, CA bundle).
 - The refresh after an Update did not run while another check was running, so the panel kept offering the update just installed. It now waits for that check to end (`omabump-check --wait`).
+- The staged copy in `/var/cache/omabump` is read by you and written by root, so a symlink swapped in for the verified file can no longer make root copy a file you cannot read into a world-readable place.
+- makepkg no longer installs missing build dependencies with `--noconfirm`: pacman asks for those too, as the README says.
+- After a successful omarchy install, the sources that recipe downloaded are removed (they are the installed version's). The old cleanup guessed older versions by name prefix and could remove another recipe's files.
+- AUR rows installed from the AUR say "Updates with omarchy update (AUR)" and offer no Ask agent: `omarchy update` runs `yay -Sua`.
+- Names in `apps.json` ending in a newline passed the jq rules (`$` matches before a final newline); they are dropped now.
+- CRLF update manifests: the checksum lookup and the version now strip `\r`.
+- Switch reads `pacman -Qi` with `COLUMNS` unset, so a wrapped Provides or Conflicts line no longer hides a name.
+- tests/run.sh runs every test and reports all failures. CI has job timeouts, and a release tag must match `manifest.json` and have a CHANGELOG entry.
 
 ## 0.1.1 (2026-10-02)
 

@@ -24,10 +24,10 @@ The panel has three sections: Desktop apps, CLI tools and Plugin (Omabump itself
 | `perplexity` | Perplexity | omarchy |
 | `voxtype-bin` | Dictation (voxtype) | omarchy |
 | `zcode` | ZCode (also found as AUR `z-code-bin`) | vendor |
-| `antigravity` | Antigravity (or `antigravity-appimage`) | indicator, version from the AUR |
-| `antigravity-ide` | Antigravity IDE | indicator, version from the AUR |
+| `antigravity` | Antigravity (or `antigravity-appimage`) | indicator, version from the AUR; `omarchy update` updates it |
+| `antigravity-ide` | Antigravity IDE | indicator, version from the AUR; `omarchy update` updates it |
 | `kimi-bin` | Kimi | indicator, version from Moonshot's update feed |
-| `trae-bin` | Trae | indicator, version from the AUR |
+| `trae-bin` | Trae | indicator, version from the AUR; `omarchy update` updates it |
 
 mise tools, listed when mise has them installed and active: every coding agent Omarchy offers (Claude Code, Codex CLI, Crush, OpenCode, Grok CLI, Copilot CLI, Cursor CLI, Pi, Oh My Pi, Ori, Antigravity CLI, Muse Code and whatever Omarchy adds later, see How CLI tools are found), plus Gemini CLI, Jules, Qwen Code, Kimi CLI, Amp and herdr.
 
@@ -90,7 +90,7 @@ When something is missing, omarchy rows have no Update button and say what to in
 
 ### External services contacted
 
-The background check (every 15 minutes by default) fetches version feeds:
+The background check (every hour by default) fetches version feeds:
 
 - `downloads.claude.ai` (Claude Desktop apt index)
 - `persistent.oaistatic.com` (Codex apt index)
@@ -126,11 +126,11 @@ A recipe may hold new releases for a while (`min_release_age`; openclaw and voxt
 
 **Omabump itself.** See Updating Omabump: a fast-forward to the release tag after you read the log and answer y.
 
-**indicator.** No Update button. These rows show the installed and newest version. Update them the way you installed them.
+**indicator.** No Update button. These rows show the installed and newest version. Update them the way you installed them: an AUR row installed from the AUR says "Updates with omarchy update (AUR)", since `omarchy update` runs `yay -Sua`, and has no Ask agent.
 
 **Switch.** Codex may be installed as the AUR's `chatgpt-desktop` and ZCode as `z-code-bin`. When the canonical package has the same or a newer version, the row offers Switch (`w`), which runs `omabump-install --switch <pkg>`. It checks that one package declares a conflict with the other, prints both packages' install scripts and the app's config directory, and lets pacman ask before removing the old package.
 
-**Ask agent.** A row with a newer version but no Update button has Ask agent (`Enter`) and Copy prompt (`c`). Ask agent opens your default agent (`omarchy default agent <name>`) with a prompt that asks for a plan and your approval before changing anything. With no default agent set it copies the prompt instead.
+**Ask agent.** A row with a newer version but no Update button has Ask agent (`Enter`) and Copy prompt (`c`). Ask agent opens your default agent (`omarchy default agent <name>`) with a prompt that asks for a plan and your approval before changing anything. `omarchy-agent` starts most agents without their own approval prompts (Claude Code in auto mode, Codex with `--approve-for-me`, Antigravity with `--dangerously-skip-permissions`), so that approval step is a request to the agent, not a gate. With no default agent set it copies the prompt instead.
 
 `bin/omabump-install --prepare <pkg>` goes as far as it can without installing: on omarchy rows it syncs the recipe and stops before makepkg builds; on vendor rows it downloads and verifies the package and stops before `pacman -U`.
 
@@ -151,18 +151,18 @@ What each guarantee covers, exactly:
 - **No fetched code in the background check.** Feeds and recipes are parsed as text; nothing Omabump downloads is executed. mise runs with asdf and vfox disabled, so their plugin scripts do not run (another plugin backend mise may add later is not covered by that setting; `mise outdated` is still asked only about tools on the allowed backends). A `command` feed in your own `apps.json` is your code, and it runs. The shipped table has no command feeds. The whole check runs under `timeout -k 10 600`.
 - **HTTPS only.** Omabump's own downloads allow only HTTPS, redirects included, with connect, total-time and size limits (8 MB for a feed, 4 GB for a package). Code from omarchy-pkgs that Update runs is held to the same rule from outside: `bin/sync-upstream` and its hooks run with `CURL_HOME` pointing at a generated `.curlrc` (`proto = "=https"`, `proto-redir = "=https"`, time and size limits), and makepkg runs with a generated `--config` that sources your makepkg configuration and replaces `DLAGENTS` with an HTTPS-only curl (`http`, `ftp`, `scp` and `rsync` sources fail). A hook that bypasses curl is not covered. `bin/sync-upstream` gets `TMPDIR` under `~/.cache/omabump/scratch` and runs without the maintainer-only `BYPASS_MIN_RELEASE_AGE`.
 - **Checksums are integrity, not authenticity.** The vendor package's digest comes from the vendor's own unsigned manifest or list over HTTPS. It catches a corrupted or swapped download on the way (transport, CDN), not a compromised vendor. The omarchy route likewise takes its hashes from the vendor's unsigned index through `bin/sync-upstream`; voxtype is the exception, its recipe checks a signed `.asc`.
-- **pacman asks before it installs.** Both installs run plain `sudo pacman -U`, so pacman shows the package and asks "Proceed with installation?". sudo may not ask for a password at all (a cached credential, or makepkg's own `sudo pacman -S` a moment earlier), so the pacman prompt is the point where you can still stop.
+- **pacman asks before it installs.** Both installs run plain `sudo pacman -U`, so pacman shows the package and asks "Proceed with installation?". sudo may not ask for a password at all (a cached credential, or makepkg's own `sudo pacman -S` a moment earlier), so the pacman prompt is the point where you can still stop. makepkg installs missing build dependencies with `sudo pacman -S --asdeps`, and pacman asks for those too.
 - **What is printed before pacman is inert.** Install scripts and the recipe diff go through a filter that shows ESC as `^[` and drops other control characters, so they cannot drive the terminal.
 - **git and limits.** git, for the omarchy-pkgs clone and Omabump's own update alike, runs with hooks, fsmonitor, automatic gc and maintenance off and only the `https` protocol allowed. For the omarchy-pkgs clone, Omabump's own, your and the system's git config do not apply, so a `url.*.insteadOf` rule cannot point it elsewhere; only their `http.*` settings (proxy, CA bundle) are passed on, and proxy environment variables apply too. git fetches, `bin/sync-upstream` and mise calls run under `timeout -k`. Names from `apps.json` and `pins.json` (packages, mise tools, git refs) are checked before any of them reaches pacman, git, mise or a file name.
 - **Temporary files.** Locks and temporary files live under `~/.cache/omabump` and `~/.local/state`, never in the system temp directory.
 
-Before `pacman -U`, the verified package (the vendor download or the makepkg output) is copied with `sudo install` into the root-owned `/var/cache/omabump`, checked again there (digest on the vendor route, name and full version always), and pacman installs that copy. The copy in the user-writable cache can no longer be swapped between verification and install. The staged copy is removed after a successful install and kept, with its path printed, after a failure.
+Before `pacman -U`, the verified package (the vendor download or the makepkg output) is copied with `sudo install` into the root-owned `/var/cache/omabump` (read by you, written by root, so a symlink in its place cannot make root copy a file you cannot read), checked again there (digest on the vendor route, name and full version always), and pacman installs that copy. The copy in the user-writable cache can no longer be swapped between verification and install. The staged copy is removed after a successful install and kept, with its path printed, after a failure.
 
 A local build says `Packager: Unknown Packager` in `pacman -Qi`. pacman replaces it with the repo package once the repo's full version is higher, and `sudo pacman -S <pkg>` puts the repo package back at any time.
 
 ## Permissions and capabilities
 
-Omabump uses sudo for one thing: installing a package after you pressed Update or Switch, in a visible terminal. It copies the verified file into `/var/cache/omabump` (`sudo install`), runs `sudo pacman -U` on that copy, where pacman asks before it installs, and removes the copy (`sudo rm`). makepkg also calls `sudo pacman -S --asdeps` when a recipe's build dependencies are missing. What runs as root is pacman, the package's install script and pacman's hooks. Omabump never changes sudo configuration and never installs from the background check.
+Omabump uses sudo for one thing: installing a package after you pressed Update or Switch, in a visible terminal. It copies the verified file into `/var/cache/omabump` (`sudo install`), runs `sudo pacman -U` on that copy, where pacman asks before it installs, and removes the copy (`sudo rm`). makepkg also calls `sudo pacman -S --asdeps` when a recipe's build dependencies are missing, and pacman asks before it installs them. What runs as root is pacman, the package's install script and pacman's hooks. Omabump never changes sudo configuration and never installs from the background check.
 
 Omabump itself writes to `~/.cache/omabump`, `~/.local/state/omarchy/plugins/io.github.vladkarok.omabump`, `/var/cache/omabump` (the staged package, through sudo) and, when you change a setting, Omarchy's `~/.config/omarchy/shell.json`. Beyond that, pacman installs packages, `mise up` (and `mise outdated`) may write under `~/.local/share/mise`, and `bin/sync-upstream`, its hooks and your own `command` feeds can write wherever your user can.
 
@@ -187,7 +187,7 @@ The scripted equivalent:
 omarchy bar set io.github.vladkarok.omabump <key> <value> --json
 ```
 
-with the keys `refreshIntervalSec` (seconds), `showMise`, `barIconOnlyWithUpdates` and `notify`. Without `--json` the value is stored as a string, and `"false"` counts as on.
+with the keys `refreshIntervalSec` (seconds), `showMise`, `barIconOnlyWithUpdates` and `notify`. Without `--json` the value is stored as a string; `"true"` and `"false"` are read as booleans.
 
 ### Mute
 

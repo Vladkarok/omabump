@@ -156,6 +156,10 @@ guard_version() {
   return 1
 }
 
+# pacman -Qi wraps long fields to COLUMNS when it is set, which would hide
+# names on continuation lines from qi_names.
+pacman_qi() { env -u COLUMNS pacman "$@"; }
+
 # Names in a pacman -Qi / -Qip field ("Provides", "Conflicts With"), with
 # version constraints cut off; nothing for "None".
 qi_names() {
@@ -169,14 +173,14 @@ qi_names() {
 switch_conflicts() {
   local src=$1 new_c new_p old_c old_p info
   if [[ -f $src ]]; then
-    info=$(pacman -Qip -- "$src")
+    info=$(pacman_qi -Qip -- "$src")
     new_c=$(qi_names 'Conflicts With' <<<"$info") new_p=$(qi_names Provides <<<"$info")
   else
     info=$(cd "$src" && mkpkg --printsrcinfo 2>/dev/null) || return 1
     new_c=$(sed -n 's/^\tconflicts = //p' <<<"$info" | sed 's/[<>=].*//')
     new_p=$(sed -n 's/^\tprovides = //p' <<<"$info" | sed 's/[<>=].*//')
   fi
-  info=$(pacman -Qi -- "$installed_name")
+  info=$(pacman_qi -Qi -- "$installed_name")
   old_c=$(qi_names 'Conflicts With' <<<"$info") old_p=$(qi_names Provides <<<"$info")
   # $old_p and $new_p are newline lists of package names, split on purpose:
   # quoted, an empty list would add an empty pattern that matches anything.
@@ -257,14 +261,18 @@ stage_and_install() {
   local file=$1 expect=$2 algo=${3:-} want=${4:-} staged got line
   staged=$staging_dir/${file##*/}
   if (( prepare )); then
-    echo "Would run: sudo install -o root -g root -m 0644 -D -- $file $staged"
+    echo "Would run: sudo install -o root -g root -m 0644 -D /dev/stdin $staged <$file"
     [[ -z $algo ]] || echo "Would check: ${algo}sum of $staged is $want"
     echo "Would check: pacman -Qp $staged is $expect"
     echo "Would run: sudo pacman -U -- $staged (pacman asks before it installs)"
     echo "Would run: sudo rm -f -- $staged"
     return 0
   fi
-  run_unlocked sudo install -o root -g root -m 0644 -D -- "$file" "$staged" || die "could not copy $file to $staged"
+  # The file is opened here, as you, and root only writes what it reads: a
+  # symlink swapped in for it cannot make root copy a file you cannot read
+  # (/etc/shadow) into a world-readable place.
+  [[ -f $file && ! -L $file ]] || die "$file is not a regular file; not installing"
+  run_unlocked sudo install -o root -g root -m 0644 -D /dev/stdin "$staged" <"$file" || die "could not copy $file to $staged"
   if [[ -n $algo ]]; then
     got=$("${algo}sum" -- "$staged" | cut -d' ' -f1)
     [[ $got == "$want" ]] || die "$algo of the staged copy is $got, expected $want; not installing (the copy stays in $staged)"
@@ -297,7 +305,9 @@ build_and_install() {
   fi
 
   started=1
-  mkpkg -sfC --noconfirm
+  # -s installs missing build dependencies with sudo pacman -S --asdeps;
+  # without --noconfirm pacman asks for those too.
+  mkpkg -sfC
   [[ -f $match ]] || die "makepkg did not produce $match"
   line=$(pacman -Qp -- "$match") || die "cannot read $match"
   [[ $line == "$want $target_version" ]] || die "built package is '$line', expected '$want $target_version'"
@@ -306,7 +316,7 @@ build_and_install() {
   stage_and_install "$match" "$want $target_version"
   clean_after_install "${files[@]}"
   clean_build_tree
-  clean_old_sources
+  clean_sources
 }
 
 # makepkg builds in $BUILDDIR/<pkgbase>. Run in the recipe directory.
@@ -324,23 +334,19 @@ clean_after_install() {
   echo "Removed the installed package file from $PKGDEST."
 }
 
-# Downloaded sources stay in SRCDEST so a retry does not fetch them again,
-# but only the newest of each: a file this recipe uses replaces older files
-# with the same name up to the version (chatgpt_26.928.31416_amd64.deb
-# replaces older chatgpt_*.deb). Run in the recipe directory.
-clean_old_sources() {
-  local used f prefix old
+# After pacman -U succeeded: the sources this recipe downloaded go too. They
+# are the installed version's, so only a failed install (whose sources stay,
+# for the retry) could use them again. Only names the recipe lists are
+# touched, never another recipe's files. Run in the recipe directory.
+clean_sources() {
+  local used f n=0
   while IFS= read -r used; do
     f=${used%%::*}
     [[ $used == *::* ]] || f=${used##*/}
-    [[ -n $f && -f $SRCDEST/$f ]] || continue
-    prefix=${f%%[-_][0-9]*}
-    [[ -n $prefix && $prefix != "$f" ]] || continue
-    for old in "$SRCDEST/$prefix"[-_][0-9]*; do
-      [[ -f $old && $old != "$SRCDEST/$f" && $old -ot $SRCDEST/$f ]] || continue
-      rm -f -- "$old" && echo "Removed the older source ${old##*/}."
-    done
+    [[ $f =~ ^[A-Za-z0-9@%+,_~][A-Za-z0-9@%+,._~-]*$ && -f $SRCDEST/$f ]] || continue
+    rm -f -- "$SRCDEST/$f" && n=$((n + 1))
   done < <(mkpkg --printsrcinfo 2>/dev/null | sed -n 's/^\tsource\(_[a-z0-9_]*\)\? = //p')
+  (( n == 0 )) || echo "Removed $n downloaded source file(s) from $SRCDEST."
 }
 
 install_omarchy() {
