@@ -55,7 +55,7 @@
         "type": "boolean",
         "label": "Hide icon until an update",
         "defaultValue": false,
-        "description": "Show the bar icon only when an installable update exists. IPC open and toggle still open the panel."
+        "description": "Show the bar icon only when an installable update exists or a check failed. IPC open and toggle still open the panel."
       }
     ]
   }

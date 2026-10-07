@@ -59,21 +59,24 @@ Panel {
   property int settingIndex: 0
   readonly property var settingRows: [
     { key: "showMise", fallback: true, label: "Show mise tools", description: "CLI agents managed by mise, below the desktop apps" },
-    { key: "barIconOnlyWithUpdates", fallback: false, label: "Bar icon only when updates exist", description: "" },
+    { key: "barIconOnlyWithUpdates", fallback: false, label: "Bar icon only when updates exist", description: "It also shows while a check fails" },
     { key: "notify", fallback: true, label: "Notify on new releases", description: "" }
   ]
   readonly property int intervalRow: 0
   // The "Muted: …" line with its Clear button, after the toggles, when any.
   readonly property int quietRow: settingRows.length + 1
   // Only rows the last check listed: a mute or skip for a row hidden by Show
-  // mise tools (or not installed now) is kept but not shown.
+  // mise tools (or not installed now) is kept but not shown. Only skips the
+  // settings keep (skipKept): one that no longer applies is dropped on the
+  // next write, not listed as active until then.
   readonly property string quietText: {
     var names = []
     for (var i = 0; i < checker.mutedApps.length; i++)
       if (listed(checker.mutedApps[i])) names.push(appName(checker.mutedApps[i]))
     var skips = []
     for (var pkg in checker.skippedVersions)
-      if (listed(pkg)) skips.push(appName(pkg) + " " + checker.skippedVersions[pkg])
+      if (listed(pkg) && checker.skipKept(pkg, checker.skippedVersions[pkg]))
+        skips.push(appName(pkg) + " " + checker.skippedVersions[pkg])
     var parts = []
     if (names.length > 0) parts.push("Muted: " + names.join(", "))
     if (skips.length > 0) parts.push("Skipped: " + skips.join(", "))
@@ -90,9 +93,11 @@ Panel {
   function refreshNow() { checker.refresh() }
 
   // IPC refresh: anything on the session bus can call it, so a check that
-  // ended less than a minute ago is not started again.
+  // ended less than a minute ago is not started again. That holds while a
+  // check runs too: Refresh queues one more after it, and a caller in a loop
+  // would otherwise keep checks running back to back.
   function ipcRefresh() {
-    if (!checker.checking && Date.now() - checker.lastCheckEndMs < 60000) return "throttled"
+    if (Date.now() - checker.lastCheckEndMs < 60000) return "throttled"
     checker.refresh()
     return "ok"
   }
@@ -135,16 +140,12 @@ Panel {
     if (panelFlick) panelFlick.contentY = 0
   }
 
-  function listed(pkg) {
-    for (var i = 0; i < checker.apps.length; i++) if (checker.apps[i].pkg === pkg) return true
-    return false
-  }
+  function listed(pkg) { return checker.appFor(pkg) !== null }
 
   // A row's label by pkg, from the last check, else the pkg itself.
   function appName(pkg) {
-    for (var i = 0; i < checker.apps.length; i++)
-      if (checker.apps[i].pkg === pkg) return String(checker.apps[i].label || pkg)
-    return pkg
+    var app = checker.appFor(pkg)
+    return app ? String(app.label || pkg) : pkg
   }
 
   function hasAction(app) {
@@ -164,7 +165,7 @@ Panel {
 
   // shell.json hot-reloads and the bar injects the new settings, so the
   // controls bind to settings and this only writes the merged entry.
-  // Every write also drops skips a newer release has overtaken.
+  // Every write also drops skips that no longer apply.
   function setSettings(changes) {
     if (!root.bar || !root.bar.shell || typeof root.bar.shell.updateEntryInline !== "function") return
     var entry = { id: root.moduleName }
@@ -181,18 +182,12 @@ Panel {
     setSettings(changes)
   }
 
-  // A skip is stale once the row has an update the checker no longer calls
-  // skipped (its newest version moved past the skip). A skip made since the
-  // last check matches the newest version exactly and stays. Skips for rows
-  // the check did not list stay too.
+  // A skip goes once its row shows it no longer applies: a newer release
+  // than the skipped one, or that version (or a later one) installed. One
+  // the last check cannot judge stays: see skipKept in Main.qml.
   function liveSkips(skips) {
     var out = {}
-    for (var pkg in skips) {
-      var app = null
-      for (var i = 0; i < checker.apps.length; i++) if (checker.apps[i].pkg === pkg) app = checker.apps[i]
-      var stale = !!app && app.updateAvailable === true && app.skipped !== true && app.latest !== skips[pkg]
-      if (!stale) out[pkg] = skips[pkg]
-    }
+    for (var pkg in skips) if (checker.skipKept(pkg, skips[pkg])) out[pkg] = skips[pkg]
     return out
   }
 
@@ -361,11 +356,29 @@ Panel {
     return "checked " + Math.floor(hours / 24) + " d ago"
   }
 
-  // The hero says one thing: all current, N updates, check failed, or last
-  // known (rows from an earlier run because this one failed for them).
+  // What quiet rows hold back, in one wording for the header, the tooltip
+  // and IPC status: " (+N muted/skipped)" for their updates. The tooltip and
+  // IPC status (withFailures) also say when a muted row's check failed; the
+  // header and the bar leave that out, as they leave out its update.
+  function quietNote(withFailures) {
+    var parts = []
+    if (checker.quietCount > 0) parts.push("+" + checker.quietCount + " muted/skipped")
+    var failed = withFailures ? checker.mutedErrorCount : 0
+    if (failed > 0) parts.push("check failed for " + failed + " muted " + (failed === 1 ? "app" : "apps"))
+    return parts.length > 0 ? " (" + parts.join(", ") + ")" : ""
+  }
+
+  // The hero says one thing (heroState), then what quiet rows hold back.
   function heroMeta() {
     if (root.settingsOpen) return "Settings"
     if (checker.checking) return "Checking…"
+    var state = heroState()
+    return state !== "" && state !== "Not checked yet" ? state + quietNote(false) : state
+  }
+
+  // All current, N updates, check failed, or last known (rows from an
+  // earlier run because this one failed for them).
+  function heroState() {
     if (checker.checkFailed) return "Check failed"
     var updates = updateCount + checker.waitingCount
     if (updates > 0) return updates + (updates === 1 ? " update" : " updates")
@@ -389,7 +402,7 @@ Panel {
     var text = parts.length > 0 ? parts.concat(unchecked !== "" ? [unchecked] : []).join(", ")
       : checker.checkedAt === "" || apps.length === 0 ? ""
       : unchecked !== "" ? "All checked current, " + unchecked : "All current"
-    return text !== "" && checker.quietCount > 0 ? text + " (+" + checker.quietCount + " muted/skipped)" : text
+    return text !== "" ? text + quietNote(true) : text
   }
 
   readonly property string followingText: checker.pkgsFollowing ? "omarchy-pkgs: following master (unpinned)" : ""
@@ -501,9 +514,11 @@ Panel {
   }
 
   // Like the system update icon, it can stay out of the bar until there is
-  // something to install. While the panel is open (IPC open/toggle) it shows,
-  // so the panel has an anchor.
-  visible: !iconOnlyWithUpdates || updateCount > 0 || opened
+  // something to install. A failed check shows it too, or a broken check
+  // would be invisible (a muted row's failure does not, as mute promises).
+  // While the panel is open (IPC open/toggle) it shows, so the panel has an
+  // anchor.
+  visible: !iconOnlyWithUpdates || updateCount > 0 || checker.checkFailed || checker.errorCount > 0 || opened
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
@@ -703,9 +718,7 @@ Panel {
             textFormat: Text.PlainText
             visible: !root.settingsOpen && text !== ""
             width: parent.width
-            text: checker.checkError !== "" ? checker.checkError
-              : checker.pkgsError !== "" ? checker.pkgsError
-              : checker.miseError !== "" ? checker.miseError : checker.pkgsNote
+            text: checker.failureText !== "" ? checker.failureText : checker.pkgsNote
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
