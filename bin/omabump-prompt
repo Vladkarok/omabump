@@ -31,7 +31,7 @@ if [[ $(jq -r .source <<<"$app") == mise ]]; then
   if [[ -n $request && $request != latest ]]; then
     held="pinned by the request '$request'"
   else
-    held="held back by mise's settings (the request is '${request:-latest}', so likely the release-age cooldown)"
+    held="held back by mise's settings (the request is '${request:-latest}', and Omabump runs mise with no release-age cooldown)"
   fi
   echo "On this Omarchy (Arch Linux, Hyprland) machine, $label is managed by mise as $installed_name, installed at $installed and $held; $latest exists, and mise up will not move it. First, without changing anything, find where that request or setting comes from (mise ls $installed_name, mise config ls, mise settings) and write a plan: either adjust the mise request so mise up can install $latest, or explain why it cannot or should not move. Show me the plan and wait for my approval before changing any mise config or installing anything. You run with whatever permissions omarchy-agent grants you, which may let you run commands without asking, so this approval step is up to you. Never edit /usr/share/omarchy. When done, run \`$here/omabump-check --no-notify --wait\` so the Omabump panel refreshes."
   exit 0

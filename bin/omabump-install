@@ -474,9 +474,10 @@ install_vendor_pkg() {
   target_version=$ver
 }
 
-# mise up keeps the configured request (an exact pin or a range) and the
-# release-age cooldown, the same policy the check used through mise outdated,
-# so the target shown in the panel is the one installed here.
+# mise up keeps the configured request (an exact pin or a range), the same
+# policy the check used through mise outdated, and like it runs with no
+# release-age cooldown, so the target shown in the panel is the one
+# installed here.
 install_mise() {
   local tool=$installed_name target request now
   [[ -n $tool ]] || die "${mise_inventory_error:-mise has no active $label}"

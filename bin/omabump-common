@@ -372,7 +372,10 @@ mise_disabled_backends() {
   fi
   echo "$out"
 }
-mise_run() { (cd "$HOME" && run_unlocked env MISE_HIDE_UPDATE_WARNING=1 MISE_DISABLE_BACKENDS="$(mise_disabled_backends)" timeout -k 10 "${mise_timeout:-120}" mise "$@" </dev/null); }
+# No release-age cooldown, as Omarchy's own agent wrappers and `omarchy
+# update` run mise: an agent CLI's new release shows and installs at once.
+# The check and mise up share it, so what the panel offers is what installs.
+mise_run() { (cd "$HOME" && run_unlocked env MISE_HIDE_UPDATE_WARNING=1 MISE_MINIMUM_RELEASE_AGE=0 MISE_DISABLE_BACKENDS="$(mise_disabled_backends)" timeout -k 10 "${mise_timeout:-120}" mise "$@" </dev/null); }
 
 # mise_load fills these once, in the calling shell (never call it in a
 # subshell, the values would be lost there):
@@ -385,7 +388,7 @@ mise_run() { (cd "$HOME" && run_unlocked env MISE_HIDE_UPDATE_WARNING=1 MISE_DIS
 # and with $1=1, for the key each mise row selected (mise_select) that is
 # also safe:
 #   mise_outdated_json  `mise outdated --json`: what `mise up` reaches under
-#                       the configured request and release-age cooldown
+#                       the configured request
 #   mise_bump_json      `mise outdated --bump --json`: newer releases outside
 #                       the request
 # All keyed by tool name. mise versions are kept as mise prints them and

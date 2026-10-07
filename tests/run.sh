@@ -488,6 +488,12 @@ mkdir -p "$scratch/fakebin"
 printf '#!/bin/sh\necho "$MISE_DISABLE_BACKENDS|$PWD|$*"\n' >"$scratch/fakebin/mise"
 chmod +x "$scratch/fakebin/mise"
 same "mise_run: asdf and vfox disabled, in \$HOME" "asdf,vfox|$HOME|ls --json" "$(PATH=$scratch/fakebin:$PATH MISE_DATA_DIR=$scratch/no-mise-data real_mise_run ls --json)"
+mkdir -p "$scratch/agebin"
+# shellcheck disable=SC2016 # expanded by the fake mise, not here
+printf '#!/bin/sh\necho "${MISE_MINIMUM_RELEASE_AGE-unset}"\n' >"$scratch/agebin/mise"
+chmod +x "$scratch/agebin/mise"
+same "mise_run: no release-age cooldown, as Omarchy runs mise" 0 \
+  "$(PATH=$scratch/agebin:$PATH MISE_MINIMUM_RELEASE_AGE=7d real_mise_run ls)"
 # A vfox backend plugin is disabled by its own name: every installed plugin
 # directory is added, and a name with odd characters is not.
 mkdir -p "$scratch/mise-data/plugins/foo" "$scratch/mise-data/plugins/vfox-bar" "$scratch/mise-data/plugins/x y" "$scratch/mise-data/plugins/.hidden"

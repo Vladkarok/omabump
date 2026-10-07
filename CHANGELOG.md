@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- mise runs with `MISE_MINIMUM_RELEASE_AGE=0` in the check and in Update, as Omarchy's own agent wrappers and `omarchy update` do: a new agent CLI release shows and installs at once instead of after mise's cooldown.
+
 - A `mise outdated` call that failed without an error message (killed by its timeout) aborted the whole check, and an Update of a mise row stopped without a word. It is now a failed check for the mise rows only.
 - A failing `mise ls` (a broken mise config) emptied the CLI section and the summary said "All current". The last known CLI rows now stay, marked as failed, and the panel says why.
 - Offline or rate limited, `mise outdated` exits 0 and leaves the tool out; the row read as current. mise's warning now makes it a failed check that keeps the last known version, and a pending CLI update keeps counting while the check fails.
