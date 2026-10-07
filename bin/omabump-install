@@ -136,7 +136,9 @@ on_exit() {
 }
 trap on_exit EXIT
 
-refresh_panel() { "$here/omabump-check" --no-notify || true; }
+# --wait: a check already running may have read the version from before the
+# install, so this one runs after it rather than not at all.
+refresh_panel() { "$here/omabump-check" --no-notify --wait || true; }
 
 # Fails unless the full version $1 (epoch:pkgver-pkgrel) is newer than what
 # pacman has installed under the app's installed name right now, or with
@@ -464,10 +466,11 @@ install_vendor_pkg() {
 # so the target shown in the panel is the one installed here.
 install_mise() {
   local tool=$installed_name target request now
-  [[ -n $tool ]] || die "mise has no active $label"
+  [[ -n $tool ]] || die "${mise_inventory_error:-mise has no active $label}"
   mise_load 1
   mise_key_safe "$tool" || die "$(mise_skip_note "$tool"); Omabump updates mise tools on mise's own backends only. Update $tool with mise up yourself."
   [[ -z $mise_error ]] || die "$mise_error"
+  [[ -z ${mise_fetch_failed[$tool]:-} ]] || die "mise could not fetch the versions of $tool: ${mise_fetch_failed[$tool]}"
   target=$(mise_field "$mise_outdated_json" "$tool" latest)
   if [[ -z $target ]]; then
     [[ -z $mise_bump_error ]] || die "$mise_bump_error"
@@ -541,7 +544,7 @@ install_self() {
     die "the new version failed validation and the rollback failed too; restore it with: git -C $plugin_dir reset --hard $before"
   fi
   run_unlocked omarchy-shell shell rescanPlugins >/dev/null 2>&1 </dev/null || true
-  "$plugin_dir/bin/omabump-check" --no-notify || true
+  "$plugin_dir/bin/omabump-check" --no-notify --wait || true
   echo "Omabump is now $latest. If the panel still shows $installed, run: omarchy restart shell"
   exit 0
 }

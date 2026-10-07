@@ -273,9 +273,10 @@ Panel {
 
   // An update exists but the plugin cannot install it: an indicator row, a
   // recipe without a watch, or a feed that failed with a newer version known.
-  // Or a mise tool whose request holds it below a newer release.
+  // Or a mise tool whose request holds it below a newer release. Not a
+  // release omarchy-pkgs still holds (held): Update comes back by itself.
   function askable(app) {
-    if (!app || app.installable === true || app.source === "self") return false
+    if (!app || app.installable === true || app.source === "self" || app.held === true) return false
     if (app.updateAvailable === true) return true
     return app.source === "mise" && String(app.error || "") === ""
       && String(app.latest || "") !== "" && app.latest !== app.installed
@@ -671,7 +672,8 @@ Panel {
             visible: !root.settingsOpen && text !== ""
             width: parent.width
             text: checker.checkError !== "" ? checker.checkError
-              : checker.pkgsError !== "" ? checker.pkgsError : checker.pkgsNote
+              : checker.pkgsError !== "" ? checker.pkgsError
+              : checker.miseError !== "" ? checker.miseError : checker.pkgsNote
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption

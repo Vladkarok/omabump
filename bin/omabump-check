@@ -12,7 +12,11 @@
 #   mise        `mise outdated`: what `mise up` would reach under the
 #               configured request, and what lies outside it (a pin).
 #
-#   omabump-check [--no-notify] [--no-mise]
+#   omabump-check [--no-notify] [--no-mise] [--wait]
+#
+# --wait runs after a check already in progress instead of leaving it to
+# that one: the installer's refresh needs a check that starts after its
+# install, since the running one may have read the old version.
 #
 # Muted rows and skipped versions come from the widget's settings in
 # Omarchy's shell.json (load_quiet), whoever runs the check.
@@ -24,12 +28,13 @@ set -euo pipefail
 # shellcheck source=omabump-common
 source "$(dirname "$(readlink -f "$0")")/omabump-common"
 
-usage="usage: omabump-check [--no-notify] [--no-mise]"
-notify=1 with_mise=1
+usage="usage: omabump-check [--no-notify] [--no-mise] [--wait]"
+notify=1 with_mise=1 wait_lock=0
 while (( $# )); do
   case $1 in
     --no-notify) notify=0 ;;
     --no-mise) with_mise=0 ;;
+    --wait) wait_lock=1 ;;
     *) echo "$usage" >&2; exit 2 ;;
   esac
   shift
@@ -40,9 +45,14 @@ done
 load_quiet
 
 mkdir -p "$state_dir"
-# The shell timer and a hand run can overlap; the second one has nothing to add.
+# The shell timer and a hand run can overlap; the second one has nothing to
+# add, unless it was asked to --wait. A check lasts at most ten minutes.
 exec 9>"$state_dir/.check.lock"
-flock -n 9 || exit 0
+if (( wait_lock )); then
+  flock -n 9 || { echo "Waiting for the running check to end..." >&2; flock -w 660 9; } || exit 0
+else
+  flock -n 9 || exit 0
+fi
 
 # Last run's results, used only when they have the shape this script writes.
 previous='{"apps":[]}'
@@ -58,7 +68,7 @@ tmp=$(mktemp -d "$state_dir/.check.XXXXXX")
 printf '%s\n' "$previous" >"$tmp/previous.json"
 pkgs_state=""
 pkgs_commit=$(jq -r '.omarchyPkgs.commit // ""' <<<"$previous")
-pkgs_error="" pkgs_note=""
+pkgs_error="" pkgs_note="" mise_note=""
 started=$(date -Iseconds)
 missing_line=$(missing_tools_line)
 rows=() order='[]' status_done=0
@@ -117,7 +127,7 @@ write_status() {
   printf '%s\n' "${rows[@]}" | jq -s --slurpfile prevs "$tmp/previous.json" --argjson order "$order" \
     --argjson final "$final" --arg at "$at" --arg started "$started" \
     --arg commit "$pkgs_commit" --arg perr "$(clean_text "$pkgs_error")" --arg pnote "$(clean_text "$pkgs_note")" \
-    --argjson following "$pkgs_follow" --arg derr "$discovery_note" '
+    --argjson following "$pkgs_follow" --arg derr "$discovery_note" --arg merr "$mise_note" '
     $prevs[0] as $prev
     | (map(.pkg)) as $done
     | (if $final == 1 then .
@@ -125,21 +135,25 @@ write_status() {
     | sort_by([.source == "self", .source == "mise", (.pkg as $p | $order | index($p) // 1e9)])
     | {checkedAt: $at, checking: ($final == 0), startedAt: $started,
        omarchyPkgs: {commit: $commit, following: ($following == 1), error: $perr, note: $pnote},
-       discoveryError: $derr, apps: .}' >"$out"
+       discoveryError: $derr, miseError: $merr, apps: .}' >"$out"
   mv -f "$out" "$status_file"
 }
 
 # Each announcement is saved as soon as it is sent, so a run that dies later
 # does not announce it again.
-save_notified() {
-  local out
-  out=$(mktemp "$state_dir/.notified.XXXXXX")
-  jq . <<<"$notified" >"$out" && mv -f "$out" "$notified_file"
-}
+save_notified() { save_json "$notified" "$notified_file"; }
 
 write_status 0
 # Loaded here, in this shell, so every row reads the same answers.
 (( with_mise )) && mise_load 1
+# Without mise's inventory no mise row can be read: the last run's rows stay,
+# as an earlier check's, failed, and the panel says why.
+if (( with_mise )) && [[ -n $mise_inventory_error ]]; then
+  mise_note=$(clean_text "${mise_inventory_error:0:200}")
+  while IFS= read -r row; do rows+=("$row"); done < <(jq -c --arg e "$mise_note" '.apps[] | select(.source == "mise")
+    | del(.checking) | .stale = true | .installable = false | .error = $e' <<<"$previous")
+fi
+now=$(date +%s)
 while IFS= read -r app; do
   pkg=$(jq -r '.pkg' <<<"$app")
   label=$(jq -r '.label // .pkg' <<<"$app")
@@ -149,6 +163,7 @@ while IFS= read -r app; do
   prev=$(jq -c --arg pkg "$pkg" '[.apps[] | select(.pkg == $pkg)][0] // {}' <<<"$previous")
   latest="" from="" note="" installable=false stale=false
   route_error="" feed_error="" recipe="" recipe_commit="" mise_update=false request="" unchecked=false
+  hold=0 held=false
 
   case $source in
     mise)
@@ -183,6 +198,7 @@ while IFS= read -r app; do
           if [[ -z $note ]]; then
             installable=true
             note=$recipe_note
+            hold=$(recipe_release_age "$recipe_rev" "$pkg")
           fi
           read -r _ recipe < <(recipe_file "$recipe_rev" "$pkg" PKGBUILD | recipe_version 2>/dev/null) || recipe=""
           [[ $recipe_rev == "$pkgs_base" ]] || recipe_commit=$recipe_rev
@@ -192,6 +208,7 @@ while IFS= read -r app; do
       fi
       if [[ $pkgs_state == busy ]] || (( recipe_rc == 75 )); then
         installable=$(jq '.installable == true' <<<"$prev")
+        held=$(jq '.held == true' <<<"$prev")
         note=$pkgs_busy_note
       elif [[ $pkgs_state != ready ]]; then
         route_error=$pkgs_error
@@ -219,6 +236,11 @@ while IFS= read -r app; do
     latest=$(jq -r '.latest // ""' <<<"$prev")
     from=$(jq -r '.versionFrom // ""' <<<"$prev")
     stale=true
+    # A mise row's update is mise's answer, not a comparison: keep the last
+    # one while the installed version has not moved.
+    if [[ $source == mise && $(jq -r '.installed // ""' <<<"$prev") == "$installed" ]]; then
+      mise_update=$(jq '.updateAvailable == true' <<<"$prev")
+    fi
   fi
   error=$(printf '%s\n' "$route_error" "$feed_error" | sed '/^$/d' | paste -sd';' - | sed 's/;/; /g')
   error=$(clean_text "$error")
@@ -231,6 +253,17 @@ while IFS= read -r app; do
     have=$installed
     [[ $from == feed ]] && have=$(upstream_part "$installed")
     newer "$latest" "$have" && update=true
+  fi
+
+  # The recipe holds a release for its min_release_age (openclaw and
+  # voxtype-bin: 24 h), and Update could not reach it before then. Until the
+  # window has passed the row has no Update and does not notify.
+  if [[ $update == true && $installable == true ]] && (( hold > 0 )); then
+    hold_until=$(( $(seen_since "$pkg" "$latest" "$now") + hold ))
+    if (( now < hold_until )); then
+      held=true installable=false
+      note="omarchy-pkgs holds new releases for $(( (hold + 3599) / 3600 )) h, Update from $(date -d "@$hold_until" '+%b %-d %H:%M')${note:+; $note}"
+    fi
   fi
 
   # Installed under another name (chatgpt-desktop, z-code-bin): Update
@@ -253,7 +286,7 @@ while IFS= read -r app; do
 
   announced=$(jq -r --arg pkg "$pkg" '.[$pkg] // ""' <<<"$notified")
   action=""
-  (( notify )) && action=$(announce_action "$source" "$update" "$error" "$quiet" "$latest" "$announced")
+  (( notify )) && [[ $held == false ]] && action=$(announce_action "$source" "$update" "$error" "$quiet" "$latest" "$announced")
   if [[ $action == record ]]; then
     notified=$(jq -c --arg pkg "$pkg" --arg v "$latest" '.[$pkg] = $v' <<<"$notified")
     save_notified
@@ -273,13 +306,13 @@ while IFS= read -r app; do
     --arg latest "$(clean_text "$latest")" --arg versionFrom "$from" --argjson update "$update" \
     --argjson installable "$installable" --arg error "$error" --arg note "$(clean_text "$note")" \
     --argjson stale "$stale" --argjson switchable "$switchable" --arg recipe "$(clean_text "$recipe")" --arg recipeCommit "$recipe_commit" \
-    --arg request "$(clean_text "$request")" --argjson muted "$muted" --argjson skipped "$skipped" --argjson unchecked "$unchecked" \
+    --arg request "$(clean_text "$request")" --argjson muted "$muted" --argjson skipped "$skipped" --argjson unchecked "$unchecked" --argjson held "$held" \
     --arg icon "$(jq -r '.icon // ""' <<<"$app")" --arg iconLight "$(jq -r '.iconLight // ""' <<<"$app")" \
     '{pkg: $pkg, label: $label, source: $source, installedName: $installedName,
       installed: $installed, latest: $latest, versionFrom: $versionFrom,
       updateAvailable: $update, installable: $installable, error: $error, note: $note,
       stale: $stale, switchable: $switchable, recipe: $recipe, recipeCommit: $recipeCommit,
-      request: $request, muted: $muted, skipped: $skipped, unchecked: $unchecked,
+      request: $request, muted: $muted, skipped: $skipped, unchecked: $unchecked, held: $held,
       icon: $icon, iconLight: $iconLight}')")
   write_status 0
 done < <(jq -c '.[]' <<<"$table"; echo "$self_app")

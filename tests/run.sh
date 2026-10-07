@@ -288,7 +288,15 @@ refuse "apt_newest: a package the index lacks" apt_newest "$index" claude
 index=$'Package: app\nVersion: 9.9.9/../x\n\nPackage: app\nVersion: 1.0\n\nPackage: app\nVersion: $(id)'
 same "apt_newest: versions version_ok refuses are skipped" 1.0 "$(apt_newest "$index" app)"
 index=$(for i in $(seq 1 600); do printf 'Package: app\nVersion: %s.0\n\n' "$i"; done)
-same "apt_newest: only the first 500 matching stanzas count" 500.0 "$(apt_newest "$index" app)"
+same "apt_newest: only the last 500 matching stanzas count, so the newest release does" 600.0 "$(apt_newest "$index" app)"
+index=$'Package: app\nVersion: 1.9\n\nPackage: app\nVersion: 2.0-3ubuntu1\n\nPackage: app\nVersion: 3.0-a/b'
+same "apt_newest: a Debian revision is compared and cut, a bad one skipped" 2.0 "$(apt_newest "$index" app)"
+index=$'Package: app\nVersion: 2.0-1\n\nPackage: app\nVersion: 1:0.5-1'
+same "apt_newest: a Debian epoch wins and is cut" 0.5 "$(apt_newest "$index" app)"
+index=$'Package: app\nVersion: 1.9\n\nPackage: app\nVersion: 2.0.0-beta1'
+same "apt_newest: an upstream pre-release is not a revision, so not the final release" 1.9 "$(apt_newest "$index" app)"
+refuse "deb_version_ok: an epoch that is not a number" deb_version_ok 'x:1.0'
+refuse "deb_version_ok: an upstream part version_ok refuses" deb_version_ok '1.0/x-1'
 
 # --- pkgs_pin -----------------------------------------------------------------
 
@@ -330,6 +338,40 @@ kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
 same "pkgs_with_lock: busy while another process holds the lock" 75 "$rc"
 check "pkgs_with_lock: runs once the lock is free" pkgs_with_lock true
 
+# --- the clone's git config ---------------------------------------------------
+
+# A user's insteadOf for github.com (XDG_CONFIG_HOME is the scratch one here)
+# must not move the clone's origin, or pkgs_fetch makes it again every run.
+mkdir -p "$XDG_CONFIG_HOME/git"
+printf '[url "git@github.com:"]\n\tinsteadOf = https://github.com/\n[http]\n\tproxy = http://proxy.example:3128\n' >"$XDG_CONFIG_HOME/git/config"
+git_http_load
+real_pkgs_dir=$pkgs_dir
+pkgs_dir=$scratch/pkgs-config
+git init -q "$pkgs_dir" && pgit remote add origin "$pkgs_url"
+same "pgit: the user's insteadOf does not apply to the clone" "$pkgs_url" "$(pgit remote get-url origin)"
+same "the scratch git config does rewrite outside it" "git@github.com:omacom/omarchy-pkgs.git" "$(git -C "$pkgs_dir" remote get-url origin)"
+same "pgit: the user's http.proxy still applies" "http://proxy.example:3128" "$(pgit config --get http.proxy)"
+rm -rf "$XDG_CONFIG_HOME/git" "$pkgs_dir"
+git_http_load
+pkgs_dir=$real_pkgs_dir
+
+# --- recipe release-age hold --------------------------------------------------
+
+age() { (recipe_file() { [[ -n $1 ]] && printf '%s\n' "$1"; }; recipe_release_age "$1" pkg); }
+same "recipe_release_age: hours" 86400 "$(age '{"min_release_age": "24h"}')"
+same "recipe_release_age: minutes, leading zero" 5400 "$(age '{"min_release_age": "090m"}')"
+same "recipe_release_age: days" 172800 "$(age '{"min_release_age": "2d"}')"
+same "recipe_release_age: bare seconds" 3600 "$(age '{"min_release_age": 3600}')"
+same "recipe_release_age: none" 0 "$(age '{"upstream": {}}')"
+same "recipe_release_age: no package.json" 0 "$(age '')"
+same "recipe_release_age: a value sync-upstream refuses" 0 "$(age '{"min_release_age": "24hh"}')"
+mkdir -p "$state_dir"
+same "seen_since: a new version is seen now" 1000 "$(seen_since app 1.1 1000)"
+same "seen_since: the same version keeps its first sighting" 1000 "$(seen_since app 1.1 5000)"
+same "seen_since: another row is separate" 5000 "$(seen_since other 1.1 5000)"
+same "seen_since: a newer version starts over" 6000 "$(seen_since app 1.2 6000)"
+rm -f "$seen_file"
+
 # --- mise: inventory, safe backends, outdated -------------------------------------
 
 real_shipped=$shipped_apps
@@ -349,14 +391,20 @@ mise_calls=$scratch/mise.calls
 mise_run() {
   printf '%s\n' "$*" >>"$mise_calls"
   case $* in
-    "ls --json") echo '{"a":[{"version":"1.0","installed":true,"active":true}],"npm:a":[{"version":"0.9","installed":true,"active":true}],
+    "ls --json") [[ -z ${mise_fail_ls:-} ]] || { echo "mise ERROR invalid config" >&2; return 1; }
+      echo '{"a":[{"version":"1.0","installed":true,"active":true}],"npm:a":[{"version":"0.9","installed":true,"active":true}],
       "b":[{"version":"2.0","installed":true,"active":false}],"asdf:c":[{"version":"3.0","installed":true,"active":true}],
       "d":[{"version":"4.0","installed":false,"active":true}],"e":[{"version":"5.0","installed":true,"active":true}]}' ;;
     "ls --json --backend aqua --backend github --backend gitlab --backend forgejo --backend npm --backend http --backend ubi --backend pipx --backend cargo")
       [[ -z ${mise_fail_backend:-} ]] || return 1; echo '{"a":[],"npm:a":[],"b":[],"e":[]}' ;;
     "outdated --json -- "*) [[ -z ${mise_fail_outdated:-} ]] || { echo "boom" >&2; return 1; }
+      [[ -z ${mise_fail_silent:-} ]] || return 124
+      # Offline, mise warns per tool and answers {} with exit 0.
+      [[ -z ${mise_fail_fetch:-} ]] || { echo "mise WARN  Error getting latest version for e: unable to fetch versions for e: offline" >&2; echo '{}'; return 0; }
       echo '{"e":{"latest":"5.1","requested":"latest"}}' ;;
     "outdated --bump --json -- "*) [[ -z ${mise_fail_bump:-} ]] || { echo "bump boom" >&2; return 1; }
+      [[ -z ${mise_fail_silent:-} ]] || return 124
+      [[ -z ${mise_fail_fetch:-} ]] || { echo '{}'; return 0; }
       echo '{"a":{"bump":"1.2","latest":"1.2","requested":"1.0"},"e":{"bump":"5.1","latest":"5.1","requested":"latest"}}' ;;
     *) return 1 ;;
   esac
@@ -382,6 +430,26 @@ same "mise_row: a bump failure leaves outdated's answer" '5.1|true|true||' "$(ro
 reset_mise
 mise_fail_outdated=1 mise_load 1
 same "mise_row: an outdated failure" '|true|false||mise outdated failed: boom' "$(row e 5.0)"
+reset_mise
+# The check and the installer run under set -e; a timeout leaves no stderr.
+same "mise_load: a silent outdated failure under set -e is a mise error, not an exit" \
+  'mise outdated failed: no error message' "$( (set -euo pipefail; mise_fail_silent=1 mise_load 1; echo "$mise_error") )"
+reset_mise
+mise_fail_fetch=1 mise_load 1
+same "mise_row: versions mise could not fetch (exit 0, {}) are a check failure" \
+  '|true|false||mise could not fetch the versions of e: unable to fetch versions for e: offline' "$(row e 5.0)"
+same "mise_row: a key mise did fetch is still answered" '1.0|true|false||' "$(row a 1.0)"
+# Far more warnings than a pipe holds, the failure first: still recorded.
+{ echo "mise WARN  Error getting latest version for e: offline"; for _ in $(seq 3000); do echo "mise WARN  HTTP GET https://example.invalid/x attempt 1 failed (transient): error sending request; retrying"; done; } >"$scratch/mise.err"
+mise_fetch_failed=() mise_query=(e)
+(set -euo pipefail; mise_note_fetch_failures "$scratch/mise.err"; echo "${mise_fetch_failed[e]:-}") >"$scratch/mise.out"
+same "mise_note_fetch_failures: a large stderr under pipefail" offline "$(<"$scratch/mise.out")"
+reset_mise
+mise_fail_ls=1 mise_load 1
+same "mise: a failed inventory is an error, not an empty list" 'mise ls failed: mise ERROR invalid config|{}' "$mise_inventory_error|$mise_ls_json"
+reset_mise
+mise_load 1
+same "mise: a good inventory clears the error" '' "$mise_inventory_error"
 reset_mise
 mise_fail_backend=1 mise_load 1
 same "mise: a failing backend listing is a diagnostic and checks nothing" 'mise ls --backend failed|' "$mise_backend_error|${mise_query[*]}"

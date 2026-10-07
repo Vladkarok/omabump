@@ -24,6 +24,15 @@ user_apps=${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/omabump/apps.json
 state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/plugins/io.github.vladkarok.omabump
 status_file=$state_dir/status.json
 notified_file=$state_dir/notified.json
+# When a check first saw each release an omarchy-pkgs recipe still holds.
+seen_file=$state_dir/seen.json
+
+# Replaces the state file $2 with the JSON $1 in one rename.
+save_json() {
+  local out
+  out=$(mktemp "$state_dir/.state.XXXXXX")
+  jq . <<<"$1" >"$out" && mv -f "$out" "$2" || { rm -f "$out"; return 1; }
+}
 cache_dir=${XDG_CACHE_HOME:-$HOME/.cache}/omabump
 pkgs_dir=$cache_dir/omarchy-pkgs
 pkgs_url=https://github.com/omacom/omarchy-pkgs.git
@@ -386,13 +395,35 @@ mise_run() { (cd "$HOME" && run_unlocked env MISE_HIDE_UPDATE_WARNING=1 MISE_DIS
 # on; mise's core languages, go and gem are left out.
 mise_safe_backends=(aqua github gitlab forgejo npm http ubi pipx cargo)
 mise_ls_json='{}' mise_safe_json='{}' mise_outdated_json='{}' mise_bump_json='{}'
-mise_error="" mise_bump_error="" mise_backend_error="" mise_query=()
+mise_error="" mise_bump_error="" mise_backend_error="" mise_inventory_error="" mise_query=()
+# mise outdated leaves out a tool whose versions it could not fetch (offline,
+# rate limited) and still exits 0; only a warning on stderr names the tool.
+# Those keys, with mise's reason, so such a row never reads as current.
+declare -gA mise_fetch_failed=()
 
-# The first line of a mise error, colours and warnings dropped.
-mise_err_line() { sed 's/\x1b\[[0-9;]*m//g' "$1" | grep -v 'WARN' | grep -v '^[[:space:]]*$' | head -1; }
+# The first line of a mise error, colours and warnings dropped. mise can
+# fail with nothing on stderr (killed by its timeout), so this never fails:
+# its callers run under set -e.
+mise_err_line() {
+  local line
+  line=$(sed 's/\x1b\[[0-9;]*m//g' "$1" | grep -v 'WARN' | grep -v '^[[:space:]]*$' | head -1) || true
+  echo "${line:-no error message}"
+}
 
+# A failed listing is mise_inventory_error: no mise row can be read then,
+# and none may read as current or vanish without a word.
 mise_inventory() {
-  mise_ls_json=$(mise_run ls --json 2>/dev/null | jq -ce 'if type == "object" then . else {} end' 2>/dev/null) || mise_ls_json='{}'
+  local out err
+  mise_inventory_error=""
+  mkdir -p "$cache_dir"
+  err=$(mktemp "$cache_dir/.mise.XXXXXX")
+  if out=$(mise_run ls --json 2>"$err") && out=$(jq -ce 'if type == "object" then . else {} end' <<<"$out" 2>/dev/null); then
+    mise_ls_json=$out
+  else
+    mise_ls_json='{}'
+    mise_inventory_error="mise ls failed: $(mise_err_line "$err")"
+  fi
+  rm -f "$err"
 }
 
 # One listing for all allowed backends. When it fails, no tool is checked
@@ -441,8 +472,21 @@ mise_select() {
   [[ -z $out ]] || mapfile -t mise_query <<<"$out"
 }
 
+# The text is read once and searched as a here-string: no pipe, so an early
+# grep exit cannot fail the search with SIGPIPE under pipefail.
+mise_note_fetch_failures() {
+  local key line text
+  text=$(sed 's/\x1b\[[0-9;]*m//g' "$1")
+  for key in "${mise_query[@]}"; do
+    [[ -z ${mise_fetch_failed[$key]:-} ]] || continue
+    line=$(grep -F -m1 "Error getting latest version for $key: " <<<"$text") || continue
+    mise_fetch_failed[$key]=${line#*"Error getting latest version for $key: "}
+  done
+}
+
 mise_load() {
   local out err
+  mise_fetch_failed=()
   command -v mise >/dev/null || return 0
   mise_inventory
   (( ${1:-0} )) || return 0
@@ -456,11 +500,13 @@ mise_load() {
   else
     mise_error="mise outdated failed: $(mise_err_line "$err")"
   fi
+  mise_note_fetch_failures "$err"
   if out=$(mise_run outdated --bump --json -- "${mise_query[@]}" 2>"$err") && out=$(jq -ce 'if type == "object" then . else error("bad") end' <<<"$out" 2>/dev/null); then
     mise_bump_json=$out
   else
     mise_bump_error="mise outdated --bump failed: $(mise_err_line "$err")"
   fi
+  mise_note_fetch_failures "$err"
   rm -f "$err"
 }
 
@@ -491,6 +537,8 @@ mise_row() {
     note=$(mise_skip_note "$key")
   elif [[ -n $mise_error ]]; then
     feed_error=$mise_error
+  elif [[ -n ${mise_fetch_failed[$key]:-} ]]; then
+    feed_error="mise could not fetch the versions of $key: ${mise_fetch_failed[$key]}"
   elif latest=$(mise_field "$mise_outdated_json" "$key" latest) && [[ -n $latest ]]; then
     mise_update=true
   elif [[ -n $mise_bump_error ]]; then
@@ -605,22 +653,42 @@ vendor_checksum() {
   echo "$algo $hex"
 }
 
-# Newest version in a Debian Packages index for one exact package name. Each
-# version must pass version_ok before vercmp sees it, and only the first 500
-# matching stanzas count: every comparison is a vercmp process, and a real
-# index lists a few dozen releases of one package.
+# A Debian version as an apt index lists it: [epoch:]upstream[-revision], the
+# upstream part as version_ok has it. vercmp orders these as it orders
+# pacman's epoch:pkgver-pkgrel.
+deb_version_ok() {
+  local v=$1
+  if [[ $v == *:* ]]; then
+    [[ ${v%%:*} =~ ^[0-9]{1,9}$ ]] || return 1
+    v=${v#*:}
+  fi
+  # A revision starts with a digit (1, 0ubuntu1); a hyphen before a letter
+  # is an upstream pre-release (2.0.0-beta1), refused like any other hyphen.
+  if [[ $v == *-* ]]; then
+    [[ ${v##*-} =~ ^[0-9][A-Za-z0-9.+~]{0,31}$ ]] || return 1
+    v=${v%-*}
+  fi
+  version_ok "$v"
+}
+
+# Newest upstream version in a Debian Packages index for one exact package
+# name: the full versions are compared, the upstream part is printed. Each
+# must pass deb_version_ok before vercmp sees it, and only the last 500
+# matching stanzas count: every comparison is a vercmp process, an index is
+# appended to as releases come, and a real one lists a few dozen releases of
+# one package.
 apt_newest() {
   local index=$1 want=$2 v best=""
   while read -r v; do
-    version_ok "$v" || continue
+    deb_version_ok "$v" || continue
     if [[ -z $best ]] || newer "$v" "$best"; then best=$v; fi
-  done < <(awk -v want="$want" -v max=500 '
+  done < <(awk -v want="$want" '
     { sub(/\r$/, "") }
     /^Package:/ { p = $2 }
     /^Version:/ { v = $2 }
-    /^$/        { if (p == want && v != "") { print v; if (++n >= max) { done = 1; exit } } p = v = "" }
-    END         { if (!done && p == want && v != "") print v }' <<<"$index")
-  [[ -n $best ]] && echo "$best"
+    /^$/        { if (p == want && v != "") print v; p = v = "" }
+    END         { if (p == want && v != "") print v }' <<<"$index" | tail -n 500)
+  [[ -n $best ]] && upstream_part "$best"
 }
 
 # First capture group of a Python regex over a page. Pages that embed JSON in
@@ -773,11 +841,26 @@ pkgs_with_lock() {
 # the clone is blob-less, so even show, checkout and archive can fetch from
 # GitHub on demand. No hooks, no fsmonitor, no automatic gc or maintenance,
 # whatever the clone's or the user's config says. Explicit network calls go
-# through pgit_net.
+# through pgit_net. The clone is Omabump's own, so the user's and the
+# system's git config do not apply to it: a url.*.insteadOf rule (github.com
+# rewritten to ssh) would otherwise point it at another origin and make it
+# again on every run. Their http.* settings (proxy, CA bundle) carry no
+# rewrite and are passed on, read once here; proxy environment variables
+# apply as well.
 git_safe=(-c core.hooksPath=/dev/null -c core.fsmonitor=false -c protocol.allow=never
   -c protocol.https.allow=always -c gc.auto=0 -c maintenance.auto=false)
-pgit() { run_unlocked timeout -k 10 300 env GIT_ALLOW_PROTOCOL=https GIT_TERMINAL_PROMPT=0 git "${git_safe[@]}" -C "$pkgs_dir" "$@" </dev/null; }
-pgit_net() { run_unlocked timeout -k 10 300 env GIT_ALLOW_PROTOCOL=https GIT_TERMINAL_PROMPT=0 git "${git_safe[@]}" "$@" </dev/null; }
+git_noconfig=(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1)
+git_http=()
+git_http_load() {
+  local key value
+  git_http=()
+  while read -r key value; do
+    [[ -n $key ]] && git_http+=(-c "$key=$value")
+  done < <({ git config --system --get-regexp '^http\.'; git config --global --get-regexp '^http\.'; } 2>/dev/null </dev/null || true)
+}
+git_http_load
+pgit() { run_unlocked timeout -k 10 300 env "${git_noconfig[@]}" GIT_ALLOW_PROTOCOL=https GIT_TERMINAL_PROMPT=0 git "${git_http[@]}" "${git_safe[@]}" -C "$pkgs_dir" "$@" </dev/null; }
+pgit_net() { run_unlocked timeout -k 10 300 env "${git_noconfig[@]}" GIT_ALLOW_PROTOCOL=https GIT_TERMINAL_PROMPT=0 git "${git_http[@]}" "${git_safe[@]}" "$@" </dev/null; }
 
 # --- Omabump's own update ----------------------------------------------------
 
@@ -873,6 +956,41 @@ recipe_blocker() {
   recipe_has "$rev" "$pkg" .omarchy/upstream.sh && return
   jq -e '.upstream' >/dev/null 2>&1 <<<"$meta" && return
   echo "Repo recipe has no upstream watch yet"
+}
+
+# The release-age window the recipe at commit $1 declares, in seconds, or 0:
+# min_release_age in .omarchy/package.json, bare seconds or "90m", "24h",
+# "2d". bin/sync-upstream does not move the recipe to a younger release.
+recipe_release_age() {
+  local age n
+  age=$(recipe_file "$1" "$2" .omarchy/package.json | jq -r '.min_release_age // empty | tostring' 2>/dev/null) || age=""
+  if [[ $age =~ ^([0-9]{1,9})([smhd]?)$ ]]; then
+    n=$(( 10#${BASH_REMATCH[1]} ))
+    case ${BASH_REMATCH[2]} in
+      m) n=$(( n * 60 )) ;;
+      h) n=$(( n * 3600 )) ;;
+      d) n=$(( n * 86400 )) ;;
+    esac
+    echo "$n"
+  else
+    echo 0
+  fi
+}
+
+# The epoch second a check first saw version $2 of row $1, recorded now when
+# it is new to seen_file. A feed gives no release date, so a release-age
+# window runs from there: never shorter than upstream's.
+seen_since() {
+  local pkg=$1 version=$2 now=$3 seen='{}' at
+  [[ -s $seen_file ]] && jq -e 'type == "object"' "$seen_file" >/dev/null 2>&1 && seen=$(<"$seen_file")
+  at=$(jq -r --arg pkg "$pkg" --arg v "$version" \
+    '.[$pkg] | if type == "object" and .version == $v then .at else empty end' <<<"$seen")
+  if [[ ! $at =~ ^[0-9]{1,12}$ ]]; then
+    at=$now
+    save_json "$(jq -c --arg pkg "$pkg" --arg v "$version" --argjson at "$at" '.[$pkg] = {version: $v, at: $at}' <<<"$seen")" \
+      "$seen_file" || true
+  fi
+  echo "$at"
 }
 
 # Fetches the recipeCommit $1 of app $2, or the ref its recipeFetch names.

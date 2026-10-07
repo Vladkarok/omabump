@@ -66,6 +66,8 @@ Item {
   // mise rows still show, discovered ones do not), or found a wrapper it no
   // longer recognises.
   property string discoveryError: ""
+  // mise could not list its tools: no CLI row could be read this run.
+  property string miseError: ""
   // When this shell's last check ended; IPC refresh is throttled on it.
   property double lastCheckEndMs: 0
   // A run from a terminal marks status.json as in progress too. A run killed
@@ -77,9 +79,9 @@ Item {
   property double nowMs: Date.now()
   readonly property bool fileChecking: fileCheckingRaw && nowMs - fileStartedMs < staleMs
   readonly property bool checking: checkProcess.running || fileChecking
-  // The checker itself failed, or omarchy-pkgs could not be fetched: no
-  // summary may then read as up to date.
-  readonly property bool checkFailed: checkError !== "" || pkgsError !== ""
+  // The checker itself failed, omarchy-pkgs could not be fetched, or mise
+  // could not list its tools: no summary may then read as up to date.
+  readonly property bool checkFailed: checkError !== "" || pkgsError !== "" || miseError !== ""
   // Counts, the urgent icon and the bar icon's visibility leave quiet rows
   // out (isQuiet); quietCount says how many updates that hides.
   readonly property int updateCount: {
@@ -171,6 +173,7 @@ Item {
       pkgsError = String(pkgs.error || "")
       pkgsNote = String(pkgs.note || "")
       discoveryError = parsed ? String(parsed.discoveryError || "") : ""
+      miseError = parsed && showMise ? String(parsed.miseError || "") : ""
     } catch (e) {
       console.warn("omabump", "Ignoring bad status file", statusPath, e)
     }

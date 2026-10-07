@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- A `mise outdated` call that failed without an error message (killed by its timeout) aborted the whole check, and an Update of a mise row stopped without a word. It is now a failed check for the mise rows only.
+- A failing `mise ls` (a broken mise config) emptied the CLI section and the summary said "All current". The last known CLI rows now stay, marked as failed, and the panel says why.
+- Offline or rate limited, `mise outdated` exits 0 and leaves the tool out; the row read as current. mise's warning now makes it a failed check that keeps the last known version, and a pending CLI update keeps counting while the check fails.
+- apt indexes: a version with a Debian revision or epoch (`2.0-1`, `1:2.0`) was skipped, so an older one could read as newest. Only the first 500 matching stanzas counted, the oldest; now the last 500 do.
+- openclaw and voxtype hold new releases for 24 h in omarchy-pkgs (`min_release_age`), and Update failed with "nothing to do" until then. Such a row now says from when Update works, and notifies then.
+- A `url.*.insteadOf` rule for github.com in your git config made every check re-create the omarchy-pkgs clone, and the omarchy route never worked. The clone now ignores your and the system's git config, except its `http.*` settings (proxy, CA bundle).
+- The refresh after an Update did not run while another check was running, so the panel kept offering the update just installed. It now waits for that check to end (`omabump-check --wait`).
+
 ## 0.1.1 (2026-10-02)
 
 - Agent CLIs are discovered instead of listed by hand. Omarchy's migration 1790863209 moved Grok CLI from `npm:@xai-official/grok` to mise's first-party `grok`, and the row disappeared because its key was not in `apps.json`; Copilot CLI, Cursor CLI, Pi, Oh My Pi and Ori were never there. `bin/omabump-discover` now reads Omarchy's agent menu (stock and your extension) and each agent's `omarchy-mise-install` wrapper, as text, and takes the mise key from the wrapper. Known agents keep their shipped name and icon (new `command` field), new ones get a row with the menu's label, disabled rows stay hidden.
