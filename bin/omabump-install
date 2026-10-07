@@ -481,7 +481,7 @@ install_vendor_pkg() {
 install_mise() {
   local tool=$installed_name target request now
   [[ -n $tool ]] || die "${mise_inventory_error:-mise has no active $label}"
-  mise_load 1
+  mise_load 1 "$tool"
   mise_key_safe "$tool" || die "$(mise_skip_note "$tool"); Omabump updates mise tools on mise's own backends only. Update $tool with mise up yourself."
   [[ -z $mise_error ]] || die "$mise_error"
   [[ -z ${mise_fetch_failed[$tool]:-} ]] || die "mise could not fetch the versions of $tool: ${mise_fetch_failed[$tool]}"
