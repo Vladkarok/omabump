@@ -782,6 +782,7 @@ mise_ls_json='{"grok":[{"version":"1.0.46","installed":true,"active":true}]}'
 same "the Grok CLI row finds mise's first-party grok" "grok 1.0.46" "$(mise_active "$(app_json mise:grok-cli)")"
 mise_ls_json='{}'
 
+source "$root/tests/install.sh"
 if (( failed )); then
   echo "$failed of $n tests failed"
   exit 1
