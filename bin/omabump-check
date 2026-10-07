@@ -70,6 +70,13 @@ rm -rf -- "$state_dir"/.run.* "$state_dir"/.check.?????? "$state_dir"/.notified.
 # belongs to no live run.
 find "$state_dir" "$cache_dir" -mindepth 1 -maxdepth 1 \( -name '.discovered.??????' -o -name '.mise.??????' \
   -o -name '.mise-select.??????' -o -name '.feed.??????' \) -mmin +1440 -exec rm -rf -- {} + 2>/dev/null || true
+# A killed Update's half download (curl writes to it until it stops, within
+# 30 minutes, and a new download starts it over) and sync-upstream's mktemp
+# dir (it runs at most 15 minutes and removes its own). Only mktemp's names
+# in scratch: a hook's file by another name may carry an archive's old time
+# while a live run still reads it.
+find "$cache_dir/packages" -mindepth 1 -maxdepth 1 -type f -name '*.part' -mmin +1440 -exec rm -f -- {} + 2>/dev/null || true
+find "$cache_dir/scratch" -mindepth 1 -maxdepth 1 -name 'tmp.??????????' -mmin +1440 -exec rm -rf -- {} + 2>/dev/null || true
 
 # Last run's results, used only when they have the shape this script writes.
 previous='{"apps":[]}'
