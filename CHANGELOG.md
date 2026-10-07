@@ -5,7 +5,7 @@
 Checks and the panel:
 
 - A check you ask for while one runs is no longer dropped: it runs after that one. With the hour-long interval, rows could stay stale until the next tick.
-- A check that stops part way (killed, Ctrl-C, closed terminal) writes `runError` into status.json, and every bar reads it as failed, not only the one that started it. A TERM no longer waits for a running git, mise or feed command; that command is stopped and rows are never left "checking".
+- A check that stops part way (killed, Ctrl-C, closed terminal) writes `runError` into status.json, and every bar reads it as failed, not only the one that started it. A TERM to the check's process group, as the shell's `timeout` sends it, no longer waits for a running git, mise or feed command; that command is stopped and rows are never left "checking".
 - "Hide icon until an update" no longer hides a failed check.
 - A muted row's failed check stays on its row and in the tooltip; it no longer makes the header or bar read as failed.
 - A skip ends once that version or a later one is installed, and the settings list only skips that still apply. The header shows "(+N muted/skipped)" like the tooltip.
