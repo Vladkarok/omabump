@@ -1,10 +1,12 @@
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import "Model.js" as Model
 
 // The display side of the plugin. bin/omabump-check does all the work and
 // writes status.json; this file runs it on a timer and watches the result, so
-// a check started from a terminal (or by omabump-install) lands here too.
+// a check started from a terminal (or by omabump-install) lands here too. The
+// rules it applies to the result live in Model.js.
 Item {
   id: root
   visible: false
@@ -28,70 +30,67 @@ Item {
   readonly property string checkScript: binDir + "/omabump-check"
   readonly property string installScript: binDir + "/omabump-install"
   readonly property string promptScript: binDir + "/omabump-prompt"
-  // A Refresh runs this before the checker: $1 the checker's lock, $2 how
-  // long to wait for it (lockWaitSec), then the command. It takes the lock
-  // and lets go at once, says "started" on stdout and runs the command. A
-  // lock still held after the wait is left be, as the checker's own --wait
-  // leaves it; a lock file that cannot be opened (no check has made its
-  // directory yet) has no check behind it.
-  readonly property string waitScript: 'flock -E 75 -w "$2" "$1" true 2>/dev/null; (( $? == 75 )) && exit 0; echo started; shift 2; exec "$@"'
+  // A run that waits for the lock runs this before the checker: $1 the
+  // checker's lock, $2 how long to wait for it (lockWaitSec), then the
+  // command. It takes the lock and lets go at once, says "started" on
+  // stdout and runs the command. A lock still held after the wait is left
+  // be, and the script exits 75 (Model.lockBusyExit) having run nothing; a
+  // lock file that cannot be opened (no check has made its directory yet)
+  // has no check behind it.
+  readonly property string waitScript: 'flock -E 75 -w "$2" "$1" true 2>/dev/null; (( $? == 75 )) && exit 75; echo started; shift 2; exec "$@"'
   // The checker's own --wait (flock -w in bin/omabump-check).
   readonly property int lockWaitSec: 660
 
-  // Between a minute and a day, whatever shell.json holds.
-  readonly property int refreshIntervalSec: Math.min(86400, Math.max(60, Number(setting("refreshIntervalSec", 3600)) || 3600))
-  readonly property bool notify: boolSetting("notify", true)
-  readonly property bool showMise: boolSetting("showMise", true)
-  // Only this shell's own check can still be running with the old setting
-  // (one from a terminal or the installer lists mise tools anyway, and
-  // parse() filters them out): one more runs after it. Otherwise each
-  // monitor's copy of the widget starts one; the lock lets the first
-  // through and turns the rest away at once, as it does while another check
-  // runs. status.json's mark is not asked: a killed run leaves it behind.
-  // Before the timer's first tick (the bar is still handing the settings
-  // over), that tick reads the setting as it is then.
+  readonly property int refreshIntervalSec: Model.refreshIntervalSec(settings)
+  readonly property bool notify: Model.boolSetting(settings, "notify", true)
+  readonly property bool showMise: Model.boolSetting(settings, "showMise", true)
+  // A check that started before the change runs with the old setting: this
+  // shell's own, and one from a terminal or the installer too, since
+  // bin/omabump-check reads showMise from shell.json itself. Turned on,
+  // such a run lists no CLI rows, so one more must start after it: behind
+  // this shell's own check it is queued; otherwise each monitor's copy of
+  // the widget waits for the lock, then starts one that leaves on the lock
+  // (runCheck(true, false)), and the first to take it runs for all. The
+  // wait asks the lock, not status.json's mark, which a killed run leaves
+  // behind. Turned off, the run keeps status.json free of CLI rows;
+  // parse() filters them out meanwhile. Before the timer's first tick (the
+  // bar is still handing the settings over), that tick reads the setting as
+  // it is then (Model.showMiseRun).
   onShowMiseChanged: {
     parse(statusFile.text())
-    if (!settingsReady || !timerTicked) return
-    if (checkProcess.running) refreshQueued = true
-    else runCheck(false)
+    var run = Model.showMiseRun(settingsReady, timerTicked, checkProcess.running)
+    if (run === "queue") refreshQueued = true
+    else if (run === "wait") runCheck(true, false)
   }
   // Rows the user muted (pkg ids): no badge, no count, no notification.
-  // Their update stays visible in the panel and installable. The checker
-  // reads the same two settings from shell.json itself (load_quiet).
-  // The bar hands lists over as a QVariantList, which Array.isArray does
-  // not accept, so they are read by index.
-  readonly property var mutedApps: {
-    var list = setting("mutedApps", [])
-    var out = []
-    if (list && typeof list === "object" && typeof list.length === "number")
-      for (var i = 0; i < list.length; i++)
-        if (typeof list[i] === "string" && list[i] !== "") out.push(list[i])
-    return out
-  }
-  // {pkg: version} the user skipped. While a row's newest version is that
-  // one it signals nothing; a newer release lights it up again (skipHolds).
-  readonly property var skippedVersions: {
-    var map = setting("skippedVersions", {})
-    var out = {}
-    if (map && typeof map === "object")
-      for (var pkg in map)
-        if (typeof map[pkg] === "string" && map[pkg] !== "") out[pkg] = map[pkg]
-    return out
-  }
+  // Their update stays visible in the panel and installable. And {pkg:
+  // version} the user skipped. The checker reads the same two settings from
+  // shell.json itself (load_quiet), by the same rules (Model.mutedApps and
+  // Model.skippedVersions).
+  readonly property var mutedApps: Model.mutedApps(settings)
+  readonly property var skippedVersions: Model.skippedVersions(settings)
 
   property var apps: []
   // The rows apps was last set from, as JSON: see parse().
   property string appsJson: ""
+  // status.json's schemaVersion: 0 for a file from before the field.
+  property int schemaVersion: 0
   property string checkedAt: ""
   property string pkgsCommit: ""
   // The user opted out of the pinned omarchy-pkgs commit (pins.json).
   property bool pkgsFollowing: false
   property string pkgsError: ""
   property string pkgsNote: ""
-  // This shell's own check exited non-zero. Kept until a run that started
-  // after it completes, from here or anywhere else.
+  // This shell's own check exited non-zero, or could not start for the lock.
+  // Kept until a run that started after checkErrorAfterMs completes, from
+  // here or anywhere else (Model.answersError).
   property string checkError: ""
+  // When the failed check ended, or when the run that could not start was
+  // asked for: the check that held the lock then started before it, and
+  // its answer is not the one asked for.
+  property double checkErrorAfterMs: 0
+  // When this shell's running check was asked for.
+  property double runAskedMs: 0
   // status.json says its run stopped part way (killed, timed out, a failed
   // command), whoever started it: every bar and a run from a terminal see it.
   property string runError: ""
@@ -131,208 +130,26 @@ Item {
   property double nowMs: Date.now()
   readonly property bool fileChecking: fileCheckingRaw && nowMs - fileStartedMs < staleMs
   readonly property bool checking: checkProcess.running || fileChecking
-  // The checker itself failed, omarchy-pkgs could not be fetched, or mise
-  // could not list its tools: no summary may then read as up to date. A
-  // failure only muted rows share (the omarchy-pkgs fetch with every
-  // omarchy row muted) signals nothing, like their own failures.
-  readonly property bool pkgsFailed: pkgsError !== "" && !allMuted("omarchy")
-  readonly property bool miseFailed: miseError !== "" && !allMuted("mise")
-  readonly property bool checkFailed: checkError !== "" || runError !== "" || pkgsFailed || miseFailed
-  // Why checkFailed, for the line under the panel's header.
-  readonly property string failureText: checkError !== "" ? checkError
-    : runError !== "" ? runError
-    : pkgsFailed ? pkgsError
-    : miseFailed ? miseError : ""
-  // Counts, the urgent icon and the bar icon's visibility leave quiet rows
-  // out (isQuiet); quietCount says how many updates that hides.
-  readonly property int updateCount: {
-    var count = 0
-    for (var i = 0; i < apps.length; i++)
-      if (apps[i].updateAvailable === true && apps[i].installable === true && !isQuiet(apps[i])) count++
-    return count
-  }
-  // Newer upstream releases with no install path (no recipe watch, or an
-  // indicator-only app).
-  readonly property int waitingCount: {
-    var count = 0
-    for (var i = 0; i < apps.length; i++)
-      if (apps[i].updateAvailable === true && apps[i].installable !== true && !isQuiet(apps[i])) count++
-    return count
-  }
-  readonly property int quietCount: {
-    var count = 0
-    for (var i = 0; i < apps.length; i++)
-      if (apps[i].updateAvailable === true && isQuiet(apps[i])) count++
-    return count
-  }
-  // Failed rows. Mute takes a row out of every signal, its failure too:
-  // that shows on its own row, and in mutedErrorCount for the status text.
-  // A skip silences one version, not the row, so a skipped row's failure
-  // still counts.
-  readonly property int errorCount: {
-    var count = 0
-    for (var i = 0; i < apps.length; i++) if (String(apps[i].error || "") !== "" && !isMuted(apps[i])) count++
-    return count
-  }
-  readonly property int mutedErrorCount: {
-    var count = 0
-    for (var i = 0; i < apps.length; i++) if (String(apps[i].error || "") !== "" && isMuted(apps[i])) count++
-    return count
-  }
-  // mise rows on no backend Omabump queries ("Update check skipped"): their
-  // newest version is unknown, so no summary may call them current, muted or
-  // not (mute silences an update, it does not make an unknown state known).
-  readonly property int uncheckedCount: {
-    var count = 0
-    for (var i = 0; i < apps.length; i++)
-      if (apps[i].unchecked === true || String(apps[i].note || "").indexOf("Update check skipped") === 0) count++
-    return count
-  }
-  // Rows showing the version from an earlier run because this one failed;
-  // muted ones count in mutedErrorCount (a stale row has its error).
-  readonly property int staleCount: {
-    var count = 0
-    for (var i = 0; i < apps.length; i++) if (apps[i].stale === true && !isMuted(apps[i])) count++
-    return count
-  }
-
-  function setting(name, fallback) {
-    var value = settings ? settings[name] : undefined
-    return value === undefined || value === null ? fallback : value
-  }
-
-  // `omarchy bar set <id> notify false` without --json stores the string
-  // "false", so "true" and "false" in any case count as the booleans.
-  // Anything else is the fallback.
-  function boolSetting(name, fallback) {
-    var value = setting(name, fallback)
-    if (typeof value === "string") value = value.trim().toLowerCase()
-    if (value === true || value === "true") return true
-    if (value === false || value === "false") return false
-    return fallback
-  }
-
-  function isMuted(app) { return !!app && mutedApps.indexOf(String(app.pkg)) !== -1 }
-  // The row the last check listed for pkg, or null.
-  function appFor(pkg) {
-    for (var i = 0; i < apps.length; i++) if (apps[i].pkg === pkg) return apps[i]
-    return null
-  }
-  // Whether every listed row from source is muted (and there is one).
-  function allMuted(source) {
-    var any = false
-    for (var i = 0; i < apps.length; i++) {
-      if (apps[i].source !== source) continue
-      if (!isMuted(apps[i])) return false
-      any = true
-    }
-    return any
-  }
-  // The version skipped for this row, if any.
-  function skippedVersion(app) {
-    return app && skippedVersions.hasOwnProperty(app.pkg) ? skippedVersions[app.pkg] : ""
-  }
-  // A row whose update the user skipped. Decided here from the settings as
-  // they are now, by the checker's rule, so a skip shows at once and a skip
-  // changed since the last check does not keep that check's answer.
-  function isSkipped(app) {
-    return !!app && app.updateAvailable === true && skipHolds(app, skippedVersion(app))
-  }
-  // A row that signals nothing: muted, or at a skipped version.
-  function isQuiet(app) { return isMuted(app) || isSkipped(app) }
-
-  // Whether a skip of version still applies to the row, by the rule
-  // row_skipped in bin/omabump-common applies to an update: mise and
-  // Omabump's own rows while their update is exactly that version; the
-  // others (vercmp) while their newest version is not newer than it and the
-  // installed one is older, so a feed that rolls back below a skip stays
-  // skipped and an install of that version or a later one ends it. The
-  // installed version loses epoch and pkgrel, as the checker compares it
-  // with a feed's.
-  function skipHolds(app, version) {
-    var latest = String(app.latest || "")
-    if (version === "" || latest === "") return false
-    if (app.source === "mise" || app.source === "self") return app.updateAvailable === true && latest === version
-    return vercmp(latest, version) <= 0 && vercmp(upstreamPart(String(app.installed || "")), version) < 0
-  }
-
-  // Whether the settings keep the skip of version for pkg: while it applies,
-  // and while the last check cannot tell. That is a row it did not list
-  // (hidden by Show mise tools, not installed now) and one that failed, is
-  // stale, is being checked, was not checked or has no newest version.
-  function skipKept(pkg, version) {
-    var app = appFor(pkg)
-    if (!app || app.checking === true || app.stale === true || app.unchecked === true
-      || String(app.error || "") !== "" || String(app.latest || "") === "") return true
-    return skipHolds(app, version)
-  }
-
-  // The installed version less epoch and pkgrel (upstream_part in
-  // bin/omabump-common).
-  function upstreamPart(v) { return String(v).replace(/^[^:]*:/, "").replace(/-[^-]*$/, "") }
-
-  // pacman's vercmp (alpm_pkg_vercmp): below zero, zero or above zero as a
-  // is older than, the same as or newer than b. The checker runs vercmp
-  // itself; the panel needs the same answer for skips between checks.
-  function vercmp(a, b) {
-    a = String(a)
-    b = String(b)
-    if (a === b) return 0
-    var x = splitEvr(a), y = splitEvr(b)
-    var ret = rpmvercmp(x.epoch, y.epoch)
-    if (ret === 0) ret = rpmvercmp(x.version, y.version)
-    // A release counts only when both versions have one.
-    if (ret === 0 && x.release !== null && y.release !== null) ret = rpmvercmp(x.release, y.release)
-    return ret
-  }
-
-  // [epoch:]version[-release]: no epoch is 0, no release is null.
-  function splitEvr(v) {
-    var digits = /^[0-9]*/.exec(v)[0].length
-    var epoch = "0"
-    if (v.charAt(digits) === ":") {
-      if (digits > 0) epoch = v.substring(0, digits)
-      v = v.substring(digits + 1)
-    }
-    var dash = v.lastIndexOf("-")
-    return dash < 0 ? { epoch: epoch, version: v, release: null }
-      : { epoch: epoch, version: v.substring(0, dash), release: v.substring(dash + 1) }
-  }
-
-  // Compares runs of digits (as numbers) or of letters (as text) in turn;
-  // anything else separates them.
-  function rpmvercmp(a, b) {
-    if (a === b) return 0
-    var digit = /[0-9]/, alpha = /[A-Za-z]/
-    var one = 0, two = 0
-    while (one < a.length && two < b.length) {
-      var from1 = one, from2 = two
-      while (one < a.length && !digit.test(a.charAt(one)) && !alpha.test(a.charAt(one))) one++
-      while (two < b.length && !digit.test(b.charAt(two)) && !alpha.test(b.charAt(two))) two++
-      if (one >= a.length || two >= b.length) break
-      // The longer separator is newer.
-      if (one - from1 !== two - from2) return one - from1 < two - from2 ? -1 : 1
-      var run = digit.test(a.charAt(one)) ? digit : alpha
-      var end1 = one, end2 = two
-      while (end1 < a.length && run.test(a.charAt(end1))) end1++
-      while (end2 < b.length && run.test(b.charAt(end2))) end2++
-      // Digits against letters: the digits are newer.
-      if (end2 === two) return run === digit ? 1 : -1
-      var s1 = a.substring(one, end1), s2 = b.substring(two, end2)
-      if (run === digit) {
-        s1 = s1.replace(/^0+/, "")
-        s2 = s2.replace(/^0+/, "")
-        if (s1.length !== s2.length) return s1.length > s2.length ? 1 : -1
-      }
-      if (s1 !== s2) return s1 < s2 ? -1 : 1
-      one = end1
-      two = end2
-    }
-    if (one >= a.length && two >= b.length) return 0
-    // What is left decides: letters are older than nothing (1.0a < 1.0),
-    // anything else is newer.
-    return (one >= a.length && !alpha.test(b.charAt(two))) || alpha.test(a.charAt(one)) ? -1 : 1
-  }
+  // Why no summary may read as up to date, for the line under the panel's
+  // header; checkFailed while there is one.
+  readonly property string failureText: Model.failureText({ checkError: checkError, runError: runError,
+    pkgsError: pkgsError, miseError: miseError }, apps, mutedApps)
+  readonly property bool checkFailed: failureText !== ""
+  readonly property int updateCount: Model.updateCount(apps, mutedApps, skippedVersions)
+  readonly property int waitingCount: Model.waitingCount(apps, mutedApps, skippedVersions)
+  readonly property int quietCount: Model.quietCount(apps, mutedApps, skippedVersions)
+  readonly property int errorCount: Model.errorCount(apps, mutedApps)
+  readonly property int mutedErrorCount: Model.mutedErrorCount(apps, mutedApps)
+  readonly property int uncheckedCount: Model.uncheckedCount(apps)
+  readonly property int staleCount: Model.staleCount(apps, mutedApps)
+  // What the hero, the bar tooltip and IPC status summarise (Model.heroMeta,
+  // Model.tooltipText).
+  readonly property var summary: ({
+    checking: checking, checkFailed: checkFailed, checkedAt: checkedAt, appCount: apps.length,
+    updateCount: updateCount, waitingCount: waitingCount, quietCount: quietCount,
+    errorCount: errorCount, mutedErrorCount: mutedErrorCount, uncheckedCount: uncheckedCount,
+    staleCount: staleCount, pkgsFollowing: pkgsFollowing, discoveryError: discoveryError
+  })
 
   // Refresh (click, r, IPC) always gets a check that starts after it. While
   // this shell's own check runs, one more is queued for when it ends, unless
@@ -347,89 +164,78 @@ Item {
       if (!runWaiting) refreshQueued = true
       return
     }
-    runCheck(true)
+    runCheck(true, true)
   }
 
   // A queued Refresh waits too: the run it came during may have left at
   // once on the lock (the timer's does) while a check from before the
   // request held it.
   function runQueued() {
-    if (refreshQueued && !checkProcess.running) runCheck(true)
+    if (refreshQueued && !checkProcess.running) runCheck(true, true)
   }
 
-  function runCheck(wait) {
+  // wait: wait for a check that holds the lock now (waitScript) instead of
+  // leaving at once on it, as the timer's run does. own: a Refresh's, which
+  // also runs after a check that takes the lock between the wait and its
+  // start (the checker's --wait); without it, that check, which started
+  // after the wait, answers instead and this one leaves on the lock.
+  function runCheck(wait, own) {
     refreshQueued = false
-    runForRefresh = wait
+    runForRefresh = wait && own
     runWaiting = wait
+    runAskedMs = Date.now()
     // An overall deadline: ten minutes, then TERM, then KILL ten seconds
     // later. A Refresh waits for a running check before it (waitScript), so
     // the deadline bounds its own run alone, like any other: other waiters
-    // (the installer, another bar) count on a check ending by then. --wait
-    // still covers a check that takes the lock between the two.
+    // (the installer, another bar) count on a check ending by then.
     var command = ["timeout", "-k", "10", "600", checkScript]
     if (!notify) command.push("--no-notify")
     if (!showMise) command.push("--no-mise")
+    if (wait && own) command.push("--wait")
     if (wait)
-      command = ["bash", "-c", waitScript, "omabump-wait", lockPath, String(lockWaitSec)].concat(command, ["--wait"])
+      command = ["bash", "-c", waitScript, "omabump-wait", lockPath, String(lockWaitSec)].concat(command)
     checkProcess.command = command
     checkProcess.running = true
   }
 
-  // The timer's check. Every monitor's bar runs its own copy of this widget
-  // and a shell reload starts them all, so this one stays out while a check
-  // runs (its own, or one status.json shows), or a finished one started less
-  // than an interval (less 30 s of slack) ago. That start, not checkedAt
-  // (the end), is what counts: from the end, this widget's own next tick
-  // would come up short by however long its last check took and be skipped.
+  // The timer's check. This one stays out while a check runs (its own, or
+  // one status.json shows) or a finished one is recent (Model.checkDue).
   // Refresh (click, r, IPC) always checks.
   function scheduledRefresh() {
     timerTicked = true
     nowMs = Date.now()
     if (checkProcess.running || fileChecking) return
-    var checked = checkedAt !== "" ? new Date(checkedAt).getTime() : NaN
-    // A run that died half way leaves startedAt past checkedAt, and its rows
-    // are partly the run before's: then that run's end is all there is.
-    var last = fileStartedMs > 0 && isFinite(checked) && fileStartedMs <= checked ? fileStartedMs : checked
-    // A time ahead of the clock (it was set back) proves nothing.
-    var age = nowMs - last
-    if (isFinite(age) && age >= 0 && age < (refreshIntervalSec - 30) * 1000) return
-    runCheck(false)
+    if (Model.checkDue(nowMs, checkedAt, fileStartedMs, refreshIntervalSec)) runCheck(false, false)
   }
 
   function parse(content) {
-    if (String(content || "").trim() === "") return
     try {
-      var parsed = JSON.parse(String(content || ""))
-      var all = parsed && Array.isArray(parsed.apps) ? parsed.apps : []
-      // A check that ran before Show mise tools was turned off still lists them.
-      var list = showMise ? all : all.filter(function(app) { return app.source !== "mise" })
+      var status = Model.parseStatus(content, showMise)
+      if (!status) return
+      schemaVersion = status.schemaVersion
       // A check rewrites the file once per row, and the file watch and the
       // end of the check both read it. A new array re-runs everything bound
       // to apps, in each monitor's copy of the widget, so rows that did not
       // change keep the old one.
-      var json = JSON.stringify(list)
+      var json = JSON.stringify(status.apps)
       if (json !== appsJson) {
         appsJson = json
-        apps = list
+        apps = status.apps
       }
-      checkedAt = parsed && parsed.checkedAt ? String(parsed.checkedAt) : ""
-      fileCheckingRaw = !!parsed && parsed.checking === true
-      var started = parsed && parsed.startedAt ? new Date(parsed.startedAt).getTime() : NaN
-      fileStartedMs = isFinite(started) ? started : 0
+      checkedAt = status.checkedAt
+      fileCheckingRaw = status.checking
+      fileStartedMs = status.startedMs
       nowMs = Date.now()
-      var pkgs = parsed && parsed.omarchyPkgs ? parsed.omarchyPkgs : {}
-      pkgsCommit = String(pkgs.commit || "")
-      pkgsFollowing = pkgs.following === true
-      pkgsError = String(pkgs.error || "")
-      pkgsNote = String(pkgs.note || "")
-      discoveryError = parsed ? String(parsed.discoveryError || "") : ""
-      miseError = parsed && showMise ? String(parsed.miseError || "") : ""
-      runError = parsed ? String(parsed.runError || "") : ""
-      // A run that started after this shell's failed one ended, and
-      // completed, has the answer that one could not give. startedAt has
-      // whole seconds, so a run in that same second does not count.
-      if (checkError !== "" && !fileCheckingRaw && runError === "" && fileStartedMs > lastCheckEndMs)
-        checkError = ""
+      pkgsCommit = status.pkgsCommit
+      pkgsFollowing = status.pkgsFollowing
+      pkgsError = status.pkgsError
+      pkgsNote = status.pkgsNote
+      discoveryError = status.discoveryError
+      miseError = status.miseError
+      runError = status.runError
+      // A run that started after this shell's failed one, and completed,
+      // has the answer that one could not give.
+      if (checkError !== "" && Model.answersError(status, checkErrorAfterMs)) checkError = ""
     } catch (e) {
       console.warn("omabump", "Ignoring bad status file", statusPath, e)
     }
@@ -454,9 +260,19 @@ Item {
     // The checker replaces status.json with a rename, which a watch on the
     // old inode can miss; reading it back here covers that.
     onExited: function(exitCode) {
-      root.lastCheckEndMs = Date.now()
+      var outcome = Model.checkOutcome(exitCode, root.runWaiting, root.runForRefresh)
       root.runWaiting = false
-      root.checkError = exitCode === 0 ? "" : "Check failed (exit " + exitCode + "), see the shell log"
+      root.checkError = Model.checkErrorText(outcome, exitCode, root.lockWaitSec)
+      if (outcome === "notRun") {
+        // Nothing ran: this shell's last check and when it ended stand, and
+        // the Refresh says it was not done rather than pass for one that
+        // was. The check that held the lock started before it was asked
+        // for, so only a later one clears that.
+        root.checkErrorAfterMs = root.runAskedMs
+      } else {
+        root.lastCheckEndMs = Date.now()
+        root.checkErrorAfterMs = root.lastCheckEndMs
+      }
       statusFile.reload()
       Qt.callLater(root.runQueued)
     }
