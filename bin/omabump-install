@@ -21,7 +21,8 @@
 # (chatgpt-desktop, z-code-bin) with <pkg> at the same or a newer full
 # version. Update requires a strictly newer one. Either way pacman asks
 # before it removes the old package, and the scripts the new package runs
-# are printed first.
+# are printed first. On the omarchy path the conflict pacman needs is read
+# from the recipe before the build, and from the built package again after.
 #
 # --prepare fetches, syncs and prepares the recipe (this runs omarchy-pkgs'
 # sync tool and the recipe's hook, and makepkg reads the PKGBUILD), and stops
@@ -30,7 +31,8 @@
 # called; the staging and install commands are printed instead. On the self
 # row it fetches the release tag, prints the plan and stops before asking.
 set -euo pipefail
-here=$(dirname "$(readlink -f "$0")")
+# BASH_SOURCE, not $0: the tests source this file (see the end).
+here=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 # shellcheck source=omabump-common
 source "$here/omabump-common"
 
@@ -125,13 +127,17 @@ EOF
 mkpkg() { run_unlocked makepkg --config "$cache_dir/makepkg.conf" "$@"; }
 
 # A failed build or install keeps its files for a look; a successful one
-# removes them (clean_after_install).
-restore_clone=0 started=0
+# removes them (clean_after_install). self_before is set only while
+# install_self moves the plugin clone (self_apply), which holds Ctrl-C and
+# the like until its step is done and rolls back itself; anything else that
+# ends the run there puts the clone back from here.
+restore_clone=0 started=0 self_before=""
 on_exit() {
   local rc=$?
   (( restore_clone )) && pkgs_restore "$pkg"
+  [[ -z $self_before ]] || self_rollback "the update stopped part way"
   if (( rc != 0 && started )); then
-    echo "omabump: nothing was cleaned up; the build and download files are in $cache_dir/{build,packages,sources}" >&2
+    echo "omabump: the build and download files stay in $cache_dir/{build,packages,sources}" >&2
   fi
 }
 trap on_exit EXIT
@@ -166,21 +172,32 @@ qi_names() {
   sed -n "s/^$1 *: //p" | tr -s ' ' '\n' | sed 's/[<>=].*//' | grep -vx 'None' | grep -v '^$' || true
 }
 
+# True when the install replaces a package installed under another name:
+# --switch, or an Update the check offered as one.
+replaces_other() { [[ -n $installed_name && $installed_name != "$pkg" ]]; }
+
 # pacman replaces the old package only when one of the two declares a
 # conflict with the other (by name or by something the other provides).
 # Without one it would keep both, so the switch stops. $1 is the new
 # package file, or a recipe directory read through makepkg --printsrcinfo.
+# Fails with 1 when neither declares one, with 2 when pacman or makepkg
+# cannot say.
 switch_conflicts() {
-  local src=$1 new_c new_p old_c old_p info
+  local src=$1 new_c new_p old_c old_p info arch
   if [[ -f $src ]]; then
-    info=$(pacman_qi -Qip -- "$src")
+    info=$(pacman_qi -Qip -- "$src") || return 2
     new_c=$(qi_names 'Conflicts With' <<<"$info") new_p=$(qi_names Provides <<<"$info")
   else
-    info=$(cd "$src" && mkpkg --printsrcinfo 2>/dev/null) || return 1
-    new_c=$(sed -n 's/^\tconflicts = //p' <<<"$info" | sed 's/[<>=].*//')
-    new_p=$(sed -n 's/^\tprovides = //p' <<<"$info" | sed 's/[<>=].*//')
+    info=$(cd "$src" && mkpkg --printsrcinfo 2>/dev/null) || return 2
+    # The package built here gets conflicts_<arch> and provides_<arch> for
+    # this machine's architecture on top of the plain ones, as pacman -Qip
+    # would show them; an odd uname -m takes every architecture's.
+    arch=$(uname -m)
+    [[ $arch =~ ^[a-z0-9_]+$ ]] || arch='[a-z0-9_]*'
+    new_c=$(sed -n "s/^\tconflicts\(_$arch\)\? = //p" <<<"$info" | sed 's/[<>=].*//')
+    new_p=$(sed -n "s/^\tprovides\(_$arch\)\? = //p" <<<"$info" | sed 's/[<>=].*//')
   fi
-  info=$(pacman_qi -Qi -- "$installed_name")
+  info=$(pacman_qi -Qi -- "$installed_name") || return 2
   old_c=$(qi_names 'Conflicts With' <<<"$info") old_p=$(qi_names Provides <<<"$info")
   # $old_p and $new_p are newline lists of package names, split on purpose:
   # quoted, an empty list would add an empty pattern that matches anything.
@@ -191,17 +208,38 @@ switch_conflicts() {
   return 1
 }
 
+# Stops the install unless switch_conflicts finds that conflict in $1.
+require_conflict() {
+  local rc=0
+  switch_conflicts "$1" || rc=$?
+  (( rc != 2 )) || die "cannot read the conflicts $pkg or $installed_name declares; not switching"
+  (( rc == 0 )) || die "neither $pkg nor $installed_name declares a conflict with the other, so pacman would keep both; not switching"
+}
+
+# The install script the recipe in the current directory gives package $1,
+# as makepkg reads it (install=$pkgname.install expanded): the package's own
+# install= when its package function sets one, else the global one. Prints
+# its path, or nothing when there is none.
+recipe_install() {
+  local name
+  name=$(mkpkg --printsrcinfo 2>/dev/null | awk -v want="$1" '
+    /^pkgbase = / { sec = "base"; next }
+    /^pkgname = / { sec = ($3 == want) ? "own" : ""; next }
+    /^\tinstall = / { v = substr($0, index($0, " = ") + 3); if (sec == "base") base = v; else if (sec == "own") own = v }
+    END { if (own != "") print own; else if (base != "") print base }') || return 0
+  [[ -z $name ]] || echo "$PWD/$name"
+}
+
 # Before pacman replaces a differently named package: what the new package's
 # install script and the old one's remove script will run, and where the
 # app keeps its data. Nothing is promised about that data; pacman does not
 # touch $HOME, the app itself may. $1 is the package file or, before a build,
-# the recipe's install file.
+# the recipe's install file (empty for none), with $2 the recipe directory.
 show_switch() {
   local script=$1 old config
-  [[ -n $installed_name && $installed_name != "$pkg" ]] || return 0
+  replaces_other || return 0
   echo
-  switch_conflicts "${2:-$script}" \
-    || die "neither $pkg nor $installed_name declares a conflict with the other, so pacman would keep both; not switching"
+  require_conflict "${2:-$script}"
   echo "pacman will ask to remove $installed_name for $pkg (declared conflict); answer y to switch."
   if [[ $script == *.pkg.tar || $script == *.pkg.tar.* ]]; then
     if bsdtar -tf "$script" .INSTALL >/dev/null 2>&1; then
@@ -252,20 +290,22 @@ check_target() {
 # the user's cache could otherwise be swapped by any process running as the
 # user between the last check and the moment pacman opens it. The copy is
 # checked again (digest when $3/$4 give one, name and full version always),
-# pacman asks before it installs, and the copy goes after a successful
-# install. On failure it stays, and the message says where. $1 is the
-# verified file, $2 the expected "<name> <full version>". With --prepare it
-# prints the commands and calls no sudo.
+# and pacman asks before it installs. Once pacman is done the copy goes,
+# whether it installed or not (packages can be gigabytes); only a copy that
+# fails its check stays, and the message says where. $1 is the verified
+# file, $2 the expected "<name> <full version>". With --prepare it prints
+# the commands and calls no sudo. Run as a command, nothing changes the
+# directory: the tests source this file and set staging_dir themselves.
 staging_dir=/var/cache/omabump
 stage_and_install() {
-  local file=$1 expect=$2 algo=${3:-} want=${4:-} staged got line
+  local file=$1 expect=$2 algo=${3:-} want=${4:-} staged got line now
   staged=$staging_dir/${file##*/}
   if (( prepare )); then
     echo "Would run: sudo install -o root -g root -m 0644 -D /dev/stdin $staged <$file"
     [[ -z $algo ]] || echo "Would check: ${algo}sum of $staged is $want"
     echo "Would check: pacman -Qp $staged is $expect"
     echo "Would run: sudo pacman -U -- $staged (pacman asks before it installs)"
-    echo "Would run: sudo rm -f -- $staged"
+    echo "Would run: sudo rm -f -- $staged (whether pacman installed it or not)"
     return 0
   fi
   # The file is opened here, as you, and root only writes what it reads: a
@@ -286,13 +326,32 @@ stage_and_install() {
   echo "Staged copy checked: $staged"
   # pacman asks "Proceed with installation?": that prompt is where you can
   # still stop. sudo need not ask for a password, makepkg -s may have used it.
-  run_unlocked sudo pacman -U -- "$staged" || die "pacman -U failed; the staged copy stays in $staged"
-  run_unlocked sudo rm -f -- "$staged"
+  if run_unlocked sudo pacman -U -- "$staged"; then
+    unstage "$staged"
+    return 0
+  fi
+  # pacman fails when you answer n, and also when a hook or install script
+  # fails after the package went in: what is installed now tells them apart
+  # (Update needs a newer version, Switch another name, so it was not
+  # installed before).
+  now=$(installed_package "${expect%% *}") || now=""
+  unstage "$staged"
+  if [[ $now == "$expect" ]]; then
+    echo "omabump: warning: pacman reported an error, but $expect is installed; read pacman's output above for the hook or install script that failed" >&2
+    return 0
+  fi
+  die "pacman did not install $expect (you answered no, or it failed above). The verified package stays in $file for a retry"
+}
+
+# Removes the staged copy. One that cannot go is named, not fatal: by then
+# pacman has finished either way.
+unstage() {
+  run_unlocked sudo rm -f -- "$1" || echo "omabump: could not remove the staged copy; remove it with: sudo rm -f -- $1" >&2
 }
 
 # Builds the recipe in the current directory, checks the result and installs it.
 build_and_install() {
-  local want=$1 list files f line msg match=""
+  local want=$1 list files f line msg sum match=""
   list=$(mkpkg --packagelist) || die "makepkg --packagelist failed"
   mapfile -t files <<<"$list"
   for f in "${files[@]}"; do
@@ -301,23 +360,29 @@ build_and_install() {
   [[ -n $match ]] || die "makepkg would not produce $want $target_version: ${files[*]}"
   echo "Package file: $match"
   if (( prepare )); then
-    show_switch "$PWD/$(pkgbuild_field install <PKGBUILD)" "$PWD"
+    if replaces_other; then show_switch "$(recipe_install "$want")" "$PWD"; fi
     echo "After the build:"
-    stage_and_install "$match" "$want $target_version"
+    stage_and_install "$match" "$want $target_version" sha256 "the one taken of $match right after the build"
     echo "Prepared: stopping before makepkg builds."
     return 0
   fi
+  # A switch the recipe's conflicts already rule out stops here, not after
+  # a build that can take many minutes. The built package is checked again.
+  if replaces_other; then require_conflict "$PWD"; fi
 
   started=1
   # -s installs missing build dependencies with sudo pacman -S --asdeps;
   # without --noconfirm pacman asks for those too.
   mkpkg -sfC
   [[ -f $match ]] || die "makepkg did not produce $match"
+  # The digest of the file makepkg wrote, before anything else reads it: the
+  # staged copy must match it, not only its name and version.
+  sum=$(sha256sum -- "$match" | cut -d' ' -f1) || die "cannot read $match"
   line=$(pacman -Qp -- "$match") || die "cannot read $match"
   [[ $line == "$want $target_version" ]] || die "built package is '$line', expected '$want $target_version'"
   msg=$(guard_version "$target_version") || die "$msg; not installing"
   show_switch "$match"
-  stage_and_install "$match" "$want $target_version"
+  stage_and_install "$match" "$want $target_version" sha256 "$sum"
   clean_after_install "${files[@]}"
   clean_build_tree
   clean_sources
@@ -512,12 +577,80 @@ install_mise() {
   target_version=$now
 }
 
+# Set by self_apply: what its merge creates, and whether a signal came.
+self_new=() self_stop=0
+
+# Fast-forwards the plugin clone from the commit $1 to $self_target and
+# validates the result with the command "${@:2}" <plugin dir>. From the
+# merge until the validation passed, any end of the run (a merge that fails
+# part way, a failed validation, Ctrl-C, the terminal closing, kill) puts
+# the clone back at $1 through self_rollback: never a half-updated plugin.
+self_apply() {
+  local before=$1 added=() p rc=0
+  shift
+  # What the merge creates: each path the release adds that is not on disk
+  # now, cut to its top-most directory that is not on disk either. The
+  # rollback removes these whole, since git status shows neither ignored
+  # files nor empty directories. A path already on disk is an ignored file
+  # of yours (status was clean), which the merge overwrites as git does and
+  # the rollback leaves.
+  mapfile -d '' -t added < <(self_git diff -z --name-only --no-renames --diff-filter=A "$before" "$self_target")
+  wait "$!" || die "git diff failed in $plugin_dir; nothing changed"
+  self_new=()
+  for p in "${added[@]}"; do
+    [[ -e $plugin_dir/$p || -L $plugin_dir/$p ]] && continue
+    while [[ $p == */* && ! -e $plugin_dir/${p%/*} && ! -L $plugin_dir/${p%/*} ]]; do p=${p%/*}; done
+    self_new+=("$p")
+  done
+  self_before=$before self_stop=0
+  # A signal waits for the step it comes in: git runs under timeout, in a
+  # process group of its own that Ctrl-C and a closing terminal do not
+  # reach, so stopping at once would roll back under a merge that carries
+  # on and lands. Each step is bounded, the merge by self_git's timeout.
+  trap 'self_stop=1' HUP INT TERM
+  self_git merge -q --ff-only "$self_target" || rc=$?
+  (( ! self_stop )) || self_rollback "the update stopped part way"
+  (( rc == 0 )) || self_rollback "git merge --ff-only $self_target failed"
+  run_unlocked "$@" "$plugin_dir" </dev/null || rc=$?
+  (( ! self_stop )) || self_rollback "the update stopped part way"
+  (( rc == 0 )) || self_rollback "the new version failed validation"
+  self_before=""
+  trap - HUP INT TERM
+}
+
+# Puts the plugin clone back at self_before, HEAD and work tree: a merge
+# that stopped part way can leave files of the release that are not in the
+# index yet, so what the merge created (self_new) goes too, ignored files
+# included. Exits with $1 and whether that worked.
+self_rollback() {
+  local before=$self_before
+  self_before=""
+  if self_restore "$before"; then
+    die "$1; rolled back to ${before:0:12}"
+  fi
+  die "$1, and the rollback did not finish; see git -C $plugin_dir status, and restore it with: git -C $plugin_dir reset --hard $before"
+}
+
+# True once the clone is at $1 with a clean work tree and nothing the merge
+# created is left.
+self_restore() {
+  local p
+  self_git reset -q --hard "$1" || return 1
+  if (( ${#self_new[@]} )); then
+    self_git --literal-pathspecs clean -qfdx -- "${self_new[@]}" || return 1
+  fi
+  for p in "${self_new[@]}"; do
+    [[ ! -e $plugin_dir/$p && ! -L $plugin_dir/$p ]] || return 1
+  done
+  [[ $(self_git rev-parse HEAD) == "$1" && -z $(self_git status --porcelain) ]]
+}
+
 # Omabump itself: the plugin's own clone, fast-forwarded to the commit the
 # release tag names (self_plan) once you have read its log and answered y,
-# then validated as Omarchy's updater does and rolled back if that fails.
-# `omarchy plugin update` would install the repository's HEAD instead. The
-# function exits, so nothing of this file is read after the merge replaced
-# it.
+# then validated as Omarchy's updater does; self_apply rolls it back if the
+# merge or the validation fails. `omarchy plugin update` would install the
+# repository's HEAD instead. The function exits, so nothing of this file is
+# read after the merge replaced it.
 install_self() {
   local latest answer before validate=(omarchy-plugin-validate)
   self_git_managed || die "Omabump runs from a local checkout ($plugin_dir); update it with git"
@@ -540,7 +673,7 @@ install_self() {
   echo
   if (( prepare )); then
     echo "Would ask: Update Omabump to $latest? [y/N]"
-    echo "Would run: git merge --ff-only $self_target in $plugin_dir, ${validate[*]} $plugin_dir (git reset --hard to the installed commit if it fails), omarchy-shell shell rescanPlugins"
+    echo "Would run: git merge --ff-only $self_target in $plugin_dir, ${validate[*]} $plugin_dir (if either fails or the run is stopped before the validation passed: git reset --hard to the installed commit, and what the merge created removed), omarchy-shell shell rescanPlugins"
     exit 0
   fi
   before=$(self_git rev-parse HEAD) || die "git rev-parse HEAD failed in $plugin_dir"
@@ -550,13 +683,7 @@ install_self() {
   # so a rollback below can never discard an edit made while it waited.
   [[ $(self_git rev-parse HEAD) == "$before" ]] || die "the plugin clone moved while waiting; nothing changed, run Update again"
   [[ -z $(self_git status --porcelain) ]] || die "the plugin clone has local changes now; nothing changed"
-  self_git merge -q --ff-only "$self_target" || die "git merge --ff-only $self_target failed"
-  if ! run_unlocked "${validate[@]}" "$plugin_dir" </dev/null; then
-    if self_git reset -q --hard "$before"; then
-      die "the new version failed validation; rolled back to ${before:0:12}"
-    fi
-    die "the new version failed validation and the rollback failed too; restore it with: git -C $plugin_dir reset --hard $before"
-  fi
+  self_apply "$before" "${validate[@]}"
   run_unlocked omarchy-shell shell rescanPlugins >/dev/null 2>&1 </dev/null || true
   "$plugin_dir/bin/omabump-check" --no-notify --wait || true
   # rescanPlugins finds the plugin again but QML it already loaded can stay
@@ -565,17 +692,27 @@ install_self() {
   exit 0
 }
 
-case $source in
-  self) install_self ;;
-  omarchy) install_omarchy ;;
-  vendor-pkg) install_vendor_pkg ;;
-  mise) install_mise ;;
-  indicator) die "$label has no supported install path; update it the way you installed it" ;;
-  *) die "unknown source '$source'" ;;
-esac
+# The install on the app's route, then the panel's refresh.
+install_main() {
+  case $source in
+    self) install_self ;;
+    omarchy) install_omarchy ;;
+    vendor-pkg) install_vendor_pkg ;;
+    mise) install_mise ;;
+    indicator) die "$label has no supported install path; update it the way you installed it" ;;
+    *) die "unknown source '$source'" ;;
+  esac
 
-(( prepare )) && exit 0
-refresh_panel
-if [[ $source != mise ]]; then
-  if [[ -n $installed ]]; then echo "Restart $label to use $target_version."; else echo "$label $target_version is installed."; fi
-fi
+  (( prepare )) && exit 0
+  refresh_panel
+  if [[ $source != mise ]]; then
+    if [[ -n $installed ]]; then echo "Restart $label to use $target_version."; else echo "$label $target_version is installed."; fi
+  fi
+}
+
+# tests/install.sh sources this file with an app's arguments, stub commands
+# first on PATH: everything above runs as in a real run, then the tests call
+# the functions themselves, or install_main with staging_dir in their own
+# directory.
+if (return 0 2>/dev/null); then return 0; fi
+install_main

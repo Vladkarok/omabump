@@ -784,6 +784,7 @@ mise_ls_json='{}'
 
 source "$root/tests/qml.sh"
 source "$root/tests/check.sh"
+source "$root/tests/install.sh"
 if (( failed )); then
   echo "$failed of $n tests failed"
   exit 1
