@@ -893,7 +893,7 @@ user_command_version() {
 # cut-off download is an error, never a version. With $feed_save set, the
 # fetched document is also written to that file (vendor_checksum reads it).
 feed_version() {
-  local app=$1 type url body v repo want
+  local app=$1 type url body v repo want n
   type=$(jq -r '.feed.type // ""' <<<"$app")
   url=$(per_arch .feed.url "$app")
   case $type in
@@ -912,10 +912,16 @@ feed_version() {
       v=$(regex_first "$(jq -r '.feed.pattern // ""' <<<"$app")" <<<"$body" 2>/dev/null) \
         || { echo "bad feed pattern" >&2; return 1; } ;;
     json)
+      # One document: jq would apply the path to each of several, and to
+      # none of an empty body.
+      n=$(jq -s length <<<"$body" 2>/dev/null) || { echo "feed is not JSON" >&2; return 1; }
+      (( n > 0 )) || { echo "the feed is empty" >&2; return 1; }
+      (( n == 1 )) || { echo "the feed holds $n JSON documents, not one" >&2; return 1; }
       v=$(jq -c "[($(jq -r '.feed.path // ".version"' <<<"$app")) // empty]" <<<"$body" 2>/dev/null) \
-        || { echo "feed is not JSON" >&2; return 1; }
+        || { echo "the feed path fails on this feed" >&2; return 1; }
       # One value: a path that yields several would run them together.
-      (( $(jq length <<<"$v") <= 1 )) || { echo "the feed path gives $(jq length <<<"$v") values, not one" >&2; return 1; }
+      n=$(jq length <<<"$v")
+      (( n <= 1 )) || { echo "the feed path gives $n values, not one" >&2; return 1; }
       v=$(jq -r '.[0] // empty | if type == "string" then . else tojson end' <<<"$v") ;;
     aur-rpc)
       want=$(jq -r '.feed.name // .pkg' <<<"$app")

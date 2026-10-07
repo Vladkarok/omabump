@@ -27,11 +27,13 @@ A wrapper is read line by line: the bash shebang first, then exactly one
 A wrapper that does not parse is ignored, and the agent falls back to its
 command name as the key (source "command"); the check accepts that key only
 when mise has exactly it installed and active. When the rejected file runs
-mise, the agent carries a "warning" naming it, so a changed template shows
-in the panel (unless the user disabled that command's row). Anything else
-in its place stays silent: no file, a symlink, a binary, or a script that
-does not run mise (Omarchy installs some agents, Hermes and OpenClaw, with
-their own launchers, and ~/.local/bin holds the user's own scripts too).
+mise (a line whose command is mise use, x or exec), the agent carries a
+"warning" naming it, so a changed template shows in the panel (unless the
+user disabled that command's row). Anything else in its place stays silent:
+no file, a symlink, a binary, or a script that does not run mise, even if a
+message or a comment in it names mise (Omarchy installs some agents, Hermes
+and OpenClaw, with their own launchers, and ~/.local/bin holds the user's
+own scripts too).
 
   omabump-discover [--debug] [--stock FILE] [--user FILE] [--bin-dir DIR] [--uid N] [--menu-uid N]
 
@@ -63,9 +65,19 @@ EXPORT_LINE = re.compile(r"export +[A-Za-z_][A-Za-z0-9_]*=(?:[A-Za-z0-9_./:@%+,=
 USE_FLAGS = {"-g", "--global", "-q", "--quiet", "-y", "--yes", "-f", "--force", "--silent",
              "--pin", "--fuzzy", "--locked", "-v", "--verbose", "--raw"}
 # A line that runs mise as a wrapper does (use, x or exec), so a file that
-# fails to parse is still worth a warning. omarchy-mise-install itself, a
-# message mentioning mise or `mise exec-env` do not count.
-RUNS_MISE = re.compile(r"(?<![\w.-])mise[\"']?\s+(?:-{1,2}[\w-]+(?:=\S*)?\s+)*(?:use|x|exec)(?![\w-])")
+# fails to parse is still worth a warning. The line's first command word,
+# after any exec, command and NAME=value prefixes, is mise or a path ending
+# in /mise. Global flags may come before the subcommand, with the value of
+# -C, -E or -j. omarchy-mise-install itself, `mise exec-env`, and mise in an
+# echo or a comment do not count. A flag that takes a value never also
+# matches as a bare flag, so each token matches one way only and a long run
+# of flags cannot make the regex backtrack exponentially.
+MISE_VALUE_FLAG = r"(?:-C|--cd|-E|--env|-j|--jobs)"
+RUNS_MISE = re.compile(
+    r"(?:(?:exec|command)\s+|[A-Za-z_]\w*=(?:\"[^\"]*\"|'[^']*'|[^\s\"'])*\s+)*"
+    r"[\"']?(?:[^\s\"']*/)?mise[\"']?"
+    r"(?:\s+(?:" + MISE_VALUE_FLAG + r"\s+\S+|(?!" + MISE_VALUE_FLAG + r"\s)-\S+))*"
+    r"\s+(?:use|x|exec)(?![\w-])")
 OPTIONS = re.compile(r"^([^\[\]]*)\[[^\[\]]*\]$")
 # What follows the @ of a version suffix (1.2.3, latest, prefix:20,
 # ref:main): only dropped, so only its shape is checked.
@@ -220,9 +232,9 @@ def tool_name_ok(name):
 
 
 def runs_mise(text):
-    """True when a line that is not a comment runs mise as a wrapper does."""
-    return any(RUNS_MISE.search(line) for line in text.splitlines()
-               if not line.lstrip().startswith("#"))
+    """True when a line runs mise as a wrapper does (RUNS_MISE, from the
+    line's first word)."""
+    return any(RUNS_MISE.match(line.strip()) for line in text.splitlines())
 
 
 def parse_wrapper(text):
@@ -262,11 +274,14 @@ def package_key(pkg):
     """The key `mise ls` reports for a package as `mise use` takes it:
     without a trailing @version, then without an [options] suffix. The @ of
     an npm scope (npm:@scope/name, @scope/name) starts the name and is not a
-    version; an @ inside [options] (a URL's user) is not one either."""
+    version; an @ inside [options] (a URL's user) is not one either. A colon
+    ends a backend only before any @ but a leading one: in omp@prefix:1 and
+    @scope/name@ref:main it is part of the version."""
     if "[" in pkg:
         start = pkg.rfind("]") + 1
     else:
-        start = pkg.find(":") + 1
+        colon, first_at = pkg.find(":"), pkg.find("@", 1)
+        start = colon + 1 if colon >= 0 and (first_at < 0 or colon < first_at) else 0
         if pkg.startswith("@", start):
             start += 1
     at = pkg.rfind("@", start)
