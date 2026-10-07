@@ -26,9 +26,9 @@ Item {
   readonly property string promptScript: binDir + "/omabump-prompt"
 
   // Between a minute and a day, whatever shell.json holds.
-  readonly property int refreshIntervalSec: Math.min(86400, Math.max(60, Number(setting("refreshIntervalSec", 900)) || 900))
-  readonly property bool notify: setting("notify", true) !== false
-  readonly property bool showMise: setting("showMise", true) !== false
+  readonly property int refreshIntervalSec: Math.min(86400, Math.max(60, Number(setting("refreshIntervalSec", 3600)) || 3600))
+  readonly property bool notify: boolSetting("notify", true)
+  readonly property bool showMise: boolSetting("showMise", true)
   onShowMiseChanged: { parse(statusFile.text()); if (settingsReady) refresh() }
   // Rows the user muted (pkg ids): no badge, no count, no notification.
   // Their update stays visible in the panel and installable. The checker
@@ -55,6 +55,8 @@ Item {
   }
 
   property var apps: []
+  // The rows apps was last set from, as JSON: see parse().
+  property string appsJson: ""
   property string checkedAt: ""
   property string pkgsCommit: ""
   // The user opted out of the pinned omarchy-pkgs commit (pins.json).
@@ -76,6 +78,9 @@ Item {
   readonly property double staleMs: 10 * 60 * 1000
   property bool fileCheckingRaw: false
   property double fileStartedMs: 0
+  // status.json has been read, or found missing. The timer's first check
+  // waits for it, or it could not tell that another one just ran.
+  property bool statusRead: false
   property double nowMs: Date.now()
   readonly property bool fileChecking: fileCheckingRaw && nowMs - fileStartedMs < staleMs
   readonly property bool checking: checkProcess.running || fileChecking
@@ -130,6 +135,17 @@ Item {
     return value === undefined || value === null ? fallback : value
   }
 
+  // `omarchy bar set <id> notify false` without --json stores the string
+  // "false", so "true" and "false" in any case count as the booleans.
+  // Anything else is the fallback.
+  function boolSetting(name, fallback) {
+    var value = setting(name, fallback)
+    if (typeof value === "string") value = value.trim().toLowerCase()
+    if (value === true || value === "true") return true
+    if (value === false || value === "false") return false
+    return fallback
+  }
+
   function isMuted(app) { return !!app && mutedApps.indexOf(String(app.pkg)) !== -1 }
   // The version skipped for this row, if any.
   function skippedVersion(app) {
@@ -155,13 +171,42 @@ Item {
     checkProcess.running = true
   }
 
+  // The timer's check. Every monitor's bar runs its own copy of this widget
+  // and a shell reload starts them all, so this one stays out while
+  // status.json shows a check running, or a finished one that started less
+  // than an interval (less 30 s of slack) ago. That start, not checkedAt
+  // (the end), is what counts: from the end, this widget's own next tick
+  // would come up short by however long its last check took and be skipped.
+  // Refresh (click, r, IPC) always checks.
+  function scheduledRefresh() {
+    nowMs = Date.now()
+    if (fileChecking) return
+    var checked = checkedAt !== "" ? new Date(checkedAt).getTime() : NaN
+    // A run that died half way leaves startedAt past checkedAt, and its rows
+    // are partly the run before's: then that run's end is all there is.
+    var last = fileStartedMs > 0 && isFinite(checked) && fileStartedMs <= checked ? fileStartedMs : checked
+    // A time ahead of the clock (it was set back) proves nothing.
+    var age = nowMs - last
+    if (isFinite(age) && age >= 0 && age < (refreshIntervalSec - 30) * 1000) return
+    refresh()
+  }
+
   function parse(content) {
     if (String(content || "").trim() === "") return
     try {
       var parsed = JSON.parse(String(content || ""))
       var all = parsed && Array.isArray(parsed.apps) ? parsed.apps : []
       // A check run from a terminal lists mise tools whatever the setting says.
-      apps = showMise ? all : all.filter(function(app) { return app.source !== "mise" })
+      var list = showMise ? all : all.filter(function(app) { return app.source !== "mise" })
+      // A check rewrites the file once per row, and the file watch and the
+      // end of the check both read it. A new array re-runs everything bound
+      // to apps, in each monitor's copy of the widget, so rows that did not
+      // change keep the old one.
+      var json = JSON.stringify(list)
+      if (json !== appsJson) {
+        appsJson = json
+        apps = list
+      }
       checkedAt = parsed && parsed.checkedAt ? String(parsed.checkedAt) : ""
       fileCheckingRaw = !!parsed && parsed.checking === true
       var started = parsed && parsed.startedAt ? new Date(parsed.startedAt).getTime() : NaN
@@ -185,7 +230,11 @@ Item {
     watchChanges: true
     printErrors: false
     onFileChanged: reload()
-    onLoaded: root.parse(text())
+    onLoaded: {
+      root.parse(text())
+      root.statusRead = true
+    }
+    onLoadFailed: root.statusRead = true
   }
 
   Process {
@@ -221,9 +270,9 @@ Item {
 
   Timer {
     interval: root.refreshIntervalSec * 1000
-    running: root.settingsReady
+    running: root.settingsReady && root.statusRead
     repeat: true
     triggeredOnStart: true
-    onTriggered: root.refresh()
+    onTriggered: root.scheduledRefresh()
   }
 }

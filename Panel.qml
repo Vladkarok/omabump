@@ -15,7 +15,12 @@ Panel {
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent
-  readonly property color dim: Qt.darker(foreground, 1.55)
+  // Part way from the foreground to the card's background, so it is dimmer
+  // on light themes too (Qt.darker turns dark text darker still). Flattened
+  // rather than Util.alpha(foreground, …): buttons that take dim as their
+  // foreground replace its alpha. 0.6 about matches the old
+  // Qt.darker(foreground, 1.55) on dark themes.
+  readonly property color dim: Qt.tint(Qt.rgba(surface.r, surface.g, surface.b, 1), Util.alpha(foreground, 0.6))
   readonly property color surface: Color.popups.background
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property string glyph: ""
@@ -32,8 +37,13 @@ Panel {
     return app.source === "self" && (app.updateAvailable === true || String(app.error || "") !== "")
   })
   readonly property var orderedApps: desktopApps.concat(cliApps).concat(pluginApps)
+  // The row Repeaters build rows only while the panel shows, its fade-out
+  // included. A check replaces apps once per row it writes and each time
+  // every row is rebuilt, tooltips and all; otherwise that happened in
+  // every monitor's closed panel too.
+  readonly property bool rowsShown: root.opened || panel.visible
   readonly property int updateCount: checker.updateCount
-  readonly property bool iconOnlyWithUpdates: settings && settings.barIconOnlyWithUpdates === true
+  readonly property bool iconOnlyWithUpdates: checker.boolSetting("barIconOnlyWithUpdates", false)
 
   property int rowIndex: 0
   property bool cursorActive: false
@@ -186,15 +196,16 @@ Panel {
     return out
   }
 
-  function settingOn(row) { return root.setting(row.key, row.fallback) === true }
+  function settingOn(row) { return checker.boolSetting(row.key, row.fallback) }
 
   function activateSetting() {
     if (settingIndex === intervalRow) {
       intervalDropdown.open()
       return
     }
+    // The quiet row is hidden while it has nothing to list.
     if (settingIndex === quietRow) {
-      clearQuiet()
+      if (quietText !== "") clearQuiet()
       return
     }
     var row = settingRows[settingIndex - 1]
@@ -232,9 +243,14 @@ Panel {
     return v.length <= 64 && /^[0-9A-Za-z][A-Za-z0-9._+~-]*$/.test(v) && v.indexOf("..") === -1
   }
 
+  // Clears what the quiet line lists, nothing more: a mute or skip for a row
+  // it leaves out (hidden by Show mise tools, not installed now) stays.
   function clearQuiet() {
-    setSettings({ mutedApps: [], skippedVersions: {} })
-    settingIndex = clamp(settingIndex, 0, settingRows.length)
+    var muted = checker.mutedApps.filter(function(pkg) { return !root.listed(pkg) })
+    var skips = {}
+    for (var pkg in checker.skippedVersions)
+      if (!listed(pkg)) skips[pkg] = checker.skippedVersions[pkg]
+    setSettings({ mutedApps: muted, skippedVersions: skips })
   }
 
   function intervalLabel(sec) {
@@ -275,8 +291,11 @@ Panel {
   // recipe without a watch, or a feed that failed with a newer version known.
   // Or a mise tool whose request holds it below a newer release. Not a
   // release omarchy-pkgs still holds (held): Update comes back by itself.
+  // Not an AUR package omarchy update already updates (omarchyUpdate, its
+  // note says so): there is nothing to plan.
   function askable(app) {
-    if (!app || app.installable === true || app.source === "self" || app.held === true) return false
+    if (!app || app.installable === true || app.source === "self" || app.held === true
+      || app.omarchyUpdate === true) return false
     if (app.updateAvailable === true) return true
     return app.source === "mise" && String(app.error || "") === ""
       && String(app.latest || "") !== "" && app.latest !== app.installed
@@ -308,8 +327,10 @@ Panel {
     var newline = output.indexOf("\n")
     var kind = newline < 0 ? output.trim() : output.substring(0, newline)
     var rest = newline < 0 ? "" : output.substring(newline + 1)
-    if (kind === "agent" && root.bar) {
-      root.bar.run("omarchy-agent --prompt " + Util.shellQuote(rest))
+    // omarchy-agent-prompt is the public way in, the one the agents panel
+    // uses; omarchy-agent --prompt is its internal flag.
+    if (kind === "agent") {
+      Util.execArgv(["omarchy-agent-prompt", rest])
       root.close()
     } else if (kind === "copied") setActionNote(pkg, "Prompt copied")
     else if (kind === "noagent") setActionNote(pkg, "No default agent set, prompt copied")
@@ -423,10 +444,13 @@ Panel {
     return String(app.versionFrom || "")
   }
 
-  // How the row knows what it shows and what Update would do.
+  // How the row knows what it shows and what Update would do. A row with no
+  // Update says so, with the reason its second line gives, instead of a
+  // route it cannot take.
   function rowTooltip(app) {
     if (!app) return ""
     var lines = []
+    var note = String(app.note || "")
     var name = String(app.installedName || "")
     lines.push("Installed " + String(app.installed || "")
       + (name !== "" && name !== app.pkg && app.source !== "mise" ? " as " + name : ""))
@@ -434,17 +458,22 @@ Panel {
       var from = sourceLabel(app)
       lines.push("Newest " + app.latest + (from !== "" ? " from " + from : ""))
     }
-    if (app.source === "mise") lines.push("Updates with mise up")
-    else if (app.source === "self") lines.push(app.installable === true
+    if (app.source === "self") lines.push(app.installable === true
       ? "Updates to the release's tagged commit, after showing its log and asking"
       : "omarchy update does not update plugins")
+    else if (app.installable !== true) {
+      // A held release gets its Update once the hold ends.
+      var why = shortNote(note)
+      lines.push((app.held === true ? "No Update yet" : "No Update here") + (why !== "" ? ": " + why : ""))
+      if (why === note) note = ""
+    } else if (app.source === "mise") lines.push("Updates with mise up")
     else if (app.source === "omarchy") {
       var commit = String(app.recipeCommit || checker.pkgsCommit || "")
       lines.push("Updates through Omarchy's recipe"
         + (String(app.recipe || "") !== "" ? " " + app.recipe : "")
         + (commit !== "" ? " at " + commit.substring(0, 7) : ""))
     } else if (app.source === "vendor-pkg") lines.push("Updates with the vendor's Arch package")
-    if (String(app.note || "") !== "") lines.push(app.note)
+    if (note !== "") lines.push(note)
     if (String(app.error || "") !== "") lines.push("Check failed: " + app.error)
     if (checker.isMuted(app)) lines.push("Muted: no badge, no notification")
     if (checker.isSkipped(app)) lines.push("Skipped " + checker.skippedVersion(app) + ": no badge, no notification until a newer version")
@@ -491,6 +520,9 @@ Panel {
   // Qt.callLater. The first settings to arrive with a bar are the real ones.
   onSettingsChanged: if (root.bar) checker.settingsReady = true
   onOrderedAppsChanged: rowIndex = clamp(rowIndex, 0, Math.max(0, orderedApps.length - 1))
+  // Clear, or a settings change from elsewhere, can leave the quiet line
+  // empty, and then it hides: the settings cursor must not stay on it.
+  onQuietTextChanged: if (quietText === "") settingIndex = clamp(settingIndex, 0, settingRows.length)
 
   Main {
     id: checker
@@ -751,7 +783,7 @@ Panel {
 
                 Repeater {
                   id: desktopRepeater
-                  model: root.desktopApps
+                  model: root.rowsShown ? root.desktopApps : []
 
                   AppRow {
                     required property var modelData
@@ -786,7 +818,7 @@ Panel {
 
                 Repeater {
                   id: cliRepeater
-                  model: root.cliApps
+                  model: root.rowsShown ? root.cliApps : []
 
                   AppRow {
                     required property var modelData
@@ -823,7 +855,7 @@ Panel {
 
                 Repeater {
                   id: pluginRepeater
-                  model: root.pluginApps
+                  model: root.rowsShown ? root.pluginApps : []
 
                   AppRow {
                     required property var modelData
@@ -886,7 +918,12 @@ Panel {
                   value: String(checker.refreshIntervalSec)
                   foreground: root.foreground
                   fontFamily: root.fontFamily
-                  onChanged: function(v) { root.setSetting("refreshIntervalSec", Number(v)) }
+                  onChanged: function(v) {
+                    root.setSetting("refreshIntervalSec", Number(v))
+                    // A pick assigns value, which ends the binding above; put
+                    // it back so a later change from shell.json still shows.
+                    intervalDropdown.value = Qt.binding(function() { return String(checker.refreshIntervalSec) })
+                  }
                   onPopupOpenChanged: if (!popupOpen) Qt.callLater(function() { keyCatcher.forceActiveFocus() })
                 }
               }
@@ -960,7 +997,7 @@ Panel {
                   foreground: root.foreground
                   fontFamily: root.fontFamily
                   fontSize: Style.font.bodySmall
-                  tooltipText: "Unmute and unskip every row  Space"
+                  tooltipText: "Unmute and unskip these rows  Space"
                   onClicked: root.clearQuiet()
                 }
               }

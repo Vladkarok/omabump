@@ -19,7 +19,7 @@
     "allowMultiple": false,
     "defaultSection": "right",
     "defaults": {
-      "refreshIntervalSec": 900,
+      "refreshIntervalSec": 3600,
       "notify": true,
       "showMise": true,
       "barIconOnlyWithUpdates": false,
@@ -34,7 +34,7 @@
         "min": 60,
         "max": 86400,
         "step": 60,
-        "defaultValue": 900
+        "defaultValue": 3600
       },
       {
         "key": "notify",
