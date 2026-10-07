@@ -16,20 +16,46 @@ Item {
   property bool settingsReady: false
 
   readonly property string home: Quickshell.env("HOME") || ""
-  readonly property string statusPath: (Quickshell.env("XDG_STATE_HOME") || home + "/.local/state")
-    + "/omarchy/plugins/io.github.vladkarok.omabump/status.json"
+  // state_dir in bin/omabump-common.
+  readonly property string stateDir: (Quickshell.env("XDG_STATE_HOME") || home + "/.local/state")
+    + "/omarchy/plugins/io.github.vladkarok.omabump"
+  readonly property string statusPath: stateDir + "/status.json"
+  // The lock bin/omabump-check holds while it runs.
+  readonly property string lockPath: stateDir + "/.check.lock"
   // A file URL percent-encodes spaces and non-ASCII characters in the path.
   readonly property string binDir: decodeURIComponent(String(Qt.resolvedUrl("bin"))
     .replace(/^file:\/\//, "").replace(/[?#].*$/, ""))
   readonly property string checkScript: binDir + "/omabump-check"
   readonly property string installScript: binDir + "/omabump-install"
   readonly property string promptScript: binDir + "/omabump-prompt"
+  // A Refresh runs this before the checker: $1 the checker's lock, $2 how
+  // long to wait for it (lockWaitSec), then the command. It takes the lock
+  // and lets go at once, says "started" on stdout and runs the command. A
+  // lock still held after the wait is left be, as the checker's own --wait
+  // leaves it; a lock file that cannot be opened (no check has made its
+  // directory yet) has no check behind it.
+  readonly property string waitScript: 'flock -E 75 -w "$2" "$1" true 2>/dev/null; (( $? == 75 )) && exit 0; echo started; shift 2; exec "$@"'
+  // The checker's own --wait (flock -w in bin/omabump-check).
+  readonly property int lockWaitSec: 660
 
   // Between a minute and a day, whatever shell.json holds.
   readonly property int refreshIntervalSec: Math.min(86400, Math.max(60, Number(setting("refreshIntervalSec", 3600)) || 3600))
   readonly property bool notify: boolSetting("notify", true)
   readonly property bool showMise: boolSetting("showMise", true)
-  onShowMiseChanged: { parse(statusFile.text()); if (settingsReady) refresh() }
+  // Only this shell's own check can still be running with the old setting
+  // (one from a terminal or the installer lists mise tools anyway, and
+  // parse() filters them out): one more runs after it. Otherwise each
+  // monitor's copy of the widget starts one; the lock lets the first
+  // through and turns the rest away at once, as it does while another check
+  // runs. status.json's mark is not asked: a killed run leaves it behind.
+  // Before the timer's first tick (the bar is still handing the settings
+  // over), that tick reads the setting as it is then.
+  onShowMiseChanged: {
+    parse(statusFile.text())
+    if (!settingsReady || !timerTicked) return
+    if (checkProcess.running) refreshQueued = true
+    else runCheck(false)
+  }
   // Rows the user muted (pkg ids): no badge, no count, no notification.
   // Their update stays visible in the panel and installable. The checker
   // reads the same two settings from shell.json itself (load_quiet).
@@ -80,6 +106,17 @@ Item {
   // A Refresh that came while this shell's own check ran: that run may have
   // read versions from before the request, so one more runs after it.
   property bool refreshQueued: false
+  // This shell's running check is for a Refresh (it runs with --wait; the
+  // timer's does not).
+  property bool runForRefresh: false
+  // That run still waits for another check to end (waitScript has not said
+  // "started"): a Refresh now needs nothing more, that run starts after it.
+  property bool runWaiting: false
+  // IPC refresh is throttled on these two. A check that starts after now is
+  // on its way already:
+  readonly property bool refreshPending: refreshQueued || checkProcess.running && runWaiting
+  // and this shell's own check for a Refresh is past its wait.
+  readonly property bool refreshRunning: checkProcess.running && runForRefresh && !runWaiting
   // A run from a terminal marks status.json as in progress too. A run killed
   // half way leaves that mark behind, so one older than staleMs no longer
   // counts and Refresh comes back.
@@ -89,6 +126,8 @@ Item {
   // status.json has been read, or found missing. The timer's first check
   // waits for it, or it could not tell that another one just ran.
   property bool statusRead: false
+  // The timer has ticked once, with the settings the bar handed over.
+  property bool timerTicked: false
   property double nowMs: Date.now()
   readonly property bool fileChecking: fileCheckingRaw && nowMs - fileStartedMs < staleMs
   readonly property bool checking: checkProcess.running || fileChecking
@@ -295,34 +334,43 @@ Item {
     return (one >= a.length && !alpha.test(b.charAt(two))) || alpha.test(a.charAt(one)) ? -1 : 1
   }
 
-  // Refresh (click, r, IPC, a changed Show mise tools) always gets a check
-  // that starts after it. While this shell's own check runs it is queued
-  // for when that one ends. While another one runs (another monitor's bar,
-  // a terminal) the checker gets --wait, so it runs after that one instead
-  // of leaving at once on the lock.
+  // Refresh (click, r, IPC) always gets a check that starts after it. While
+  // this shell's own check runs, one more is queued for when it ends, unless
+  // that one is still waiting for another check and so starts later anyway.
+  // Otherwise it runs with --wait: a check already running (another
+  // monitor's bar, a terminal, the installer) may have read versions from
+  // before the request, and this one then runs after it instead of leaving
+  // at once on the lock. With the lock free it runs at once.
   function refresh() {
     if (!settingsReady) return
     if (checkProcess.running) {
-      refreshQueued = true
+      if (!runWaiting) refreshQueued = true
       return
     }
-    nowMs = Date.now()
-    runCheck(fileChecking)
+    runCheck(true)
   }
 
+  // A queued Refresh waits too: the run it came during may have left at
+  // once on the lock (the timer's does) while a check from before the
+  // request held it.
   function runQueued() {
-    if (refreshQueued && !checkProcess.running) runCheck(false)
+    if (refreshQueued && !checkProcess.running) runCheck(true)
   }
 
   function runCheck(wait) {
     refreshQueued = false
+    runForRefresh = wait
+    runWaiting = wait
     // An overall deadline: ten minutes, then TERM, then KILL ten seconds
-    // later. --wait first waits up to 660 s for the running check (flock -w
-    // in bin/omabump-check), so the deadline grows by that.
-    var command = ["timeout", "-k", "10", wait ? "1260" : "600", checkScript]
+    // later. A Refresh waits for a running check before it (waitScript), so
+    // the deadline bounds its own run alone, like any other: other waiters
+    // (the installer, another bar) count on a check ending by then. --wait
+    // still covers a check that takes the lock between the two.
+    var command = ["timeout", "-k", "10", "600", checkScript]
     if (!notify) command.push("--no-notify")
     if (!showMise) command.push("--no-mise")
-    if (wait) command.push("--wait")
+    if (wait)
+      command = ["bash", "-c", waitScript, "omabump-wait", lockPath, String(lockWaitSec)].concat(command, ["--wait"])
     checkProcess.command = command
     checkProcess.running = true
   }
@@ -335,6 +383,7 @@ Item {
   // would come up short by however long its last check took and be skipped.
   // Refresh (click, r, IPC) always checks.
   function scheduledRefresh() {
+    timerTicked = true
     nowMs = Date.now()
     if (checkProcess.running || fileChecking) return
     var checked = checkedAt !== "" ? new Date(checkedAt).getTime() : NaN
@@ -406,9 +455,15 @@ Item {
     // old inode can miss; reading it back here covers that.
     onExited: function(exitCode) {
       root.lastCheckEndMs = Date.now()
+      root.runWaiting = false
       root.checkError = exitCode === 0 ? "" : "Check failed (exit " + exitCode + "), see the shell log"
       statusFile.reload()
       Qt.callLater(root.runQueued)
+    }
+
+    // waitScript's word that the wait is over.
+    stdout: SplitParser {
+      onRead: function(line) { if (line === "started") root.runWaiting = false }
     }
 
     stderr: StdioCollector {

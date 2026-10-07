@@ -92,12 +92,17 @@ Panel {
 
   function refreshNow() { checker.refresh() }
 
-  // IPC refresh: anything on the session bus can call it, so a check that
-  // ended less than a minute ago is not started again. That holds while a
-  // check runs too: Refresh queues one more after it, and a caller in a loop
-  // would otherwise keep checks running back to back.
+  // IPC refresh: anything on the session bus can call it, so it may not keep
+  // this shell checking back to back. A check that starts after the call is
+  // already on its way (queued, or waiting for another check to end): that
+  // one answers it. While this shell's own check for a Refresh runs, or for
+  // a minute after its last check ended with none running now, it is
+  // throttled and starts nothing. So it queues one more only behind the
+  // timer's check, and during another's (a terminal's, another monitor's)
+  // it runs after that one, as Refresh does.
   function ipcRefresh() {
-    if (Date.now() - checker.lastCheckEndMs < 60000) return "throttled"
+    if (checker.refreshPending) return "ok"
+    if (checker.refreshRunning || !checker.checking && Date.now() - checker.lastCheckEndMs < 60000) return "throttled"
     checker.refresh()
     return "ok"
   }
