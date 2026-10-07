@@ -184,11 +184,11 @@ while IFS= read -r app; do
       if self_git_managed; then installable=true
       else note="Local checkout, update it with git"; fi ;;
     indicator)
-      # omarchy update runs yay -Sua over the explicitly installed foreign
-      # packages: an AUR row installed that way needs nothing from here.
+      # omarchy update runs yay -Sua, which updates every foreign
+      # package: an AUR row installed that way needs nothing from here.
       note="No supported install path"
       if [[ $(jq -r '.feed.type // ""' <<<"$app") == aur-rpc ]]; then
-        if pacman -Qqem -- "$installed_name" >/dev/null 2>&1; then
+        if pacman -Qqm -- "$installed_name" >/dev/null 2>&1; then
           omarchy_update=true note="Updates with omarchy update (AUR)"
         else
           note+=", version from AUR"

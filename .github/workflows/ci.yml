@@ -47,4 +47,4 @@ jobs:
         run: |
           version=${GITHUB_REF_NAME#v}
           [[ $(jq -r .version manifest.json) == "$version" ]] || { echo "manifest.json is not $version"; exit 1; }
-          grep -q "^## $version " CHANGELOG.md || { echo "CHANGELOG.md has no '## $version' entry"; exit 1; }
+          awk -v v="$version" '$1 == "##" && $2 == v { found = 1 } END { exit !found }' CHANGELOG.md || { echo "CHANGELOG.md has no '## $version' entry"; exit 1; }

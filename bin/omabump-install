@@ -270,9 +270,13 @@ stage_and_install() {
   fi
   # The file is opened here, as you, and root only writes what it reads: a
   # symlink swapped in for it cannot make root copy a file you cannot read
-  # (/etc/shadow) into a world-readable place.
-  [[ -f $file && ! -L $file ]] || die "$file is not a regular file; not installing"
-  run_unlocked sudo install -o root -g root -m 0644 -D /dev/stdin "$staged" <"$file" || die "could not copy $file to $staged"
+  # (/etc/shadow) into a world-readable place. The check is on the open file
+  # itself, so a FIFO or device swapped in cannot feed root an endless copy.
+  local src
+  exec {src}<"$file" || die "cannot open $file"
+  [[ -f /proc/self/fd/$src ]] || { exec {src}<&-; die "$file is not a regular file; not installing"; }
+  run_unlocked sudo install -o root -g root -m 0644 -D /dev/stdin "$staged" <&"$src" || { exec {src}<&-; die "could not copy $file to $staged"; }
+  exec {src}<&-
   if [[ -n $algo ]]; then
     got=$("${algo}sum" -- "$staged" | cut -d' ' -f1)
     [[ $got == "$want" ]] || die "$algo of the staged copy is $got, expected $want; not installing (the copy stays in $staged)"
@@ -336,8 +340,10 @@ clean_after_install() {
 
 # After pacman -U succeeded: the sources this recipe downloaded go too. They
 # are the installed version's, so only a failed install (whose sources stay,
-# for the retry) could use them again. Only names the recipe lists are
-# touched, never another recipe's files. Run in the recipe directory.
+# for the retry) could use them again. Of other files, only those downloaded
+# over a week ago go: a retry that late fetches again. Omarchy installs hold
+# the clone lock, so no other build is using SRCDEST meanwhile. Run in the
+# recipe directory.
 clean_sources() {
   local used f n=0
   while IFS= read -r used; do
@@ -346,6 +352,7 @@ clean_sources() {
     [[ $f =~ ^[A-Za-z0-9@%+,_~][A-Za-z0-9@%+,._~-]*$ && -f $SRCDEST/$f ]] || continue
     rm -f -- "$SRCDEST/$f" && n=$((n + 1))
   done < <(mkpkg --printsrcinfo 2>/dev/null | sed -n 's/^\tsource\(_[a-z0-9_]*\)\? = //p')
+  n=$(( n + $(find "$SRCDEST" -mindepth 1 -maxdepth 1 -type f -mtime +7 -print -delete 2>/dev/null | wc -l) ))
   (( n == 0 )) || echo "Removed $n downloaded source file(s) from $SRCDEST."
 }
 
@@ -551,7 +558,9 @@ install_self() {
   fi
   run_unlocked omarchy-shell shell rescanPlugins >/dev/null 2>&1 </dev/null || true
   "$plugin_dir/bin/omabump-check" --no-notify --wait || true
-  echo "Omabump is now $latest. If the panel still shows $installed, run: omarchy restart shell"
+  # rescanPlugins finds the plugin again but QML it already loaded can stay
+  # cached, while the row above already reads the new version.
+  echo "Omabump is now $latest. Restart the shell to load its new panel: omarchy restart shell"
   exit 0
 }
 

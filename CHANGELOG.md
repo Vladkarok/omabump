@@ -16,6 +16,14 @@
 - Names in `apps.json` ending in a newline passed the jq rules (`$` matches before a final newline); they are dropped now.
 - CRLF update manifests: the checksum lookup and the version now strip `\r`.
 - Switch reads `pacman -Qi` with `COLUMNS` unset, so a wrapped Provides or Conflicts line no longer hides a name.
+- Settings stored as strings (`omarchy bar set ... notify false` without `--json`) now read as booleans everywhere; the panel's toggles and the checker used to disagree.
+- The interval picker keeps following the setting after you pick a value.
+- A row with no Update says so, and why, in its tooltip instead of naming a route it cannot take.
+- Clear in the settings removes only the mutes and skips it lists; ones for hidden rows stay.
+- The default check interval is one hour (was 15 minutes). A shell reload or a second monitor no longer starts a check when one ran within the interval.
+- Rows are built only while the panel shows, and a status write that changes no row rebuilds nothing.
+- Ask agent starts the agent through `omarchy-agent-prompt`, Omarchy's public entry point.
+- Dimmed text is dimmer than normal text on light themes too.
 - tests/run.sh runs every test and reports all failures. CI has job timeouts, and a release tag must match `manifest.json` and have a CHANGELOG entry.
 
 ## 0.1.1 (2026-10-02)
