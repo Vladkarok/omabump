@@ -1,8 +1,8 @@
 # shellcheck shell=bash
 # bin/omabump-install against stub commands, sourced by tests/run.sh (its
-# helpers, $root and $scratch). The installer runs as a child process from a
-# copy of the plugin whose bin/omabump-check is a stub, with these first on
-# PATH:
+# helpers, $root and $scratch). The installer runs in a child bash from a
+# copy of the plugin whose bin/omabump-check is a stub, staging in a test
+# directory instead of /var/cache/omabump, with these first on PATH:
 #   pacman    -Q and -Qi from a fixture database, -Qp and -Qip from the
 #             package's .PKGINFO, -U as $STUB_PACMAN_U says (ok, no, hookfail)
 #   sudo      records its arguments and runs only the installer's three
@@ -121,10 +121,17 @@ for f in omarchy-shell omarchy; do printf '#!/bin/bash\necho "%s $*" >>"$STUB_LO
 chmod +x "$istubs"/*
 
 inst_env=(env HOME="$ihome" PATH="$istubs:$PATH" XDG_CONFIG_HOME="$ihome/.config" XDG_STATE_HOME="$it/state"
-  XDG_CACHE_HOME="$it/cache" GIT_CONFIG_NOSYSTEM=1 OMABUMP_TEST_STAGING_DIR="$istaging"
+  XDG_CACHE_HOME="$it/cache" GIT_CONFIG_NOSYSTEM=1
   STUB_DB="$idb" STUB_LOG="$ilog" STUB_SERVED="$iserved" STUB_STAGING="$istaging")
-# inst <args...>: a run of the installer copy; its output in $iout, status in $irc.
-inst() { iout=$("${inst_env[@]}" timeout 120 "$iplugin/bin/omabump-install" "$@" </dev/null 2>&1); irc=$?; }
+# inst <args...>: a run of the installer copy, staging in $istaging; its
+# output in $iout, status in $irc. The staging directory is set the only way
+# there is: sourced, before install_main.
+inst() {
+  # shellcheck disable=SC2016 # expanded by the child bash
+  iout=$("${inst_env[@]}" timeout 120 bash -c 'source "$1" "${@:2}"; staging_dir=$STUB_STAGING; install_main' \
+    omabump-test "$iplugin/bin/omabump-install" "$@" </dev/null 2>&1)
+  irc=$?
+}
 # inst_src <code> <args...>: the installer sourced with <args> in a child
 # bash, so its setup runs as in a real run, then <code> there, under the
 # installer's set -euo pipefail.
@@ -182,6 +189,14 @@ says "install --prepare (vendor): checks the download" 'sha512 matches.'
 says "install --prepare (vendor): the staged copy goes whether pacman installed it or not" \
   "Would run: sudo rm -f -- $vstaged (whether pacman installed it or not)"
 no_call "install --prepare (vendor): never calls sudo" 'sudo '
+
+# Run as a command, the installer stages in /var/cache/omabump whatever the
+# environment says.
+fresh 'testapp 1.0.0-1'
+iout=$("${inst_env[@]}" OMABUMP_TEST_STAGING_DIR="$istaging" timeout 120 "$iplugin/bin/omabump-install" --prepare testapp </dev/null 2>&1)
+same "install --prepare, run as a command: succeeds" 0 "$?"
+says "install, run as a command: no environment variable moves the staging directory" \
+  "Would run: sudo pacman -U -- /var/cache/omabump/$vpkg ("
 
 fresh 'testapp 1.0.0-1'
 STUB_PACMAN_U=no inst testapp
@@ -270,6 +285,25 @@ T_PKG=$it/new.pkg.tar inst_src 'rc=0; switch_conflicts "$T_PKG" || rc=$?; echo "
 same "switch_conflicts: a package pacman cannot read is not 'no conflict'" 2 "$iout"
 rm -f "$it/new.pkg.tar" "$idb/qi/testapp-bin"
 
+# Before a build, from the recipe: per-architecture fields count for this
+# machine's architecture only, as in the package makepkg would build here.
+fresh 'testpkg-bin 1.5.0-1'
+recipe_conflicts() {  # <the installed package's Conflicts With> <one .SRCINFO line>
+  printf 'Name            : testpkg-bin\nProvides        : None\nConflicts With  : %s\n' "$1" >"$idb/qi/testpkg-bin"
+  # shellcheck disable=SC2016 # expanded by the child bash
+  T_LINE=$2 inst_src 'mkpkg() { printf "pkgbase = testpkg\n\t%s\n\npkgname = testpkg\n" "$T_LINE"; }
+    rc=0; switch_conflicts "$HOME" || rc=$?; echo "$rc"' testpkg
+  echo "$iout"
+}
+iarch=$(uname -m) iother=armv7h
+[[ $iarch != "$iother" ]] || iother=x86_64
+same "switch_conflicts: a recipe's plain conflicts" 0 "$(recipe_conflicts None 'conflicts = testpkg-bin')"
+same "switch_conflicts: a recipe's conflicts_<this architecture>" 0 "$(recipe_conflicts None "conflicts_$iarch = testpkg-bin")"
+same "switch_conflicts: not another architecture's" 1 "$(recipe_conflicts None "conflicts_$iother = testpkg-bin")"
+same "switch_conflicts: a recipe's provides_<this architecture>, which the old package conflicts with" 0 \
+  "$(recipe_conflicts newapi "provides_$iarch = newapi=2")"
+rm -f "$idb/qi/testpkg-bin"
+
 # --- the omarchy route, on a local omarchy-pkgs clone ----------------------------
 
 pk=$it/cache/omabump/omarchy-pkgs
@@ -343,23 +377,34 @@ says "install (omarchy): restart to use it" 'Restart Test Pkg to use 2.0.0-1.'
 
 # --- Omabump's own update: the fast-forward and its rollback ---------------------------
 
+# The release changes a.txt and adds c.txt, d/new, n/sub/f (in directories
+# the installed commit does not have) and b.log, which the installed
+# commit's .gitignore matches.
 igit init -q "$iplugin"
 mkdir -p "$iplugin/d"
 echo one >"$iplugin/a.txt"
 echo keep >"$iplugin/d/keep"
+echo '*.log' >"$iplugin/.gitignore"
 igit -C "$iplugin" add -A
 igit -C "$iplugin" commit -q -m installed
 before=$(git -C "$iplugin" rev-parse HEAD)
+mkdir -p "$iplugin/n/sub"
 echo two >"$iplugin/a.txt"
 echo new >"$iplugin/c.txt"
 echo new >"$iplugin/d/new"
+echo new >"$iplugin/n/sub/f"
+echo new >"$iplugin/b.log"
 igit -C "$iplugin" add -A
+igit -C "$iplugin" add -f b.log
 igit -C "$iplugin" commit -q -m release
 target=$(git -C "$iplugin" rev-parse HEAD)
+# The installed commit, nothing of the release left: git status shows
+# neither ignored files nor empty directories, so those are looked for.
 at_before() {
-  [[ $(git -C "$iplugin" rev-parse HEAD) == "$before" && -z $(git -C "$iplugin" status --porcelain) && $(<"$iplugin/a.txt") == one ]]
+  [[ $(git -C "$iplugin" rev-parse HEAD) == "$before" && -z $(git -C "$iplugin" status --porcelain) && $(<"$iplugin/a.txt") == one ]] \
+    && [[ ! -e $iplugin/c.txt && ! -e $iplugin/d/new && ! -e $iplugin/n && ! -e $iplugin/b.log ]]
 }
-self_reset() { igit -C "$iplugin" reset -q --hard "$before"; igit -C "$iplugin" clean -qfd; : >"$ilog/calls"; }
+self_reset() { igit -C "$iplugin" reset -q --hard "$before"; igit -C "$iplugin" clean -qfdx; : >"$ilog/calls"; }
 export T_BEFORE=$before T_TARGET=$target
 
 self_reset
@@ -383,8 +428,9 @@ says "self_apply: a merge that fails after moving HEAD rolls back" "git merge --
 check "self_apply: back at the installed commit" at_before
 no_call "self_apply: nothing validated after a failed merge" 'validate'
 
-# A merge that stops part way: a.txt rewritten and c.txt written, d/new not
-# (d is read-only), HEAD and the index not moved. Root writes anyway.
+# A merge that stops part way: a.txt rewritten, b.log, c.txt and n/sub/f
+# written, d/new not (d is read-only), HEAD and the index not moved. Root
+# writes anyway.
 self_reset
 if (( $(id -u) == 0 )); then
   pass "self_apply: a merge that stops part way rolls back (skipped as root)"
@@ -398,12 +444,29 @@ else
   check "self_apply: the files it wrote are gone" at_before
 fi
 
-# Stopped by a signal (Ctrl-C) while validating: the exit trap rolls back.
+# Stopped by a signal while validating: the rollback follows the validator.
 self_reset
 # shellcheck disable=SC2016 # expanded by the child bash
 STUB_VALIDATE=term inst_src 'self_target=$T_TARGET; self_apply "$T_BEFORE" omarchy-plugin-validate; echo applied' self:omabump
-says "self_apply: a run stopped while validating rolls back on exit" "the update stopped part way; rolled back to ${before:0:12}"
+says "self_apply: a run stopped while validating rolls back" "the update stopped part way; rolled back to ${before:0:12}"
 check "self_apply: back at the installed commit after the signal" at_before
 refuse "self_apply: and the run is a failure" test "$irc" = 0
+
+# Stopped by a signal while git merges, as closing the terminal or kill
+# would: git, under timeout in a process group of its own, is not told and
+# goes on to finish the merge. The rollback has to come after it.
+self_reset
+cat >"$istubs/git" <<'EOF'
+#!/bin/bash
+for a; do [[ $a != merge ]] || { kill -TERM "$T_INSTALLER"; sleep 1; }; done
+PATH=${PATH#*:} exec git "$@"   # the real git, after the stubs directory
+EOF
+chmod +x "$istubs/git"
+# shellcheck disable=SC2016 # expanded by the child bash
+inst_src 'export T_INSTALLER=$$; self_target=$T_TARGET; self_apply "$T_BEFORE" omarchy-plugin-validate; echo applied' self:omabump
+rm -f "$istubs/git"
+says "self_apply: a run stopped while git merges rolls back" "the update stopped part way; rolled back to ${before:0:12}"
+check "self_apply: once the merge is done, not under it" at_before
+no_call "self_apply: and validates nothing" 'validate'
 self_reset
 unset T_BEFORE T_TARGET

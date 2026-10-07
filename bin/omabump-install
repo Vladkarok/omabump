@@ -128,8 +128,9 @@ mkpkg() { run_unlocked makepkg --config "$cache_dir/makepkg.conf" "$@"; }
 
 # A failed build or install keeps its files for a look; a successful one
 # removes them (clean_after_install). self_before is set only while
-# install_self moves the plugin clone (self_apply): whatever ends the run
-# there, an error or Ctrl-C, puts the clone back.
+# install_self moves the plugin clone (self_apply), which holds Ctrl-C and
+# the like until its step is done and rolls back itself; anything else that
+# ends the run there puts the clone back from here.
 restore_clone=0 started=0 self_before=""
 on_exit() {
   local rc=$?
@@ -182,14 +183,19 @@ replaces_other() { [[ -n $installed_name && $installed_name != "$pkg" ]]; }
 # Fails with 1 when neither declares one, with 2 when pacman or makepkg
 # cannot say.
 switch_conflicts() {
-  local src=$1 new_c new_p old_c old_p info
+  local src=$1 new_c new_p old_c old_p info arch
   if [[ -f $src ]]; then
     info=$(pacman_qi -Qip -- "$src") || return 2
     new_c=$(qi_names 'Conflicts With' <<<"$info") new_p=$(qi_names Provides <<<"$info")
   else
     info=$(cd "$src" && mkpkg --printsrcinfo 2>/dev/null) || return 2
-    new_c=$(sed -n 's/^\tconflicts = //p' <<<"$info" | sed 's/[<>=].*//')
-    new_p=$(sed -n 's/^\tprovides = //p' <<<"$info" | sed 's/[<>=].*//')
+    # The package built here gets conflicts_<arch> and provides_<arch> for
+    # this machine's architecture on top of the plain ones, as pacman -Qip
+    # would show them; an odd uname -m takes every architecture's.
+    arch=$(uname -m)
+    [[ $arch =~ ^[a-z0-9_]+$ ]] || arch='[a-z0-9_]*'
+    new_c=$(sed -n "s/^\tconflicts\(_$arch\)\? = //p" <<<"$info" | sed 's/[<>=].*//')
+    new_p=$(sed -n "s/^\tprovides\(_$arch\)\? = //p" <<<"$info" | sed 's/[<>=].*//')
   fi
   info=$(pacman_qi -Qi -- "$installed_name") || return 2
   old_c=$(qi_names 'Conflicts With' <<<"$info") old_p=$(qi_names Provides <<<"$info")
@@ -288,9 +294,9 @@ check_target() {
 # whether it installed or not (packages can be gigabytes); only a copy that
 # fails its check stays, and the message says where. $1 is the verified
 # file, $2 the expected "<name> <full version>". With --prepare it prints
-# the commands and calls no sudo. OMABUMP_TEST_STAGING_DIR is for the tests
-# alone: a real install stages in the root-owned /var/cache/omabump.
-staging_dir=${OMABUMP_TEST_STAGING_DIR:-/var/cache/omabump}
+# the commands and calls no sudo. Run as a command, nothing changes the
+# directory: the tests source this file and set staging_dir themselves.
+staging_dir=/var/cache/omabump
 stage_and_install() {
   local file=$1 expect=$2 algo=${3:-} want=${4:-} staged got line now
   staged=$staging_dir/${file##*/}
@@ -571,35 +577,72 @@ install_mise() {
   target_version=$now
 }
 
+# Set by self_apply: what its merge creates, and whether a signal came.
+self_new=() self_stop=0
+
 # Fast-forwards the plugin clone from the commit $1 to $self_target and
 # validates the result with the command "${@:2}" <plugin dir>. From the
 # merge until the validation passed, any end of the run (a merge that fails
-# part way, a failed validation, Ctrl-C) puts the clone back at $1 through
-# self_rollback, here or from on_exit: never a half-updated plugin.
+# part way, a failed validation, Ctrl-C, the terminal closing, kill) puts
+# the clone back at $1 through self_rollback: never a half-updated plugin.
 self_apply() {
-  local before=$1
+  local before=$1 added=() p rc=0
   shift
-  self_before=$before
-  self_git merge -q --ff-only "$self_target" || self_rollback "git merge --ff-only $self_target failed"
-  run_unlocked "$@" "$plugin_dir" </dev/null || self_rollback "the new version failed validation"
+  # What the merge creates: each path the release adds that is not on disk
+  # now, cut to its top-most directory that is not on disk either. The
+  # rollback removes these whole, since git status shows neither ignored
+  # files nor empty directories. A path already on disk is an ignored file
+  # of yours (status was clean), which the merge overwrites as git does and
+  # the rollback leaves.
+  mapfile -d '' -t added < <(self_git diff -z --name-only --no-renames --diff-filter=A "$before" "$self_target")
+  wait "$!" || die "git diff failed in $plugin_dir; nothing changed"
+  self_new=()
+  for p in "${added[@]}"; do
+    [[ -e $plugin_dir/$p || -L $plugin_dir/$p ]] && continue
+    while [[ $p == */* && ! -e $plugin_dir/${p%/*} && ! -L $plugin_dir/${p%/*} ]]; do p=${p%/*}; done
+    self_new+=("$p")
+  done
+  self_before=$before self_stop=0
+  # A signal waits for the step it comes in: git runs under timeout, in a
+  # process group of its own that Ctrl-C and a closing terminal do not
+  # reach, so stopping at once would roll back under a merge that carries
+  # on and lands. Each step is bounded, the merge by self_git's timeout.
+  trap 'self_stop=1' HUP INT TERM
+  self_git merge -q --ff-only "$self_target" || rc=$?
+  (( ! self_stop )) || self_rollback "the update stopped part way"
+  (( rc == 0 )) || self_rollback "git merge --ff-only $self_target failed"
+  run_unlocked "$@" "$plugin_dir" </dev/null || rc=$?
+  (( ! self_stop )) || self_rollback "the update stopped part way"
+  (( rc == 0 )) || self_rollback "the new version failed validation"
   self_before=""
+  trap - HUP INT TERM
 }
 
 # Puts the plugin clone back at self_before, HEAD and work tree: a merge
 # that stopped part way can leave files of the release that are not in the
-# index yet, so the files the release adds go too (the clone had no
-# untracked files before; self_plan and install_self check). Exits with $1
-# and whether that worked.
+# index yet, so what the merge created (self_new) goes too, ignored files
+# included. Exits with $1 and whether that worked.
 self_rollback() {
-  local before=$self_before added=()
+  local before=$self_before
   self_before=""
-  mapfile -d '' -t added < <(self_git diff -z --name-only --no-renames --diff-filter=A "$before" "$self_target" 2>/dev/null)
-  if self_git reset -q --hard "$before" \
-     && { (( ${#added[@]} == 0 )) || self_git --literal-pathspecs clean -qfd -- "${added[@]}"; } \
-     && [[ $(self_git rev-parse HEAD) == "$before" && -z $(self_git status --porcelain) ]]; then
+  if self_restore "$before"; then
     die "$1; rolled back to ${before:0:12}"
   fi
   die "$1, and the rollback did not finish; see git -C $plugin_dir status, and restore it with: git -C $plugin_dir reset --hard $before"
+}
+
+# True once the clone is at $1 with a clean work tree and nothing the merge
+# created is left.
+self_restore() {
+  local p
+  self_git reset -q --hard "$1" || return 1
+  if (( ${#self_new[@]} )); then
+    self_git --literal-pathspecs clean -qfdx -- "${self_new[@]}" || return 1
+  fi
+  for p in "${self_new[@]}"; do
+    [[ ! -e $plugin_dir/$p && ! -L $plugin_dir/$p ]] || return 1
+  done
+  [[ $(self_git rev-parse HEAD) == "$1" && -z $(self_git status --porcelain) ]]
 }
 
 # Omabump itself: the plugin's own clone, fast-forwarded to the commit the
@@ -630,7 +673,7 @@ install_self() {
   echo
   if (( prepare )); then
     echo "Would ask: Update Omabump to $latest? [y/N]"
-    echo "Would run: git merge --ff-only $self_target in $plugin_dir, ${validate[*]} $plugin_dir (if either fails or the run stops between them: git reset --hard to the installed commit, and the files the release adds removed), omarchy-shell shell rescanPlugins"
+    echo "Would run: git merge --ff-only $self_target in $plugin_dir, ${validate[*]} $plugin_dir (if either fails or the run is stopped before the validation passed: git reset --hard to the installed commit, and what the merge created removed), omarchy-shell shell rescanPlugins"
     exit 0
   fi
   before=$(self_git rev-parse HEAD) || die "git rev-parse HEAD failed in $plugin_dir"
@@ -649,22 +692,27 @@ install_self() {
   exit 0
 }
 
+# The install on the app's route, then the panel's refresh.
+install_main() {
+  case $source in
+    self) install_self ;;
+    omarchy) install_omarchy ;;
+    vendor-pkg) install_vendor_pkg ;;
+    mise) install_mise ;;
+    indicator) die "$label has no supported install path; update it the way you installed it" ;;
+    *) die "unknown source '$source'" ;;
+  esac
+
+  (( prepare )) && exit 0
+  refresh_panel
+  if [[ $source != mise ]]; then
+    if [[ -n $installed ]]; then echo "Restart $label to use $target_version."; else echo "$label $target_version is installed."; fi
+  fi
+}
+
 # tests/install.sh sources this file with an app's arguments, stub commands
 # first on PATH: everything above runs as in a real run, then the tests call
-# the functions themselves.
+# the functions themselves, or install_main with staging_dir in their own
+# directory.
 if (return 0 2>/dev/null); then return 0; fi
-
-case $source in
-  self) install_self ;;
-  omarchy) install_omarchy ;;
-  vendor-pkg) install_vendor_pkg ;;
-  mise) install_mise ;;
-  indicator) die "$label has no supported install path; update it the way you installed it" ;;
-  *) die "unknown source '$source'" ;;
-esac
-
-(( prepare )) && exit 0
-refresh_panel
-if [[ $source != mise ]]; then
-  if [[ -n $installed ]]; then echo "Restart $label to use $target_version."; else echo "$label $target_version is installed."; fi
-fi
+install_main
