@@ -132,32 +132,43 @@ mkpkg() { run_unlocked makepkg --config "$cache_dir/makepkg.conf" "$@"; }
 # the like until its step is done and rolls back itself; anything else that
 # ends the run there puts the clone back from here. staged_copy names the
 # root-owned copy in $staging_dir while it exists (stage_and_install). A run
-# that ends with it there (the terminal closed or TERM at pacman's prompt,
-# which end this script at once) removes it with sudo -n. That works only
-# while the terminal is still open (TERM, Ctrl-C): sudo by default keeps
-# your password for the terminal pacman -U ran in, and once that terminal
-# is closed this script has none, so sudo -n finds no password and nothing
-# can ask. A copy that stays is recorded in $staged_left, which needs no
-# terminal, for the next Update of the app to remove (clear_staged_left),
-# and the message names it and the command that removes it. The removal
-# and the record come first and the message last: with the terminal gone,
-# a failed write would end on_exit.
-restore_clone=0 started=0 self_before="" staged_copy=""
+# that ends with it there, pacman not running (TERM or the terminal closed
+# end this script at once), removes it with sudo -n. That works only while
+# the terminal is still open (TERM, Ctrl-C): sudo by default keeps your
+# password for the terminal it asked in, and once that terminal is closed
+# this script has none, so sudo -n finds no password and nothing can ask.
+# A run that ends while pacman runs (pacman_running) leaves the copy alone:
+# pacman is a process of its own under sudo, which the signal that ended
+# this script need not have reached, and it may still be reading or
+# installing the copy. A copy that stays is recorded in $staged_left, which
+# needs no terminal, for the next Update of the app to remove
+# (clear_staged_left), and the message names it and the command that
+# removes it. The removal and the record come first and the message last:
+# with the terminal gone, a failed write would end on_exit.
+restore_clone=0 started=0 self_before="" staged_copy="" pacman_running=0
 # One record per app: only a run holding the app's lock (fd 7) reads or
 # writes it, while updates of other apps may run at the same time.
 staged_left=$cache_dir/staged-left/$pkg
 on_exit() {
   local rc=$? left="" later=""
   if [[ -n $staged_copy && -e $staged_copy ]]; then
-    if ! run_unlocked sudo -n rm -f -- "$staged_copy" 2>/dev/null </dev/null; then
+    if (( pacman_running )); then
       left=$staged_copy
+    elif ! run_unlocked sudo -n rm -f -- "$staged_copy" 2>/dev/null </dev/null; then
+      left=$staged_copy
+    fi
+    if [[ -n $left ]]; then
       { mkdir -p "${staged_left%/*}" && printf '%s\n' "$left" >>"$staged_left"; } 2>/dev/null \
         && later=" (the next Update of $label removes it too)"
     fi
   fi
   (( restore_clone )) && pkgs_restore "$pkg"
   [[ -z $self_before ]] || self_rollback "the update stopped part way"
-  [[ -z $left ]] || echo "omabump: the staged copy stays in $left; remove it with: sudo rm -f -- $left$later" >&2
+  if [[ -n $left ]] && (( pacman_running )); then
+    echo "omabump: pacman may still be reading the staged copy, so it stays in $left; once pacman has ended, remove it with: sudo rm -f -- $left$later" >&2
+  elif [[ -n $left ]]; then
+    echo "omabump: the staged copy stays in $left; remove it with: sudo rm -f -- $left$later" >&2
+  fi
   if (( rc != 0 && started )); then
     echo "omabump: the build and download files stay in $cache_dir/{build,packages,sources}" >&2
   fi
@@ -314,16 +325,16 @@ check_target() {
 # checked again (digest when $3/$4 give one, name and full version always),
 # and pacman asks before it installs. Once pacman is done the copy goes,
 # whether it installed or not (packages can be gigabytes), and so does one
-# a stopped run leaves (on_exit, or the next run: clear_staged_left); only
-# a copy that fails its check stays, and the message says where. $1 is the
-# verified file, $2 the expected "<name> <full version>". With --prepare it
-# prints the commands and calls no sudo. Run as a command, nothing changes
-# the directory: the tests source this file and set staging_dir themselves.
+# a stopped run leaves (on_exit, or, when it cannot or pacman was still
+# running, the next Update: clear_staged_left); only a copy that fails its
+# check stays, and the message says where. $1 is the verified file, $2 the
+# expected "<name> <full version>". With --prepare it prints the commands
+# and calls no sudo. Run as a command, nothing changes the directory: the
+# tests source this file and set staging_dir themselves.
 staging_dir=/var/cache/omabump
 stage_and_install() {
-  local file=$1 expect=$2 algo=${3:-} want=${4:-} staged got line now
+  local file=$1 expect=$2 algo=${3:-} want=${4:-} staged got line now rc=0
   staged=$staging_dir/${file##*/}
-  clear_staged_left
   if (( prepare )); then
     echo "Would run: sudo install -o root -g root -m 0644 -D /dev/stdin $staged <$file"
     [[ -z $algo ]] || echo "Would check: ${algo}sum of $staged is $want"
@@ -353,7 +364,11 @@ stage_and_install() {
   echo "Staged copy checked: $staged"
   # pacman asks "Proceed with installation?": that prompt is where you can
   # still stop. sudo need not ask for a password, makepkg -s may have used it.
-  if run_unlocked sudo pacman -U -- "$staged"; then
+  # A run that ends meanwhile leaves the copy to pacman (on_exit).
+  pacman_running=1
+  run_unlocked sudo pacman -U -- "$staged" || rc=$?
+  pacman_running=0
+  if (( rc == 0 )); then
     unstage "$staged"
     return 0
   fi
@@ -378,11 +393,15 @@ unstage() {
 }
 
 # Removes the staged copies earlier runs of this app recorded in
-# $staged_left (on_exit: stopped with the terminal closed), now that a
-# terminal is there for sudo to ask on. The record is a file of yours, so
-# only a plain file name in $staging_dir reaches sudo rm; other lines, and
-# copies already gone, are dropped. A copy that cannot go is named and
-# stays recorded.
+# $staged_left (on_exit: stopped while pacman ran, or with the terminal
+# closed), now that a terminal is there for sudo to ask on. The app's lock
+# keeps its other runs away, but not a pacman one of them left running
+# (pacman runs without that lock): while pacman's own lock file is there, a
+# pacman is running and may be reading a copy, so the copies stay
+# recorded. The record is a file of yours, so only a plain file name in
+# $staging_dir reaches sudo rm; other lines, and copies already gone, are
+# dropped. A copy that cannot go is named and stays recorded.
+pacman_lock=/var/lib/pacman/db.lck
 clear_staged_left() {
   local p lines=() keep=()
   [[ -f $staged_left ]] || return 0
@@ -390,7 +409,10 @@ clear_staged_left() {
   for p in "${lines[@]}"; do
     [[ ${p%/*} == "$staging_dir" && ${p##*/} == [!.]* ]] || continue
     [[ -e $p || -L $p ]] || continue
-    if (( prepare )); then
+    if [[ -e $pacman_lock ]]; then
+      echo "omabump: pacman is running and may be reading the staged copy a stopped run left, so it stays in $p; once pacman has ended, remove it with: sudo rm -f -- $p (the next Update of $label removes it too)" >&2
+      keep+=("$p")
+    elif (( prepare )); then
       echo "Would run: sudo rm -f -- $p (the staged copy a stopped run left)"
     elif run_unlocked sudo rm -f -- "$p"; then
       echo "Removed the staged copy a stopped run left: $p"
@@ -772,8 +794,13 @@ install_self() {
   exit 0
 }
 
-# The install on the app's route, then the panel's refresh.
+# The install on the app's route, then the panel's refresh. The copies
+# stopped runs left go first, whatever the route does next (no newer
+# version yet, a failed download). Here rather than right after the app's
+# lock is taken: nothing before this stages or downloads, and the tests set
+# staging_dir just before install_main.
 install_main() {
+  clear_staged_left
   case $source in
     self) install_self ;;
     omarchy) install_omarchy ;;
