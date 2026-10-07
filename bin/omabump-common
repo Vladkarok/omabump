@@ -18,6 +18,34 @@ fi
 # sudo and command feeds run without them; the parent keeps its locks.
 run_unlocked() { "$@" 7>&- 8>&- 9>&-; }
 
+# run_unlocked for a command under `timeout`, which puts itself and the
+# command in a process group of their own. Main.qml stops a check that runs
+# too long with TERM to the check's group, then KILL ten seconds later, and
+# bash runs the check's TERM trap (status.json written as a failed run) only
+# once the foreground command it waits for has ended: a git, mise or feed
+# command outside that group would hold the trap for up to its own limit,
+# the KILL would come first, and the rows would stay "checking" with the
+# command left running. So the command runs as a background job of a
+# subshell that waits for it with the wait builtin, which returns at once on
+# a trapped signal: TERM stops the command's whole group and ends the
+# subshell. INT (Ctrl-C in the installer's terminal) reaches neither that
+# group nor timeout, which ignores it in a background job, so it stops the
+# command with TERM too, and the step fails with the command's status. The
+# exit status is the command's.
+run_killable() (
+  local pid="" rc
+  trap '[[ -z $pid ]] || kill -TERM -- "-$pid" "$pid" 2>/dev/null; exit 143' TERM
+  trap '[[ -z $pid ]] || kill -TERM -- "-$pid" "$pid" 2>/dev/null' INT
+  "$@" 7>&- 8>&- 9>&- &
+  pid=$!
+  while :; do
+    wait "$pid" && exit 0
+    rc=$?
+    # A wait cut short by the INT trap: the command is still running.
+    kill -0 "$pid" 2>/dev/null || exit "$rc"
+  done
+)
+
 plugin_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 shipped_apps=$plugin_dir/apps.json
 user_apps=${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/omabump/apps.json
@@ -27,10 +55,16 @@ notified_file=$state_dir/notified.json
 # When a check first saw each release an omarchy-pkgs recipe still holds.
 seen_file=$state_dir/seen.json
 
+# Scratch files of one run go under $run_tmp when the script set it:
+# omabump-check does, inside $state_dir, and removes it on every exit, so a
+# file a helper made is not left behind when the run dies or a subshell is
+# killed between mktemp and rm. Otherwise they go next to what they are for.
+run_tmp=""
+
 # Replaces the state file $2 with the JSON $1 in one rename.
 save_json() {
   local out
-  out=$(mktemp "$state_dir/.state.XXXXXX")
+  out=$(mktemp "${run_tmp:-$state_dir}/.state.XXXXXX")
   if jq . <<<"$1" >"$out" && mv -f "$out" "$2"; then return 0; fi
   rm -f "$out"
   return 1
@@ -91,24 +125,32 @@ skip_version_ok() { [[ ${#1} -le 64 && $1 =~ ^[0-9A-Za-z][A-Za-z0-9._+~-]*$ && $
 # (an array) and skipped_json (an object). The file is read only up to
 # 1 MiB, each setting only up to 200 entries, and an id or version the rules
 # above refuse is dropped with a line on stderr; nothing else in the file is
-# used.
+# used but the notify and showMise settings: setting_notify and
+# setting_show_mise are "true" or "false" as the widget reads them (a
+# boolean, or the string "true" or "false" in any case, as `omarchy bar set`
+# without --json stores it), else empty.
 shell_json=$HOME/.config/omarchy/shell.json
-muted_json='[]' skipped_json='{}'
+muted_json='[]' skipped_json='{}' setting_notify="" setting_show_mise=""
 quiet_max=200
 load_quiet() {
   local entry size ids=() pairs=() id ver
-  muted_json='[]' skipped_json='{}'
+  muted_json='[]' skipped_json='{}' setting_notify="" setting_show_mise=""
   [[ -f $shell_json ]] || return 0
   size=$(head -c 1048577 -- "$shell_json" 2>/dev/null | wc -c)
   (( size <= 1048576 )) || { echo "ignoring $shell_json: larger than 1 MiB" >&2; return 0; }
   entry=$(head -c 1048576 -- "$shell_json" | jq -c --arg id "$self_plugin_id" --argjson max "$quiet_max" '
+    def flag: if type == "boolean" then tostring
+      elif type == "string" then sub("^\\s+"; "") | sub("\\s+$"; "") | ascii_downcase | select(. == "true" or . == "false")
+      else empty end;
     [(.bar?.layout? | objects | (.left, .center, .right) | arrays | .[]), (.plugins? | arrays | .[])]
     | map(objects | select(.id == $id))[0] // {}
-    | {muted: [.mutedApps | arrays | .[] | strings], skipped: [.skippedVersions | objects | to_entries[] | select(.value | type == "string")]}
+    | {muted: [.mutedApps | arrays | .[] | strings], skipped: [.skippedVersions | objects | to_entries[] | select(.value | type == "string")],
+       notify: (first(.notify | flag) // ""), showMise: (first(.showMise | flag) // "")}
     | (if (.muted | length) > $max or (.skipped | length) > $max then "more than \($max) muted or skipped entries; using the first \($max)" else "" end) as $cap
-    | {muted: .muted[:$max], skipped: .skipped[:$max], cap: $cap}' 2>/dev/null) \
+    | {muted: .muted[:$max], skipped: .skipped[:$max], cap: $cap, notify, showMise}' 2>/dev/null) \
     || { echo "ignoring $shell_json: not JSON" >&2; return 0; }
   [[ -z $(jq -r .cap <<<"$entry") ]] || echo "$shell_json: $(jq -r .cap <<<"$entry")" >&2
+  setting_notify=$(jq -r .notify <<<"$entry") setting_show_mise=$(jq -r .showMise <<<"$entry")
   while IFS= read -r id; do
     if app_id_ok "$id"; then ids+=("$id"); else echo "ignoring muted id $(jq -Rc . <<<"$id")" >&2; fi
   done < <(jq -r '.muted[] | select(test("\n") | not)' <<<"$entry")
@@ -156,7 +198,10 @@ announce_action() {
 # branch is never the default. "omarchyPkgs": {"follow": "master"} in the
 # user's file opts in to origin/master; pkgs_fetch then resolves it to a
 # commit. Sets pkgs_base (empty when the pin is unusable), pkgs_follow and
-# pkgs_pin_ref; pkgs_pin_error says why a pin is unusable.
+# pkgs_pin_ref; pkgs_pin_error says why a pin is unusable. This runs when
+# the file is sourced, so a pins.json of the wrong shape (omarchyPkgs not an
+# object, a field not a string) is a pin error the omarchy rows show, never
+# a jq error that would end every check and install under set -e.
 pkgs_base="" pkgs_follow=0 pkgs_pin_ref="" pkgs_pin_error=""
 pkgs_pin() {
   local user=/dev/null pins follow
@@ -169,14 +214,18 @@ pkgs_pin() {
   fi
   # The user's file goes in with --slurpfile, never as an argv string.
   pins=$(jq -c --slurpfile user "$user" '. * ($user[0] // {}) | .omarchyPkgs // {}' "$shipped_pins" 2>/dev/null) || pins='{}'
-  follow=$(jq -r '.follow // ""' <<<"$pins")
+  if ! jq -e 'type == "object"' >/dev/null 2>&1 <<<"$pins"; then
+    pkgs_pin_error="omarchyPkgs in pins.json is not an object"
+    return 0
+  fi
+  pin_field follow follow "" || return 0
   if [[ $follow == master ]]; then
     pkgs_follow=1 pkgs_pin_ref=refs/heads/master
     return 0
   fi
   [[ -z $follow ]] || { pkgs_pin_error="omarchyPkgs.follow '$follow' is not \"master\""; return 0; }
-  pkgs_base=$(jq -r '.commit // ""' <<<"$pins")
-  pkgs_pin_ref=$(jq -r '.ref // "refs/heads/master"' <<<"$pins")
+  pin_field pkgs_base commit "" || return 0
+  pin_field pkgs_pin_ref ref refs/heads/master || { pkgs_base=""; return 0; }
   if ! ref_ok "$pkgs_pin_ref"; then
     pkgs_pin_error="the omarchy-pkgs pin ref '$pkgs_pin_ref' is not a refs/ name"
     pkgs_base="" pkgs_pin_ref=""
@@ -187,16 +236,54 @@ pkgs_pin() {
     pkgs_base=""
   fi
 }
+# Sets the variable $1 to the string field $2 of pkgs_pin's $pins, or to $3
+# when the field is unset; any other type sets pkgs_pin_error and fails.
+pin_field() {
+  local value
+  value=$(jq -er --arg f "$2" --arg d "$3" '.[$f] // $d | strings' <<<"$pins" 2>/dev/null) \
+    || { pkgs_pin_error="omarchyPkgs.$2 in pins.json is not a string"; return 1; }
+  printf -v "$1" '%s' "$value"
+}
 pkgs_pin
+
+# The user's apps.json when it holds a JSON array, else /dev/null, with a
+# line on stderr unless $1 is "quiet".
+user_apps_json() {
+  if [[ -f $user_apps ]]; then
+    if jq -se 'length == 1 and (.[0] | type == "array")' "$user_apps" >/dev/null 2>&1; then
+      echo "$user_apps"
+      return 0
+    fi
+    [[ ${1:-} == quiet ]] || echo "ignoring $user_apps: not a JSON array" >&2
+  fi
+  echo /dev/null
+}
+
+# The shipped table (the input) with the user's entries $u merged over it by
+# pkg, as {order: [pkg], by: {pkg: entry}}, and the commands that merge turns
+# off: see apps_table. Shared by apps_table and discover_agents, so a
+# command whose row is disabled is the same one in both.
+# shellcheck disable=SC2016 # jq variables, not the shell's
+jq_apps_merge='
+  def apps_merge($u): map(select(type == "object") | del(._userFeed))
+    + ($u | map(del(._userFeed) | if has("feed") then ._userFeed = true else . end))
+    | map(select(.pkg | type == "string"))
+    | reduce .[] as $a ({order: [], by: {}};
+      if .by[$a.pkg] then .by[$a.pkg] += $a
+      else .order += [$a.pkg] | .by[$a.pkg] = $a end);
+  def apps_off: [.by[] | select(.disabled == true) | (.command | strings), (.pkg | select(startswith("mise:")) | .[5:])];'
 
 # The coding-agent CLIs Omarchy offers (bin/omabump-discover: its menu and
 # omarchy-mise-install wrappers, read as text). Sets discovered_json, an
 # array of {command, label, key, source}, and discovery_error, empty when
-# discovery worked. Never fatal: the curated rows stay either way.
+# discovery worked. A rejected mise wrapper is named there too, unless the
+# user disabled that command's row (see apps_table): a warning the user
+# cannot act on would never go away. Never fatal: the curated rows stay
+# either way.
 discovered_json='[]' discovery_error=""
-discover_run() { run_unlocked timeout -k 5 20 python3 -I "$plugin_dir/bin/omabump-discover" </dev/null 2>/dev/null; }
+discover_run() { run_killable timeout -k 5 20 python3 -I "$plugin_dir/bin/omabump-discover" </dev/null 2>/dev/null; }
 discover_agents() {
-  local out
+  local out warnings
   discovered_json='[]' discovery_error=""
   command -v python3 >/dev/null || { discovery_error="python3 is missing"; return 0; }
   if ! out=$(discover_run) || ! jq -e 'type == "object" and (.agents | type == "array") and (.errors | type == "array")' >/dev/null 2>&1 <<<"$out"; then
@@ -206,6 +293,14 @@ discover_agents() {
   discovered_json=$(jq -c '[.agents[] | select(type == "object" and (.command | type == "string")
     and (.key | type == "string") and (.label | type == "string"))]' <<<"$out")
   discovery_error=$(jq -r '.errors | map(tostring) | join("; ")' <<<"$out")
+  # The discovered agents reach jq on stdin, the user's file by --slurpfile.
+  # When the merge fails here, every warning stays.
+  warnings=$(jq -r --slurpfile user "$(user_apps_json quiet)" --slurpfile shipped "$shipped_apps" "$jq_apps_merge"'
+    ($shipped[0] | apps_merge($user[0] // [] | map(select(type == "object"))) | apps_off) as $off
+    | [.[] | select((.warning | type == "string") and (.command as $c | any($off[]; . == $c) | not)) | .warning]
+    | join("; ")' <<<"$discovered_json" 2>/dev/null) \
+    || warnings=$(jq -r '[.[] | .warning | strings] | join("; ")' <<<"$discovered_json")
+  [[ -z $warnings ]] || discovery_error+="${discovery_error:+; }$warnings"
 }
 
 # The app table: the shipped one, with the user's file merged over it by pkg,
@@ -229,30 +324,19 @@ discover_agents() {
 # With $1=0 the discovered agents are left out. Reads discovered_json;
 # load_table runs discovery first.
 apps_table() {
-  local user=/dev/null merged disc rc=0
-  if [[ -f $user_apps ]]; then
-    if jq -se 'length == 1 and (.[0] | type == "array")' "$user_apps" >/dev/null 2>&1; then
-      user=$user_apps
-    else
-      echo "ignoring $user_apps: not a JSON array" >&2
-    fi
-  fi
+  local user merged disc rc=0
+  user=$(user_apps_json)
   # The user's file and the discovered agents go in with --slurpfile, never
   # as argv strings.
   mkdir -p "$state_dir"
-  disc=$(mktemp "$state_dir/.discovered.XXXXXX")
+  disc=$(mktemp "${run_tmp:-$state_dir}/.discovered.XXXXXX")
   if [[ ${1:-1} == 1 ]]; then printf '%s\n' "${discovered_json:-[]}" >"$disc"; else echo '[]' >"$disc"; fi
-  merged=$(jq -c --slurpfile user "$user" --slurpfile discs "$disc" '
+  merged=$(jq -c --slurpfile user "$user" --slurpfile discs "$disc" "$jq_apps_merge"'
     ($discs[0] // []) as $disc
     | ($user[0] // [] | map(select(type == "object"))) as $u
     | [$u[] | select(has("tool")) | .pkg] as $userTool
-    | map(select(type == "object") | del(._userFeed))
-    + ($u | map(del(._userFeed) | if has("feed") then ._userFeed = true else . end))
-    | map(select(.pkg | type == "string"))
-    | reduce .[] as $a ({order: [], by: {}};
-      if .by[$a.pkg] then .by[$a.pkg] += $a
-      else .order += [$a.pkg] | .by[$a.pkg] = $a end)
-    | [.by[] | select(.disabled == true) | (.command | strings), (.pkg | select(startswith("mise:")) | .[5:])] as $off
+    | apps_merge($u)
+    | apps_off as $off
     | reduce $disc[] as $d (.;
       [.order[] as $p | .by[$p]] as $all
       | [$all[] | select(.source == "mise")] as $mise
@@ -362,23 +446,50 @@ installed_package() {
 # A vfox backend plugin is disabled by its own name, not by "vfox", so every
 # installed plugin is listed too: the names of the directories in mise's
 # plugins directory, read without running anything.
+# MISE_DISABLE_BACKENDS replaces mise's disable_backends setting for the
+# call, so the backends you disabled yourself are added: your environment's
+# MISE_DISABLE_BACKENDS and mise's setting (mise_user_backends, which
+# mise_backends_load reads once per run). A name with other characters is
+# left out, and each name is listed once.
+mise_user_backends=""
 mise_disabled_backends() {
-  local dir=${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}/plugins name out=asdf,vfox
+  local dir=${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}/plugins name names=(asdf vfox) user=() out=()
   if [[ -d $dir ]]; then
-    for name in "$dir"/*; do
-      name=${name##*/}
-      [[ $name =~ ^[A-Za-z0-9._-]+$ && $name != .* ]] && out+=",$name"
-    done
+    for name in "$dir"/*; do names+=("${name##*/}"); done
   fi
-  echo "$out"
+  IFS=, read -ra user <<<"${MISE_DISABLE_BACKENDS:-},$mise_user_backends"
+  for name in "${user[@]}"; do names+=("${name// /}"); done
+  for name in "${names[@]}"; do
+    [[ $name =~ ^[A-Za-z0-9._:-]+$ && $name != .* && " ${out[*]} " != *" $name "* ]] && out+=("$name")
+  done
+  (IFS=,; echo "${out[*]}")
 }
 # No release-age cooldown, as Omarchy's own agent wrappers and `omarchy
 # update` run mise: an agent CLI's new release shows and installs at once.
 # The check and mise up share it, so what the panel offers is what installs.
-mise_run() { (cd "$HOME" && run_unlocked env MISE_HIDE_UPDATE_WARNING=1 MISE_MINIMUM_RELEASE_AGE=0 MISE_DISABLE_BACKENDS="$(mise_disabled_backends)" timeout -k 10 "${mise_timeout:-120}" mise "$@" </dev/null); }
+# `mise settings` resolves no tool, so it runs no plugin code; it gets no
+# MISE_DISABLE_BACKENDS of Omabump's, which would replace the setting asked.
+mise_run() {
+  local off=()
+  [[ ${1:-} == settings ]] || off=("MISE_DISABLE_BACKENDS=$(mise_disabled_backends)")
+  (cd "$HOME" && run_killable env MISE_HIDE_UPDATE_WARNING=1 MISE_MINIMUM_RELEASE_AGE=0 "${off[@]}" \
+    timeout -k 10 "${mise_timeout:-120}" mise "$@" </dev/null)
+}
+
+# mise's own disable_backends setting, as `mise settings get` prints it (a
+# JSON list), into mise_user_backends. Read once per run, by mise_load; a
+# mise that cannot answer leaves the setting out.
+mise_backends_load() {
+  local out
+  mise_user_backends=""
+  out=$(mise_run settings get disable_backends 2>/dev/null) || return 0
+  mise_user_backends=$(jq -r 'if type == "array" then map(strings) | join(",") else strings end' <<<"$out" 2>/dev/null) \
+    || mise_user_backends=""
+}
 
 # mise_load fills these once, in the calling shell (never call it in a
 # subshell, the values would be lost there):
+#   mise_user_backends  mise's disable_backends setting (mise_backends_load)
 #   mise_ls_json        `mise ls --json`, the inventory
 #   mise_safe_json      {key: true} for the installed tools that resolve
 #                       through a backend in mise_safe_backends, from one
@@ -422,7 +533,7 @@ mise_inventory() {
   local out err
   mise_inventory_error=""
   mkdir -p "$cache_dir"
-  err=$(mktemp "$cache_dir/.mise.XXXXXX")
+  err=$(mktemp "${run_tmp:-$cache_dir}/.mise.XXXXXX")
   if out=$(mise_run ls --json 2>"$err") && out=$(jq -ce 'if type == "object" then . else {} end' <<<"$out" 2>/dev/null); then
     mise_ls_json=$out
   else
@@ -463,7 +574,7 @@ mise_select() {
   local d out rc=0
   mise_query=()
   mkdir -p "$cache_dir"
-  d=$(mktemp -d "$cache_dir/.mise-select.XXXXXX")
+  d=$(mktemp -d "${run_tmp:-$cache_dir}/.mise-select.XXXXXX")
   printf '%s\n' "$mise_ls_json" >"$d/ls.json"
   printf '%s\n' "$mise_safe_json" >"$d/safe.json"
   out=$(jq -r --slurpfile ls "$d/ls.json" --slurpfile safe "$d/safe.json" "$mise_jq_active"'
@@ -490,30 +601,50 @@ mise_note_fetch_failures() {
   done
 }
 
+# $2, when given, is the one key to ask outdated about (an Update asks about
+# its own tool only); it must still be one mise_select chose.
 mise_load() {
-  local out err
+  local out err only=${2:-} key all
   mise_fetch_failed=()
   command -v mise >/dev/null || return 0
+  mise_backends_load
   mise_inventory
   (( ${1:-0} )) || return 0
   mise_safe_keys
   mise_select || return 0
+  if [[ -n $only ]]; then
+    all=("${mise_query[@]}") mise_query=()
+    for key in "${all[@]}"; do [[ $key != "$only" ]] || mise_query=("$key"); done
+  fi
   (( ${#mise_query[@]} )) || return 0
   mkdir -p "$cache_dir"
-  err=$(mktemp "$cache_dir/.mise.XXXXXX")
-  if out=$(mise_run outdated --json -- "${mise_query[@]}" 2>"$err") && out=$(jq -ce 'if type == "object" then . else error("bad") end' <<<"$out" 2>/dev/null); then
+  err=$(mktemp "${run_tmp:-$cache_dir}/.mise.XXXXXX")
+  if out=$(mise_run outdated --json -- "${mise_query[@]}" 2>"$err") && out=$(mise_outdated_table <<<"$out"); then
     mise_outdated_json=$out
   else
     mise_error="mise outdated failed: $(mise_err_line "$err")"
   fi
   mise_note_fetch_failures "$err"
-  if out=$(mise_run outdated --bump --json -- "${mise_query[@]}" 2>"$err") && out=$(jq -ce 'if type == "object" then . else error("bad") end' <<<"$out" 2>/dev/null); then
+  if out=$(mise_run outdated --bump --json -- "${mise_query[@]}" 2>"$err") && out=$(mise_outdated_table <<<"$out"); then
     mise_bump_json=$out
   else
     mise_bump_error="mise outdated --bump failed: $(mise_err_line "$err")"
   fi
   mise_note_fetch_failures "$err"
   rm -f "$err"
+}
+
+# The answer of `mise outdated --json` on stdin, an object of tool entries,
+# with each entry's fields kept only when they are a string or a number
+# without control characters, as text; an entry that is not an object is
+# kept as {"odd": true}, so mise_row says the answer could not be read
+# instead of calling the row current. Anything but an object fails.
+mise_outdated_table() {
+  jq -ce 'if type == "object" then map_values(
+      if type == "object" then with_entries(select((.value | type == "string" or type == "number")
+        and (.value | tostring | explode | all(. >= 32 and . != 127))) | .value |= tostring)
+      else {odd: true} end)
+    else error("not an object") end' 2>/dev/null
 }
 
 # True when mise_safe_keys found the key on one of mise's own backends.
@@ -527,8 +658,17 @@ mise_skip_note() {
   else echo "Update check skipped: not on a backend Omabump queries"; fi
 }
 
-# A field of a tool's entry in one of the outdated tables, or nothing.
-mise_field() { jq -r --arg t "$2" --arg f "$3" '.[$t][$f] // empty | tostring' <<<"$1"; }
+# A field of a tool's entry in one of the outdated tables, as text, or
+# nothing: whatever shape the table has, this never fails (its callers run
+# under set -e), and a value that is not a string or a number is nothing.
+mise_field() {
+  jq -r --arg t "$2" --arg f "$3" '.[$t]? | objects | .[$f] | select(type == "string" or type == "number") | tostring' \
+    <<<"$1" 2>/dev/null || true
+}
+
+# True unless the key's entry in an outdated table is one
+# mise_outdated_table could not read.
+mise_entry_ok() { ! jq -e --arg t "$2" '.[$t]? | objects | .odd == true' <<<"$1" >/dev/null 2>&1; }
 
 # What the check shows for a mise row whose active key is $1 at version $2.
 # mise decides: an entry in `mise outdated` is a version `mise up` will
@@ -545,13 +685,19 @@ mise_row() {
     feed_error=$mise_error
   elif [[ -n ${mise_fetch_failed[$key]:-} ]]; then
     feed_error="mise could not fetch the versions of $key: ${mise_fetch_failed[$key]}"
+  elif ! mise_entry_ok "$mise_outdated_json" "$key"; then
+    feed_error="mise outdated gave an entry for $key that is not an object"
   elif latest=$(mise_field "$mise_outdated_json" "$key" latest) && [[ -n $latest ]]; then
     mise_update=true
   elif [[ -n $mise_bump_error ]]; then
     feed_error=$mise_bump_error
+  elif ! mise_entry_ok "$mise_bump_json" "$key"; then
+    feed_error="mise outdated --bump gave an entry for $key that is not an object"
   else
-    latest=$(mise_field "$mise_bump_json" "$key" bump)
-    [[ -n $latest ]] || latest=$(mise_field "$mise_bump_json" "$key" latest)
+    # latest is the release itself; bump is the request rewritten to reach
+    # it, in the request's own shape ("0.97" for a 0.97 request at 0.97.1).
+    latest=$(mise_field "$mise_bump_json" "$key" latest)
+    [[ -n $latest ]] || latest=$(mise_field "$mise_bump_json" "$key" bump)
     if [[ -n $latest && $latest != "$have" ]]; then
       installable=false
       request=$(mise_field "$mise_bump_json" "$key" requested)
@@ -700,13 +846,15 @@ apt_newest() {
 
 # First capture group of a Python regex over a page. Pages that embed JSON in
 # a JS string escape its quotes, so the pattern is also tried with \" as ".
+# A match whose group took no part in it (an alternative without the group)
+# gives nothing, never the text "None".
 regex_first() {
   python3 -I -c '
 import re, sys
 body = sys.stdin.read()
 for text in (body, body.replace("\\\"", "\"")):
     m = re.search(sys.argv[1], text)
-    if m:
+    if m and m.group(1) is not None:
         print(m.group(1))
         break
 ' "$1"
@@ -721,7 +869,7 @@ user_command_version() {
   jq -e '._userFeed == true' >/dev/null 2>&1 <<<"$1" \
     || { echo "command feeds are allowed only from ~/.config/omarchy/omabump/apps.json" >&2; return 1; }
   cmd=$(jq -r '.feed.command // ""' <<<"$1")
-  body=$(run_unlocked timeout -k 10 60 bash -c "$cmd" </dev/null) || { echo "feed command failed" >&2; return 1; }
+  body=$(run_killable timeout -k 10 60 bash -c "$cmd" </dev/null) || { echo "feed command failed" >&2; return 1; }
   head -1 <<<"$body"
 }
 
@@ -750,8 +898,11 @@ feed_version() {
       v=$(regex_first "$(jq -r '.feed.pattern // ""' <<<"$app")" <<<"$body" 2>/dev/null) \
         || { echo "bad feed pattern" >&2; return 1; } ;;
     json)
-      v=$(jq -r "$(jq -r '.feed.path // ".version"' <<<"$app") // empty" <<<"$body" 2>/dev/null) \
-        || { echo "feed is not JSON" >&2; return 1; } ;;
+      v=$(jq -c "[($(jq -r '.feed.path // ".version"' <<<"$app")) // empty]" <<<"$body" 2>/dev/null) \
+        || { echo "feed is not JSON" >&2; return 1; }
+      # One value: a path that yields several would run them together.
+      (( $(jq length <<<"$v") <= 1 )) || { echo "the feed path gives $(jq length <<<"$v") values, not one" >&2; return 1; }
+      v=$(jq -r '.[0] // empty | if type == "string" then . else tojson end' <<<"$v") ;;
     aur-rpc)
       want=$(jq -r '.feed.name // .pkg' <<<"$app")
       body=$(fetch -fsSL "https://aur.archlinux.org/rpc/v5/info?arg%5B%5D=$want" 2>/dev/null) \
@@ -775,9 +926,12 @@ feed_version() {
     *)
       echo "unknown feed type '$type'" >&2; return 1 ;;
   esac
-  v=$(tr -d '[:space:]' <<<"$v")
+  # Blanks around the version go. Blanks inside it stay, and version_ok
+  # refuses them: two versions on two lines are not one.
+  v=${v#"${v%%[![:space:]]*}"}
+  v=${v%"${v##*[![:space:]]}"}
   [[ -n $v ]] || { echo "feed returned no version" >&2; return 1; }
-  version_ok "$v" || { echo "feed returned an odd version '$v'" >&2; return 1; }
+  version_ok "$v" || { echo "feed returned an odd version '${v//[[:space:]]/ }'" >&2; return 1; }
   echo "$v"
 }
 
@@ -866,8 +1020,8 @@ git_http_load() {
   done < <({ git config --system --get-regexp '^http\.'; git config --global --get-regexp '^http\.'; } 2>/dev/null </dev/null || true)
 }
 git_http_load
-pgit() { run_unlocked timeout -k 10 300 env "${git_noconfig[@]}" GIT_ALLOW_PROTOCOL=https GIT_TERMINAL_PROMPT=0 git "${git_http[@]}" "${git_safe[@]}" -C "$pkgs_dir" "$@" </dev/null; }
-pgit_net() { run_unlocked timeout -k 10 300 env "${git_noconfig[@]}" GIT_ALLOW_PROTOCOL=https GIT_TERMINAL_PROMPT=0 git "${git_http[@]}" "${git_safe[@]}" "$@" </dev/null; }
+pgit() { run_killable timeout -k 10 300 env "${git_noconfig[@]}" GIT_ALLOW_PROTOCOL=https GIT_TERMINAL_PROMPT=0 git "${git_http[@]}" "${git_safe[@]}" -C "$pkgs_dir" "$@" </dev/null; }
+pgit_net() { run_killable timeout -k 10 300 env "${git_noconfig[@]}" GIT_ALLOW_PROTOCOL=https GIT_TERMINAL_PROMPT=0 git "${git_http[@]}" "${git_safe[@]}" "$@" </dev/null; }
 
 # --- Omabump's own update ----------------------------------------------------
 
@@ -876,7 +1030,7 @@ pgit_net() { run_unlocked timeout -k 10 300 env "${git_noconfig[@]}" GIT_ALLOW_P
 # own clone and fast-forwarded to, never the branch head. git runs as pgit
 # does: hardened, HTTPS only, bounded.
 self_repo=https://github.com/vladkarok/omabump
-self_git() { run_unlocked timeout -k 10 120 env GIT_ALLOW_PROTOCOL=https GIT_TERMINAL_PROMPT=0 git "${git_safe[@]}" -C "$plugin_dir" "$@" </dev/null; }
+self_git() { run_killable timeout -k 10 120 env GIT_ALLOW_PROTOCOL=https GIT_TERMINAL_PROMPT=0 git "${git_safe[@]}" -C "$plugin_dir" "$@" </dev/null; }
 
 # True when the clone's origin, as git would fetch it (insteadOf applied), is
 # the canonical repository, in any letter case, with or without .git.
@@ -945,32 +1099,64 @@ pkgs_checkout() { pkgs_detach; }
 # Puts Omarchy's recipe back the way pkgs_base has it; never fails.
 pkgs_restore() { pkgs_detach "pkgbuilds/${1:?}" 2>/dev/null || true; }
 
-# A file of a recipe at a commit, read from the object store without a
-# checkout, so it is safe while an install holds the lock.
-recipe_file() { pgit show "$1:pkgbuilds/$2/$3" 2>/dev/null; }
-recipe_has() { pgit cat-file -e "$1:pkgbuilds/$2/$3" 2>/dev/null; }
+# Files of a recipe at a commit, read from the object store without a
+# checkout, so it is safe while an install holds the lock. The clone is
+# blob-less: its trees are all there, a file's content may first have to be
+# fetched from GitHub. So whether a file exists is asked of the tree alone
+# (ls-tree fetches nothing), and a failed fetch of its content is a failed
+# read, never a missing file.
+#   recipe_has    0 the file is in the recipe, 1 it is not, 2 the tree could
+#                 not be read (the reason on stderr)
+#   recipe_file   prints the file; 1 when it is not in the recipe, 2 when it
+#                 could not be read (the reason on stderr)
+recipe_has() {
+  local entry type
+  entry=$(pgit ls-tree "$1" -- "pkgbuilds/$2/$3" 2>/dev/null) \
+    || { echo "could not read the omarchy-pkgs tree at ${1:0:12}" >&2; return 2; }
+  read -r _ type _ <<<"$entry"
+  [[ $type == blob ]]
+}
+recipe_file() {
+  local rc=0 err
+  recipe_has "$1" "$2" "$3" || return
+  # git's message goes to the variable, the file to stdout (fd 3).
+  { err=$(pgit show "$1:pkgbuilds/$2/$3" 2>&1 >&3 3>&-); } 3>&1 || rc=$?
+  (( rc == 0 )) && return 0
+  echo "could not read pkgbuilds/$2/$3 at ${1:0:12}${err:+: $(tail -1 <<<"$err")}" >&2
+  return 2
+}
 
 # Why the recipe at commit $1 cannot follow its vendor, or nothing when it
 # can: bin/sync-upstream needs an upstream watch (package.json "upstream") or
-# hook (.omarchy/upstream.sh) to move it.
+# hook (.omarchy/upstream.sh) to move it. Fails with the reason on stderr
+# when the clone could not read the recipe: that is a failed check, not a
+# missing recipe or watch.
 recipe_blocker() {
-  local rev=$1 pkg=$2 meta
-  recipe_has "$rev" "$pkg" PKGBUILD || { echo "No $pkg recipe in omarchy-pkgs"; return; }
-  meta=$(recipe_file "$rev" "$pkg" .omarchy/package.json) || meta='{}'
+  local rev=$1 pkg=$2 meta rc=0
+  recipe_has "$rev" "$pkg" PKGBUILD || rc=$?
+  case $rc in 0) ;; 1) echo "No $pkg recipe in omarchy-pkgs"; return 0 ;; *) return 1 ;; esac
+  rc=0
+  meta=$(recipe_file "$rev" "$pkg" .omarchy/package.json) || rc=$?
+  case $rc in 0) ;; 1) meta='{}' ;; *) return 1 ;; esac
   if jq -e '.sync == false' >/dev/null 2>&1 <<<"$meta"; then
-    echo "Repo recipe has no upstream watch yet (sync: false)"; return
+    echo "Repo recipe has no upstream watch yet (sync: false)"; return 0
   fi
-  recipe_has "$rev" "$pkg" .omarchy/upstream.sh && return
-  jq -e '.upstream' >/dev/null 2>&1 <<<"$meta" && return
+  rc=0
+  recipe_has "$rev" "$pkg" .omarchy/upstream.sh || rc=$?
+  case $rc in 0) return 0 ;; 1) ;; *) return 1 ;; esac
+  jq -e '.upstream' >/dev/null 2>&1 <<<"$meta" && return 0
   echo "Repo recipe has no upstream watch yet"
 }
 
 # The release-age window the recipe at commit $1 declares, in seconds, or 0:
 # min_release_age in .omarchy/package.json, bare seconds or "90m", "24h",
 # "2d". bin/sync-upstream does not move the recipe to a younger release.
+# Fails, with the reason on stderr, when the file could not be read.
 recipe_release_age() {
-  local age n
-  age=$(recipe_file "$1" "$2" .omarchy/package.json | jq -r '.min_release_age // empty | tostring' 2>/dev/null) || age=""
+  local age n meta rc=0
+  meta=$(recipe_file "$1" "$2" .omarchy/package.json) || rc=$?
+  (( rc < 2 )) || return 1
+  age=$(jq -r '.min_release_age // empty | tostring' <<<"$meta" 2>/dev/null) || age=""
   if [[ $age =~ ^([0-9]{1,9})([smhd]?)$ ]]; then
     n=$(( 10#${BASH_REMATCH[1]} ))
     case ${BASH_REMATCH[2]} in
@@ -1019,11 +1205,12 @@ recipe_fetch() {
 # commit still has to be fetched. Once pkgs_base's own recipe has a watch,
 # the recipeCommit is ignored.
 recipe_source() {
-  local pkg=$1 app=$2 sha rc=0
+  local pkg=$1 app=$2 sha rc=0 blocker
   recipe_rev=$pkgs_base recipe_note=""
   sha=$(jq -r '.recipeCommit // ""' <<<"$app")
   [[ -n $sha ]] || return 0
-  if [[ -z $(recipe_blocker "$pkgs_base" "$pkg") ]]; then
+  blocker=$(recipe_blocker "$pkgs_base" "$pkg") || return 1
+  if [[ -z $blocker ]]; then
     recipe_note="Pinned recipe no longer needed, omarchy-pkgs has a watch"
     return 0
   fi
@@ -1033,7 +1220,10 @@ recipe_source() {
     (( rc != 75 )) || { echo "the omarchy-pkgs clone is busy with an update" >&2; return 75; }
     pgit cat-file -e "$sha^{commit}" 2>/dev/null || { echo "pinned recipe ${sha:0:12} is unreachable" >&2; return 1; }
   fi
-  recipe_has "$sha" "$pkg" PKGBUILD || { echo "pinned commit ${sha:0:12} has no $pkg recipe" >&2; return 1; }
+  rc=0
+  recipe_has "$sha" "$pkg" PKGBUILD || rc=$?
+  (( rc != 1 )) || { echo "pinned commit ${sha:0:12} has no $pkg recipe" >&2; return 1; }
+  (( rc == 0 )) || return 1
   recipe_rev=$sha
   recipe_note=$(jq -r '.recipeNote // ""' <<<"$app")
   [[ -n $recipe_note ]] || recipe_note="Recipe from omarchy-pkgs ${sha:0:12}"

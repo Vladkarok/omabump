@@ -713,13 +713,13 @@ same "discover: a wrapper owned by another uid is rejected" 'omp/command' \
   "$(agents --uid "$(( $(id -u) + 1 ))" | tr ' ' '\n' | sed -n 's/^omp=//p')"
 same "discover: --debug says why" 'omabump-discover: omp: not owned by uid' \
   "$(discover --debug --uid "$(( $(id -u) + 1 ))" 2>&1 >/dev/null | grep -o '^omabump-discover: omp: not owned by uid')"
-errors_of() { discover | jq -r '.errors | join("|")'; }
+errors_of() { discover | jq -r '(.errors + [.agents[].warning | strings]) | join("|")'; }
 wrapper omp github:can1357/oh-my-pi >"$disc/bin/omp"
-wrapper omp github:can1357/oh-my-pi | sed '1a # a line Omarchy added' >"$disc/bin/omp"
-same "discover: a wrapper script that exists but is rejected is an error line" \
-  "wrapper $disc/bin/omp not recognised: not the omarchy-mise-install template" "$(HOME=/nonexistent errors_of)"
+wrapper omp github:can1357/oh-my-pi | sed '1a echo a line no wrapper has' >"$disc/bin/omp"
+same "discover: a wrapper script that exists but is rejected is a warning" \
+  "wrapper $disc/bin/omp not recognised: line 2 is not a line of an omarchy-mise-install wrapper" "$(HOME=/nonexistent errors_of)"
 same "discover: and the agent still falls back to its command" 'omp/command' "$(agents | tr ' ' '\n' | sed -n 's/^omp=//p')"
-same "discover: the home directory shows as ~" "wrapper ~/bin/omp not recognised: not the omarchy-mise-install template" \
+same "discover: the home directory shows as ~" "wrapper ~/bin/omp not recognised: line 2 is not a line of an omarchy-mise-install wrapper" \
   "$(HOME=$disc errors_of)"
 printf '\x7fELF\x02\x01\x01' >"$disc/bin/omp"
 same "discover: a binary in its place is silent" '' "$(errors_of)"
@@ -782,6 +782,7 @@ mise_ls_json='{"grok":[{"version":"1.0.46","installed":true,"active":true}]}'
 same "the Grok CLI row finds mise's first-party grok" "grok 1.0.46" "$(mise_active "$(app_json mise:grok-cli)")"
 mise_ls_json='{}'
 
+source "$root/tests/check.sh"
 if (( failed )); then
   echo "$failed of $n tests failed"
   exit 1

@@ -2,27 +2,36 @@
 """Print the coding-agent CLIs Omarchy offers, with the mise key each one
 installs under, as JSON:
 
-  {"agents": [{"command", "label", "key", "source": "wrapper"|"command"}],
+  {"agents": [{"command", "label", "key", "source": "wrapper"|"command",
+               "warning": "..." (only for a mise wrapper that was rejected)}],
    "errors": ["..."]}
 
 Omarchy lists its agents in the menu, as the immediate entries
 setup.default.agent.<command> of the stock omarchy-menu.jsonc and the user's
-extension (merged by id, user fields over stock ones, as the shell does).
-omarchy-mise-install writes ~/.local/bin/<command> as a four-line wrapper
-that names the mise package; that package, with a trailing [options] suffix
-removed, is the key `mise ls` reports. Both files are read as text only:
-nothing is executed, sourced or evaluated, and of a menu entry only the id
-and the label are used. Menus are opened without blocking and read only
-when they are regular files owned by the user or root. Labels lose control
-and format characters (bidi, zero-width) and stop at 64 characters; at most
-64 agents are listed.
+extension (merged by id, user fields over stock ones, as the shell does). A
+stock menu that parses but has no such entry at all is an error: Omarchy
+renamed its ids, and no agent would be found.
+omarchy-mise-install writes ~/.local/bin/<command> as a short wrapper that
+names the mise package; that package, with a trailing @version and [options]
+suffix removed, is the key `mise ls` reports. Both files are read as text
+only: nothing is executed, sourced or evaluated, and of a menu entry only
+the id and the label are used. Menus are opened without blocking and read
+only when they are regular files owned by the user or root. Labels lose
+control and format characters (bidi, zero-width) and stop at 64 characters;
+at most 64 agents are listed.
 
-A wrapper that does not match the template exactly is ignored, and the
-agent falls back to its command name as the key (source "command"); the
-check accepts that key only when mise has exactly it installed and active.
-A wrapper script that exists but is rejected is also named in "errors", so a
-changed template shows in the panel; a missing wrapper, a symlink or a file
-that is not a script (a native installer's link or binary) stays silent.
+A wrapper is read line by line: the bash shebang first, then exactly one
+`mise use -g [flags] "PKG"` line (optionally `|| exit 1`) and after it one
+`exec mise x "PKG" -- "BIN" "$@"` line (or `mise exec`), with the same PKG;
+`export NAME=VALUE` lines, comments and blank lines may sit around them.
+A wrapper that does not parse is ignored, and the agent falls back to its
+command name as the key (source "command"); the check accepts that key only
+when mise has exactly it installed and active. When the rejected file runs
+mise, the agent carries a "warning" naming it, so a changed template shows
+in the panel (unless the user disabled that command's row). Anything else
+in its place stays silent: no file, a symlink, a binary, or a script that
+does not run mise (Omarchy installs some agents, Hermes and OpenClaw, with
+their own launchers, and ~/.local/bin holds the user's own scripts too).
 
   omabump-discover [--debug] [--stock FILE] [--user FILE] [--bin-dir DIR] [--uid N] [--menu-uid N]
 
@@ -41,14 +50,26 @@ import unicodedata
 COMMAND_ID = re.compile(r"setup\.default\.agent\.([a-z0-9][a-z0-9-]{0,40})")
 # The literals omarchy-mise-install double-quotes: no $ ` " \ ! and no
 # control characters (it switches to printf %q for those, never accepted).
-LITERAL = r'([^$`"\\!\x00-\x1f\x7f]+)'
-WRAPPER = re.compile(
-    r"#!/bin/bash\n"
-    r"export MISE_MINIMUM_RELEASE_AGE=0\n"
-    r'mise use -g --quiet "' + LITERAL + r'" \|\| exit 1\n'
-    r'exec mise x "' + LITERAL + r'" -- "' + LITERAL + r'" "\$@"\n?'
-)
+LITERAL = r'"([^$`"\\!\x00-\x1f\x7f]+)"'
+# The lines a wrapper may have, each matched whole after the indentation
+# and trailing blanks are cut.
+SHEBANG = re.compile(r"#!(?:/bin/bash|/usr/bin/bash|/usr/bin/env bash)")
+USE_LINE = re.compile(r"mise +use((?: +-[A-Za-z0-9-]+)*) +" + LITERAL + r"(?: *\|\| *exit(?: +[0-9]+)?)?")
+EXEC_LINE = re.compile(r"exec +mise +(?:x|exec) +" + LITERAL + r" +-- +" + LITERAL + r' +"\$@"')
+EXPORT_LINE = re.compile(r"export +[A-Za-z_][A-Za-z0-9_]*=(?:[A-Za-z0-9_./:@%+,=-]*|" + LITERAL
+                         + r"|'[^'\x00-\x1f\x7f]*')")
+# The flags of `mise use` that take no value (a flag that takes one would
+# swallow the package literal); -g or --global must be among them.
+USE_FLAGS = {"-g", "--global", "-q", "--quiet", "-y", "--yes", "-f", "--force", "--silent",
+             "--pin", "--fuzzy", "--locked", "-v", "--verbose", "--raw"}
+# A line that runs mise as a wrapper does (use, x or exec), so a file that
+# fails to parse is still worth a warning. omarchy-mise-install itself, a
+# message mentioning mise or `mise exec-env` do not count.
+RUNS_MISE = re.compile(r"(?<![\w.-])mise[\"']?\s+(?:-{1,2}[\w-]+(?:=\S*)?\s+)*(?:use|x|exec)(?![\w-])")
 OPTIONS = re.compile(r"^([^\[\]]*)\[[^\[\]]*\]$")
+# What follows the @ of a version suffix (1.2.3, latest, prefix:20,
+# ref:main): only dropped, so only its shape is checked.
+VERSION = re.compile(r"^[A-Za-z0-9][^@\[\]\s]*$")
 # bash tool_name_ok in omabump-common.
 TOOL_NAME = re.compile(r"^[A-Za-z0-9@_+:][A-Za-z0-9@._+:/-]*$")
 MAX_WRAPPER = 4096
@@ -146,7 +167,12 @@ def read_menu(path, uid):
     text = strip_jsonc(raw.decode("utf-8"))
     if not text.strip():
         return {}
-    data = json.loads(text)
+    # The decoder recurses once per nesting level: a deep enough menu runs
+    # out of stack, which must be this menu's error, not discovery's end.
+    try:
+        data = json.loads(text)
+    except RecursionError:
+        raise ValueError("nested too deeply")
     if not isinstance(data, dict):
         raise ValueError("not a JSON object")
     items = data.get("items")
@@ -175,9 +201,12 @@ def menu_agents(stock, user, uid, errors):
         except (OSError, ValueError, UnicodeDecodeError) as e:
             errors.append("cannot read the menu %s: %s" % (path, e))
             continue
-        for key, value in items.items():
-            m = COMMAND_ID.fullmatch(key)
-            if not m or not isinstance(value, dict):
+        ids = [(COMMAND_ID.fullmatch(key), value) for key, value in items.items()]
+        ids = [(m, value) for m, value in ids if m]
+        if required and not ids:
+            errors.append("the menu %s lists no setup.default.agent.<command> entries" % path)
+        for m, value in ids:
+            if not isinstance(value, dict):
                 continue
             entry = merged.setdefault(m.group(1), {})
             if "label" in value:
@@ -190,10 +219,74 @@ def tool_name_ok(name):
     return bool(TOOL_NAME.match(name)) and ".." not in name
 
 
+def runs_mise(text):
+    """True when a line that is not a comment runs mise as a wrapper does."""
+    return any(RUNS_MISE.search(line) for line in text.splitlines()
+               if not line.lstrip().startswith("#"))
+
+
+def parse_wrapper(text):
+    """The package a wrapper's text names, or raises ValueError with the
+    reason. Every line must be one the wrapper may have (see the module
+    docstring); nothing else is allowed, so no extra statement can hide."""
+    lines = text.split("\n")
+    if not SHEBANG.fullmatch(lines[0].rstrip(" \t")):
+        raise ValueError("no bash shebang on the first line")
+    uses, execs = [], []
+    for n, line in enumerate(lines[1:], 2):
+        line = line.strip(" \t")
+        if not line or line.startswith("#") or EXPORT_LINE.fullmatch(line):
+            continue
+        m = USE_LINE.fullmatch(line)
+        if m:
+            flags = set(m.group(1).split())
+            if not flags <= USE_FLAGS or not flags & {"-g", "--global"}:
+                raise ValueError("line %d: mise use without -g, or with a flag Omabump does not know" % n)
+            uses.append((n, m.group(2)))
+            continue
+        m = EXEC_LINE.fullmatch(line)
+        if m:
+            execs.append((n, m.group(1)))
+            continue
+        raise ValueError("line %d is not a line of an omarchy-mise-install wrapper" % n)
+    if len(uses) != 1 or len(execs) != 1:
+        raise ValueError("%d mise use and %d exec mise lines, not one of each" % (len(uses), len(execs)))
+    if uses[0][0] > execs[0][0]:
+        raise ValueError("mise use comes after exec mise")
+    if uses[0][1] != execs[0][1]:
+        raise ValueError("the two package literals differ")
+    return uses[0][1]
+
+
+def package_key(pkg):
+    """The key `mise ls` reports for a package as `mise use` takes it:
+    without a trailing @version, then without an [options] suffix. The @ of
+    an npm scope (npm:@scope/name, @scope/name) starts the name and is not a
+    version; an @ inside [options] (a URL's user) is not one either."""
+    if "[" in pkg:
+        start = pkg.rfind("]") + 1
+    else:
+        start = pkg.find(":") + 1
+        if pkg.startswith("@", start):
+            start += 1
+    at = pkg.rfind("@", start)
+    if at >= 0:
+        if not VERSION.match(pkg[at + 1:]):
+            raise ValueError("malformed @version suffix")
+        pkg = pkg[:at]
+    if pkg.endswith("]"):
+        o = OPTIONS.match(pkg)
+        if not o:
+            raise ValueError("malformed [options] suffix")
+        pkg = o.group(1)
+    return pkg
+
+
 def wrapper_key(path, uid):
-    """The mise key a wrapper installs, or raises ValueError with the reason.
-    The file is opened without following a symlink and checked on the open
-    descriptor, so it cannot be swapped between the check and the read."""
+    """The mise key a wrapper installs, or raises ValueError with the reason
+    (NoWrapper when the file is no mise wrapper at all). The file is opened
+    without following a symlink and checked on the open descriptor, so it
+    cannot be swapped between the check and the read."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
     except FileNotFoundError:
@@ -201,36 +294,30 @@ def wrapper_key(path, uid):
     except OSError as e:
         if e.errno == errno.ELOOP:
             raise NoWrapper("a symlink")
-        raise ValueError("cannot open: %s" % e.strerror)
+        # Unreadable, so nothing says it is a mise wrapper.
+        raise NoWrapper("cannot open: %s" % e.strerror)
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
             raise NoWrapper("not a regular file")
-        if st.st_uid != uid:
-            raise ValueError("not owned by uid %d" % uid)
         raw = read_bounded(fd, MAX_WRAPPER)
     finally:
         os.close(fd)
     if not raw.startswith(b"#!"):
         raise NoWrapper("not a script")
+    # Whether it runs mise is decided on the text as far as it was read; the
+    # safety rules below then apply to a file that does.
+    if not runs_mise(raw[:MAX_WRAPPER].decode("utf-8", "replace")):
+        raise NoWrapper("a script that does not run mise")
+    if st.st_uid != uid:
+        raise ValueError("not owned by uid %d" % uid)
     if len(raw) > MAX_WRAPPER:
         raise ValueError("larger than %d bytes" % MAX_WRAPPER)
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
         raise ValueError("not UTF-8")
-    m = WRAPPER.fullmatch(text)
-    if not m:
-        raise ValueError("not the omarchy-mise-install template")
-    pkg, pkg2 = m.group(1), m.group(2)
-    if pkg != pkg2:
-        raise ValueError("the two package literals differ")
-    key = pkg
-    if pkg.endswith("]"):
-        o = OPTIONS.match(pkg)
-        if not o:
-            raise ValueError("malformed [options] suffix")
-        key = o.group(1)
+    key = package_key(parse_wrapper(text))
     if not tool_name_ok(key):
         raise ValueError("mise key %r has characters Omabump does not accept" % key)
     return key
@@ -269,15 +356,18 @@ def main(argv):
     uid = int(opts["--uid"])
     for command, label in menu_agents(opts["--stock"], opts["--user"], int(opts["--menu-uid"]), errors):
         path = os.path.join(opts["--bin-dir"], command)
+        agent = {"command": command, "label": label}
         try:
-            key, source = wrapper_key(path, uid), "wrapper"
+            agent.update(key=wrapper_key(path, uid), source="wrapper")
         except ValueError as e:
             if debug:
                 print("omabump-discover: %s: %s" % (command, e), file=sys.stderr)
+            agent.update(key=command, source="command")
+            # On the agent, not in errors: the check drops it for a command
+            # whose row the user disabled.
             if not isinstance(e, NoWrapper):
-                errors.append("wrapper %s not recognised: %s" % (shown(path, home), e))
-            key, source = command, "command"
-        agents.append({"command": command, "label": label, "key": key, "source": source})
+                agent["warning"] = "wrapper %s not recognised: %s" % (shown(path, home), e)
+        agents.append(agent)
     json.dump({"agents": agents, "errors": errors}, sys.stdout)
     sys.stdout.write("\n")
     return 0

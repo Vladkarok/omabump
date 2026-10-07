@@ -19,17 +19,22 @@
 # install, since the running one may have read the old version.
 #
 # Muted rows and skipped versions come from the widget's settings in
-# Omarchy's shell.json (load_quiet), whoever runs the check.
+# Omarchy's shell.json (load_quiet), whoever runs the check. So do the
+# notify and showMise settings when no flag says otherwise: the shell passes
+# --no-notify and --no-mise when they are off, and a run from a terminal,
+# the installer's refresh or an agent passes none and still honours them.
 #
 # The shell runs it under `timeout -k 10 600` (Main.qml), so a hung feed or
 # tool cannot keep a check alive past ten minutes; the TERM trap below still
-# writes status.json as a failed run.
+# writes status.json as a failed run, with runError saying so. Every command
+# under its own `timeout` runs through run_killable, so the trap is not held
+# until that command ends.
 set -euo pipefail
 # shellcheck source=omabump-common
 source "$(dirname "$(readlink -f "$0")")/omabump-common"
 
 usage="usage: omabump-check [--no-notify] [--no-mise] [--wait]"
-notify=1 with_mise=1 wait_lock=0
+notify="" with_mise="" wait_lock=0
 while (( $# )); do
   case $1 in
     --no-notify) notify=0 ;;
@@ -43,6 +48,8 @@ done
 # skipped (skippedVersions) never notify; status.json still says the truth
 # about them, plus "muted" and "skipped".
 load_quiet
+[[ -n $notify ]] || if [[ $setting_notify == false ]]; then notify=0; else notify=1; fi
+[[ -n $with_mise ]] || if [[ $setting_show_mise == false ]]; then with_mise=0; else with_mise=1; fi
 
 mkdir -p "$state_dir"
 # The shell timer and a hand run can overlap; the second one has nothing to
@@ -53,6 +60,9 @@ if (( wait_lock )); then
 else
   flock -n 9 || exit 0
 fi
+# Only a check makes these, and only under the lock: any left over is from
+# a run that was killed outright.
+rm -rf -- "$state_dir"/.check.* "$state_dir"/.status.* "$state_dir"/.state.*
 
 # Last run's results, used only when they have the shape this script writes.
 previous='{"apps":[]}'
@@ -62,22 +72,26 @@ previous='{"apps":[]}'
 notified='{}'
 [[ -s $notified_file ]] && jq -e 'type == "object"' "$notified_file" >/dev/null 2>&1 && notified=$(<"$notified_file")
 
-tmp=$(mktemp -d "$state_dir/.check.XXXXXX")
-# write_status reads the previous run from a file (--slurpfile), so a large
-# status.json never becomes a command-line argument.
-printf '%s\n' "$previous" >"$tmp/previous.json"
 pkgs_state=""
 pkgs_commit=$(jq -r '.omarchyPkgs.commit // ""' <<<"$previous")
-pkgs_error="" pkgs_note="" mise_note=""
+pkgs_error="" pkgs_note="" mise_note="" discovery_note=""
 started=$(date -Iseconds)
-missing_line=$(missing_tools_line)
 rows=() order='[]' status_done=0
+# Every scratch file of the run, the helpers' included (run_tmp), is in
+# $tmp, which the EXIT trap removes however the run ends.
+tmp=$(mktemp -d "$state_dir/.check.XXXXXX")
+run_tmp=$tmp
 cleanup() {
-  (( status_done )) || write_status 2 || true
+  local rc=$?
+  (( status_done )) || write_status 2 "The check stopped early (exit $rc)" || true
   rm -rf "$tmp"
 }
 trap cleanup EXIT
 trap 'exit 143' TERM
+# write_status reads the previous run from a file (--slurpfile), so a large
+# status.json never becomes a command-line argument.
+printf '%s\n' "$previous" >"$tmp/previous.json"
+missing_line=$(missing_tools_line)
 
 # The clone is fetched on first need, so a machine without any Omarchy-packaged
 # app never fetches it. The check only reads it: no checkout, nothing run. The
@@ -104,36 +118,59 @@ pkgs_ready() {
   [[ $pkgs_state == ready ]]
 }
 
+# What the recipe at recipe_rev (recipe_source) says about the omarchy row
+# of $1: sets note, installable and hold from its watch and release-age
+# window, recipe and recipe_commit from its PKGBUILD. Nothing is set and it
+# fails, with the reason on stderr, when the blob-less clone could not read
+# a file the recipe has: a failed check, never a missing recipe or watch.
+recipe_read() {
+  local pkg=$1 blocker age=0 text rc=0
+  blocker=$(recipe_blocker "$recipe_rev" "$pkg") || return 1
+  if [[ -z $blocker ]]; then age=$(recipe_release_age "$recipe_rev" "$pkg") || return 1; fi
+  text=$(recipe_file "$recipe_rev" "$pkg" PKGBUILD) || rc=$?
+  (( rc < 2 )) || return 1
+  read -r _ recipe < <(recipe_version <<<"$text" 2>/dev/null) || recipe=""
+  [[ $recipe_rev == "$pkgs_base" ]] || recipe_commit=$recipe_rev
+  if [[ -n $blocker ]]; then
+    note=$blocker
+  else
+    installable=true note=$recipe_note hold=$age
+  fi
+}
+
 # One table for the whole run: discovery and the merge happen once.
 load_table
 table=$app_table
 # Shown in the panel: without discovery, only the curated mise rows remain.
-discovery_note=""
 (( with_mise )) && [[ -n $discovery_error ]] && discovery_note=$(clean_text "${discovery_error:0:200}")
 order=$(jq -c 'map(.pkg)' <<<"$table")
 
 # Replaces status.json in one rename. $1 is 0 while checking, 1 for the final
-# write, 2 when the run dies half way. startedAt lets the panel treat a run
-# that was killed while "checking" as stale. Until the final write, rows not checked
-# yet keep their previous entry, flagged "checking": true while the run lasts,
-# so the panel shows progress row by row; the check time stays the old one.
+# write, 2 when the run dies half way, with $2 saying how: that text is
+# runError, "" on every other write, so every copy of the widget (and a run
+# from a terminal) sees a failed run, not only the one whose process exited
+# non-zero. startedAt lets the panel treat a run that was killed while
+# "checking" as stale. Until the final write, rows not checked yet keep
+# their previous entry, flagged "checking": true while the run lasts, so the
+# panel shows progress row by row; the check time stays the old one.
 write_status() {
-  local final=$1 out at
+  local final=$1 run_error=${2:-} out at
   at=$(jq -r '.checkedAt // ""' <<<"$previous")
   (( final == 1 )) && at=$(date -Iseconds)
-  out=$(mktemp "$state_dir/.status.XXXXXX")
+  out=$(mktemp "$tmp/.status.XXXXXX")
   # Desktop apps first, mise tools after them, each in table order, then
   # Omabump itself.
   printf '%s\n' "${rows[@]}" | jq -s --slurpfile prevs "$tmp/previous.json" --argjson order "$order" \
     --argjson final "$final" --arg at "$at" --arg started "$started" \
     --arg commit "$pkgs_commit" --arg perr "$(clean_text "$pkgs_error")" --arg pnote "$(clean_text "$pkgs_note")" \
-    --argjson following "$pkgs_follow" --arg derr "$discovery_note" --arg merr "$mise_note" '
+    --argjson following "$pkgs_follow" --arg derr "$discovery_note" --arg merr "$mise_note" \
+    --arg rerr "$(clean_text "$run_error")" '
     $prevs[0] as $prev
     | (map(.pkg)) as $done
     | (if $final == 1 then .
        else . + [$prev.apps[] | select(.pkg as $p | $done | index($p) | not) | .checking = ($final == 0)] end)
     | sort_by([.source == "self", .source == "mise", (.pkg as $p | $order | index($p) // 1e9)])
-    | {checkedAt: $at, checking: ($final == 0), startedAt: $started,
+    | {checkedAt: $at, checking: ($final == 0), startedAt: $started, runError: $rerr,
        omarchyPkgs: {commit: $commit, following: ($following == 1), error: $perr, note: $pnote},
        discoveryError: $derr, miseError: $merr, apps: .}' >"$out"
   mv -f "$out" "$status_file"
@@ -202,14 +239,7 @@ while IFS= read -r app; do
       if pkgs_ready; then
         recipe_source "$pkg" "$app" 2>"$tmp/err" || recipe_rc=$?
         if (( recipe_rc == 0 )); then
-          note=$(recipe_blocker "$recipe_rev" "$pkg")
-          if [[ -z $note ]]; then
-            installable=true
-            note=$recipe_note
-            hold=$(recipe_release_age "$recipe_rev" "$pkg")
-          fi
-          read -r _ recipe < <(recipe_file "$recipe_rev" "$pkg" PKGBUILD | recipe_version 2>/dev/null) || recipe=""
-          [[ $recipe_rev == "$pkgs_base" ]] || recipe_commit=$recipe_rev
+          recipe_read "$pkg" 2>"$tmp/err" || route_error=$(<"$tmp/err")
         elif (( recipe_rc != 75 )); then
           route_error=$(<"$tmp/err")
         fi
