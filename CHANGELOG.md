@@ -1,66 +1,66 @@
 # Changelog
 
-## Unreleased
+## 0.1.2 (2026-10-08)
 
-Checks and the panel:
+Worth knowing before you update:
 
-- A check you ask for while one runs is no longer dropped: it runs after that one. With the hour-long interval, rows could stay stale until the next tick.
-- A check that stops part way (killed, Ctrl-C, closed terminal) writes `runError` into status.json, and every bar reads it as failed, not only the one that started it. A TERM to the check's process group, as the shell's `timeout` sends it, no longer waits for a running git, mise or feed command; that command is stopped and rows are never left "checking".
-- "Hide icon until an update" no longer hides a failed check.
-- A muted row's failed check stays on its row and in the tooltip; it no longer makes the header or bar read as failed.
-- A skip ends once that version or a later one is installed, and the settings list only skips that still apply. The header shows "(+N muted/skipped)" like the tooltip.
-- Notify and Show mise tools apply to checks started from a terminal or by the installer too.
-- Discovery reads wrappers line by line, warns only about files that run mise but cannot be read, never about another installer's launcher, your own script or a disabled row, and drops an `@version` from the key. A deeply nested menu or a menu with no agent entries is reported instead of crashing or silently listing none.
-- mise: Omabump's disabled backends now include yours; a pinned row shows the real newest release; an odd entry in mise's answer is a row error, not a crash; Update asks mise only about its own tool.
-- A malformed `pins.json` is a pin error on the omarchy rows instead of stopping every check and install. A recipe file the blob-less clone cannot download is a check error, not "no recipe".
-- Feeds: a regex that matched nothing and a JSON path with several values are errors, not the versions "None" or two versions run together. A JSON feed body must be exactly one document; an empty body or several documents give a plain error instead of a bash arithmetic error.
-- The widget waits for a running check only before its 10-minute deadline and never passes `--wait`, so a Refresh no longer reads "Check failed (exit 124)" when another check takes the lock first; a check that started after the request answers it, and a run that merely left on the lock no longer clears "Check not run" or counts for the refresh throttle. On two monitors a Show mise tools change or a Refresh during a check runs one more check, not one per bar, and a bar whose run left logs nothing.
-- Turning Show mise tools on or off while another check runs gets a check after it, so the CLI rows no longer stay missing until the next timer tick. A Refresh that waited over 11 minutes behind another check says "Check not run" instead of passing as done.
-- The panel applies mutes and skips by the checker's rules (valid ids and versions, the first 200 entries), so the two no longer disagree about a row.
-- Skip needs Shift+K: with CapsLock on, j and k move the cursor. The selected row scrolls into view on open and on every move. IPC open, toggle and settings open the panel on the focused monitor.
-- Discovery reads a wrapper-like file as shell: an apostrophe in a here-document no longer hides `mise` after it, a here-document's body is data, `"$(...)"` inside a string is followed, and mise after `nice`, `timeout`, `time`, `command`, `nohup`, a runner given by path or runner options (`sudo -E`, `env -i`) counts. A file that ends inside an open quote is also checked line by line.
-- Discovery: `mise` in an `echo` string or a comment no longer counts as running mise, while mise after `&&`, `env`, `sudo` or with value flags (`-C dir`) still does; a long line of flags no longer stalls discovery; an `@version` holding a colon is dropped from the key.
-- Checks remove the day-old scratch files a killed Update or an older release left in `~/.cache/omabump` and the state directory.
-- status.json has `"schemaVersion": 1`. A row's note no longer carries "Installed as X, switch to Y"; the panel writes that from `installedName`, `switchable`, `updateAvailable` and `installable`. An older file is read as before (its rows show "Installed as X", as in 0.1.1).
-- The widget's logic moved into `Model.js`, tested with node, `vercmp` included against a table taken from `/usr/bin/vercmp`. CI installs node.
+- The default check interval is one hour (was 15 minutes). A setting you chose stays.
+- Agent CLIs: mise runs with `MISE_MINIMUM_RELEASE_AGE=0` in the check and in Update, as Omarchy's own wrappers and `omarchy update` do, so a new release shows and installs at once instead of after mise's cooldown.
+- Skip is Shift+K only; with CapsLock on, `j` and `k` move the cursor.
+- `bin/omabump-check` exits 75 when it ran no check: without `--wait` when another check holds the lock (it used to exit 0), with `--wait` when its wait passes 11 minutes. One line on stderr says so.
+- status.json has `"schemaVersion": 1`, and a row's `note` no longer carries "Installed as X, switch to Y": that comes from `installedName`, `switchable`, `updateAvailable` and `installable`. An older file is read as before until the next check rewrites it.
+
+A failed check never reads as current:
+
+- A `mise outdated` that failed without an error message (killed by its timeout) aborted the whole check, and an Update of a mise row stopped without a word. It is now a failed check for the mise rows only.
+- A failing `mise ls` (a broken mise config) emptied the CLI section and the summary said "All current". The last known CLI rows stay, marked as failed, and the panel says why.
+- Offline or rate limited, `mise outdated` exits 0 and leaves the tool out, so the row read as current. mise's warning now makes it a failed check that keeps the last known version, and a pending CLI update keeps counting.
+- A check that stops part way (killed, Ctrl-C, closed terminal) writes `runError` into status.json, and every bar reads it as failed, not only the one that started it. A TERM to the check's process group, as the shell's `timeout` sends it, stops a running git, mise or feed command at once, and rows are never left "checking".
+- "Hide icon until an update" no longer hides a failed check. A muted row's failed check stays on its row and in the tooltip, and no longer makes the header or bar read as failed.
+- A malformed `pins.json` is a pin error on the omarchy rows instead of stopping every check and install. A recipe file the blob-less clone cannot download is a check error, not "no recipe". An odd entry in mise's answer is a row error, not a crash.
+
+Versions:
+
+- apt indexes: a version with a Debian revision or epoch (`2.0-1`, `1:2.0`) was skipped, so an older one could read as newest, and only the first (oldest) 500 matching stanzas counted; now revisions and epochs compare and the last 500 count. A hyphenated pre-release (`2.0.0-beta1`) is still not taken for the release.
+- openclaw and voxtype hold new releases for 24 h in omarchy-pkgs (`min_release_age`), and Update failed with "nothing to do" until then. Such a row says from when Update works, and notifies then.
+- A pinned mise row shows the real newest release, not mise's rewritten request.
+- Feeds: a regex that matched nothing, a JSON path with several values, an empty body or several JSON documents are plain errors, not the version "None", two versions run together or a bash arithmetic error. CRLF update manifests work.
+
+Refresh and the panel:
+
+- A check you ask for while one runs is no longer dropped: a check that starts after your request answers it. A Refresh that waited over 11 minutes behind another check says "Check not run". The widget waits for a running check only before its 10-minute deadline, and a run that merely found the lock taken no longer clears an error.
+- A shell reload or a second monitor no longer starts a check when one ran within the interval, and on two monitors a Show mise tools change or a Refresh during a check runs one check after it, not one per bar.
+- Turning Show mise tools on or off while another check runs gets a check after it. Notify and Show mise tools apply to checks started from a terminal or by the installer too.
+- Settings stored as strings (`omarchy bar set ... notify false` without `--json`) read as booleans everywhere; the toggles and the checker used to disagree. The interval picker keeps following the setting.
+- A skip ends once that version or a later one is installed, and the settings list only skips that still apply. The panel applies mutes and skips by the checker's rules. Clear removes only what it lists. The header shows "(+N muted/skipped)" like the tooltip.
+- A row with no Update says so, and why, in its tooltip. The selected row scrolls into view. IPC open, toggle and settings open the panel on the focused monitor. Ask agent starts the agent through `omarchy-agent-prompt`. Dimmed text is dimmer than normal text on light themes too.
+- Rows are built only while the panel shows, and a status write that changes no row rebuilds nothing.
+
+Agent discovery:
+
+- Wrappers are read line by line, not as one byte-exact template, and an `@version` (also one holding a colon) is dropped from the key.
+- The "wrapper not recognised" warning appears only for a file that runs mise but cannot be read. Discovery reads such a file as shell: another installer's launcher, your own script, `mise` in an `echo` string, a comment or a here-document's body, and a disabled row stay silent, while mise after `&&`, `env`, `sudo -E`, `nice`, `timeout` or a runner given by path counts.
+- A deeply nested menu, or a menu with no agent entries (Omarchy renamed its ids), is reported instead of crashing or silently listing none. A long line of flags no longer stalls discovery.
+- Omabump's disabled mise backends include yours (`MISE_DISABLE_BACKENDS`, `disable_backends`). Update asks mise only about its own tool.
+- AUR rows installed from the AUR say "Updates with omarchy update (AUR)" and offer no Ask agent: `omarchy update` runs `yay -Sua`.
 
 Update:
 
-- Answering n at pacman's prompt says so, removes the staged copy and keeps the verified package for a retry; a hook failing after the install is reported as done with a warning.
-- The omarchy route checks the staged copy against the sha256 of the package makepkg built.
-- Switch (and Update replacing a package installed under another name) reads the declared conflict from the recipe before building.
-- A self update that fails or is stopped part way rolls back fully, waiting for git first, and says whether the rollback worked. A second Ctrl-C or a closed terminal no longer cuts the rollback's git reset short.
-- A run stopped before pacman starts removes its staged copy (`sudo -n rm`). A run stopped while pacman runs (killed, or the terminal closed at its prompt) leaves the copy to pacman, records it and prints the `sudo rm` to run; the next Update of that app removes recorded copies first, before any feed or download, and nothing is staged while pacman's lock file exists. A run ended by TERM or HUP after the build or download began says which files stay.
-- Update on a mise row whose `mise outdated` entry is not an object fails with the check's wording instead of calling the tool newest or held.
-- `omabump-check` exits 75 when it ran no check: without `--wait` when another check holds the lock (it used to exit 0), with `--wait` when its wait passes 11 minutes; one line on stderr says so. The settings are read once the check holds the lock.
+- The staged copy in `/var/cache/omabump` is read by you and written by root from a file checked to be regular, so a swapped-in symlink or device cannot make root copy a file you cannot read or an endless stream. On the omarchy route it is checked against the sha256 of the package makepkg built.
+- makepkg no longer installs missing build dependencies with `--noconfirm`: pacman asks for those too.
+- Answering n at pacman's prompt says so, removes the staged copy and keeps the verified package for a retry. A hook failing after the install is reported as done with a warning.
+- A run stopped before pacman starts removes its staged copy. A run stopped while pacman runs leaves the copy to pacman, records it and prints the `sudo rm` to run; the next Update of that app removes recorded copies first, and nothing is staged while pacman's lock file exists.
+- The refresh after an Update waits for a running check instead of being skipped, so the panel no longer offers the update just installed.
+- Switch, and Update replacing a package installed under another name, read the declared conflict from the recipe before building. `pacman -Qi` runs with `COLUMNS` unset, so a wrapped Provides or Conflicts line no longer hides a name.
+- A self update that fails or is stopped part way rolls back fully, waits for git first, cannot be cut short by a second Ctrl-C or a closed terminal, and says whether the rollback worked. Afterwards it asks you to restart the shell, since a plugin reload can keep the old panel code.
+- A `url.*.insteadOf` rule for github.com in your git config made every check re-create the omarchy-pkgs clone, and the omarchy route never worked. The clone ignores your and the system's git config, except `http.*` (proxy, CA bundle).
+- After a successful omarchy install, the sources that recipe downloaded are removed; the old name-prefix guess could remove another recipe's files. Checks remove day-old scratch files a killed Update or an older release left.
+- Names in `apps.json` ending in a newline are dropped (jq's `$` matched before it).
 
-Earlier in this release:
+Development:
 
-- mise runs with `MISE_MINIMUM_RELEASE_AGE=0` in the check and in Update, as Omarchy's own agent wrappers and `omarchy update` do: a new agent CLI release shows and installs at once instead of after mise's cooldown.
-
-- A `mise outdated` call that failed without an error message (killed by its timeout) aborted the whole check, and an Update of a mise row stopped without a word. It is now a failed check for the mise rows only.
-- A failing `mise ls` (a broken mise config) emptied the CLI section and the summary said "All current". The last known CLI rows now stay, marked as failed, and the panel says why.
-- Offline or rate limited, `mise outdated` exits 0 and leaves the tool out; the row read as current. mise's warning now makes it a failed check that keeps the last known version, and a pending CLI update keeps counting while the check fails.
-- apt indexes: a version with a Debian revision or epoch (`2.0-1`, `1:2.0`) was skipped, so an older one could read as newest. Only the first 500 matching stanzas counted, the oldest; now the last 500 do.
-- openclaw and voxtype hold new releases for 24 h in omarchy-pkgs (`min_release_age`), and Update failed with "nothing to do" until then. Such a row now says from when Update works, and notifies then.
-- A `url.*.insteadOf` rule for github.com in your git config made every check re-create the omarchy-pkgs clone, and the omarchy route never worked. The clone now ignores your and the system's git config, except its `http.*` settings (proxy, CA bundle).
-- The refresh after an Update did not run while another check was running, so the panel kept offering the update just installed. It now waits for that check to end (`omabump-check --wait`).
-- The staged copy in `/var/cache/omabump` is read by you and written by root, so a symlink swapped in for the verified file can no longer make root copy a file you cannot read into a world-readable place.
-- makepkg no longer installs missing build dependencies with `--noconfirm`: pacman asks for those too, as the README says.
-- After a successful omarchy install, the sources that recipe downloaded are removed (they are the installed version's). The old cleanup guessed older versions by name prefix and could remove another recipe's files.
-- AUR rows installed from the AUR say "Updates with omarchy update (AUR)" and offer no Ask agent: `omarchy update` runs `yay -Sua`.
-- Names in `apps.json` ending in a newline passed the jq rules (`$` matches before a final newline); they are dropped now.
-- CRLF update manifests: the checksum lookup and the version now strip `\r`.
-- Switch reads `pacman -Qi` with `COLUMNS` unset, so a wrapped Provides or Conflicts line no longer hides a name.
-- Settings stored as strings (`omarchy bar set ... notify false` without `--json`) now read as booleans everywhere; the panel's toggles and the checker used to disagree.
-- The interval picker keeps following the setting after you pick a value.
-- A row with no Update says so, and why, in its tooltip instead of naming a route it cannot take.
-- Clear in the settings removes only the mutes and skips it lists; ones for hidden rows stay.
-- The default check interval is one hour (was 15 minutes). A shell reload or a second monitor no longer starts a check when one ran within the interval.
-- Rows are built only while the panel shows, and a status write that changes no row rebuilds nothing.
-- Ask agent starts the agent through `omarchy-agent-prompt`, Omarchy's public entry point.
-- Dimmed text is dimmer than normal text on light themes too.
-- tests/run.sh runs every test and reports all failures. CI has job timeouts, and a release tag must match `manifest.json` and have a CHANGELOG entry.
+- The widget's logic moved into `Model.js`, tested with node; `vercmp` is checked against a table taken from `/usr/bin/vercmp`. tests/run.sh runs every suite (723 tests, whole checks and installs against fake tools) and reports every failure. CI installs node, pins shellcheck, has job timeouts, and a release tag must match `manifest.json` and have a CHANGELOG entry.
+- README: install and usage come first, the security model states exactly what each guarantee covers, own icons go in `assets/user/` (ignored by git, so they do not block self-update), and an Omarchy channel switch is noted to put repo versions back.
 
 ## 0.1.1 (2026-10-02)
 
