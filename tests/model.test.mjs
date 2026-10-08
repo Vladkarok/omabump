@@ -333,13 +333,16 @@ test("checkDue: counts from the start, unless the run died past its end; a futur
 
 // --- this shell's checks ------------------------------------------------------------
 
-test("checkOutcome: a lock wait that gave up ran nothing; else the exit code says", () => {
+test("checkOutcome: a lock wait that gave up ran nothing, a checker that found the lock taken left; else the exit code says", () => {
   const busy = model.lockBusyExit
   same(busy, 75)
-  same([m.checkOutcome(busy, true, false), m.checkOutcome(busy, true, true), m.checkOutcome(busy, false, true),
-    m.checkOutcome(busy, false, false), m.checkOutcome(0, true, true), m.checkOutcome(0, false, false),
-    m.checkOutcome(1, false, true), m.checkOutcome(124, false, true)],
-    ["notRun", "notRun", "notRun", "failed", "ok", "ok", "failed", "failed"])
+  same([m.checkOutcome(busy, true), m.checkOutcome(busy, false), m.checkOutcome(0, true), m.checkOutcome(0, false),
+    m.checkOutcome(1, false), m.checkOutcome(124, false), m.checkOutcome(124, true)],
+    ["notRun", "left", "ok", "ok", "failed", "failed", "failed"])
+})
+
+test("queuedRunWaits: not behind a check that completed, behind any other end", () => {
+  same(["ok", "failed", "left", "notRun"].map(outcome => m.queuedRunWaits(outcome)), [false, true, true, true])
 })
 
 test("checkErrorText: none for a check that ran, else why", () => {
@@ -431,7 +434,20 @@ test("fullNote: a row carried over from an older file keeps its clause once", ()
 
 test("shortNote: the name it is installed as, else the note's first clause", () => {
   same([m.shortNote(renamed, 1), m.shortNote(row({ note: "a; b" }), 1),
-    m.shortNote(row({ note: "Installed as x, switch to app; b" }), 0)], ["Installed as chatgpt-desktop", "a", "Installed as x, switch to app"])
+    m.shortNote(row({ note: "Installed as x, switch to app; b" }), 1)], ["Installed as chatgpt-desktop", "a", "Installed as x, switch to app"])
+})
+
+test("shortNote: an older file's note says the switch, and the row keeps the name it is installed as", () => {
+  same([m.shortNote(row({ note: "Installed as x, switch to app; b" }), 0),
+    m.shortNote(row({ installedName: "chatgpt-desktop", note: "Installed as chatgpt-desktop, Update switches to chatgpt-bin" }), 0),
+    m.shortNote(Object.assign({}, renamed, { note: "a; b" }), 0), m.shortNote(row({}), 0)],
+    ["Installed as x", "Installed as chatgpt-desktop", "a", ""])
+  same(m.extraLine(row({ note: "Installed as x, switch to app" }), 0, ""), "Installed as x")
+})
+
+test("legacyFirstClause: the first clause, cut where an older checker wrote the switch", () => {
+  same(["Installed as a, Update switches to b; c", "Installed as a, switch to b", "a, b; c", "", undefined]
+    .map(n => m.legacyFirstClause(n)), ["Installed as a", "Installed as a", "a, b", "", ""])
 })
 
 test("installedText: no pkgrel, unless it is the only difference; mise as is", () => {

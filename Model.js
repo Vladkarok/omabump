@@ -408,21 +408,40 @@ function checkDue(nowMs, checkedAt, startedMs, intervalSec) {
 
 // --- this shell's checks ------------------------------------------------------------
 
-// What Main.qml's waitScript exits with when the lock stayed held past its
-// wait and it ran nothing. bin/omabump-check's own --wait leaving on the
-// lock should say the same.
+// What a run that never took the lock exits with: Main.qml's waitScript
+// when the lock stayed held past its wait, and bin/omabump-check when it
+// found the lock taken (or, with --wait, held past its own wait).
 var lockBusyExit = 75
 
-// What a check's exit means for this shell (Main.qml's onExited): "notRun"
-// when it never took the lock: waitScript gave up on it (waited: it had not
-// said "started"), or the checker's own --wait did, which only a Refresh's
-// run passes. "ok" or "failed" otherwise.
-function checkOutcome(exitCode, waited, forRefresh) {
-  if (exitCode === lockBusyExit && (waited || forRefresh)) return "notRun"
+// What a check's exit means for this shell (Main.qml's onExited). Both
+// "notRun" and "left" ran nothing. "notRun": waitScript gave up on the
+// lock (waited: it had not said "started"), held past its wait by checks
+// from before the request. "left": the checker found the lock taken and
+// left the check to the one holding it. The timer's run does not wait; a
+// run that waited lost it, after waitScript's wait, to a check that
+// therefore started after the request, and so did a queued run that did
+// not wait (queuedRunWaits): either way that check answers it. "ok" or
+// "failed" otherwise.
+function checkOutcome(exitCode, waited) {
+  if (exitCode === lockBusyExit) return waited ? "notRun" : "left"
   return exitCode === 0 ? "ok" : "failed"
 }
 
-// checkError for that outcome: "" once a check of this shell's ran.
+// Whether the run queued behind this shell's own check (Main.qml's
+// runQueued) waits for the lock, by how that check ended. Not after one
+// that completed: its checker took the lock with none held (it never
+// waits) and kept it until it ended, which was after the Refresh or Show
+// mise tools change that queued the run, so a check holding the lock now
+// took it later and answers that. The queued run then leaves on it
+// instead of running a second check after it. After any other end, a
+// check from before the request may hold the lock: one that failed may
+// have failed before it took it.
+function queuedRunWaits(outcome) {
+  return outcome !== "ok"
+}
+
+// checkError for a run that took the lock, or for "notRun": "" once a check
+// of this shell's ran. A run that left keeps the error it had.
 function checkErrorText(outcome, exitCode, lockWaitSec) {
   if (outcome === "notRun")
     return "Check not run: another check held the lock for over " + Math.round(lockWaitSec / 60) + " min"
@@ -522,8 +541,21 @@ function fullNote(app, schema) {
 // The row's second line keeps the first clause, and of a switch only the
 // name it is installed as: the tooltip and the Switch button say the rest.
 function shortNote(app, schema) {
-  if (schema >= 1 && switchClause(app) !== "") return "Installed as " + app.installedName
+  if (schema < 1) return legacyFirstClause(app.note)
+  if (switchClause(app) !== "") return "Installed as " + app.installedName
   return String(app.note || "").split("; ")[0]
+}
+
+// The first clause of a note in a file from before schemaVersion 1, which
+// still says the switch: "Installed as chatgpt-desktop, switch to
+// chatgpt-bin" is "Installed as chatgpt-desktop", as that release's panel
+// showed it. The one place the widget reads the checker's wording, and
+// only for such a file: since then the row's fields say it (switchClause).
+function legacyFirstClause(note) {
+  var first = String(note || "").split("; ")[0]
+  var cut = first.indexOf(", Update switches to ")
+  if (cut < 0) cut = first.indexOf(", switch to ")
+  return cut < 0 ? first : first.substring(0, cut)
 }
 
 // The package release (-1) says nothing next to an upstream version, so

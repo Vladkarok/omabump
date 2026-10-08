@@ -11,6 +11,13 @@
 same "Main.qml runs checks under the deadline bin/omabump-check names" \
   "$(grep -o 'under `timeout -k [0-9]* [0-9]*`' "$root/bin/omabump-check" | grep -o 'timeout[^`]*')" \
   "$(grep -o '"timeout", "-k", "[0-9]*", "[0-9]*", checkScript' "$root/Main.qml" | sed 's/, checkScript//' | tr -d '",')"
+# Every wait for the lock comes before that deadline, never under it: a
+# wait the deadline cut short would read as a failed check (exit 124), not
+# as one that never ran (exit 75). So waitScript comes first, and the
+# checker never gets --wait.
+check "Main.qml waits for the lock before the deadline starts" \
+  grep -q 'command = \["bash", "-c", waitScript, "omabump-wait", lockPath, String(lockWaitSec)\].concat(command)$' "$root/Main.qml"
+refuse "Main.qml never passes the checker --wait" grep -q -- '"--wait"' "$root/Main.qml"
 
 # A Refresh waits for a running check on the checker's lock, as long as the
 # checker's own --wait would.
@@ -56,11 +63,33 @@ same "waitScript: a lock held past the wait runs nothing and exits Model.lockBus
   "$(bash -c "$wait_script" omabump-wait "$wait_lock" 0.2 echo ran; echo "exit $?")"
 let_go
 check "Main.qml reads a check's exit through Model.checkOutcome" \
-  grep -q 'Model.checkOutcome(exitCode, root.runWaiting, root.runForRefresh)' "$root/Main.qml"
+  grep -q 'Model.checkOutcome(exitCode, root.runWaiting)' "$root/Main.qml"
 same "waitScript: no lock directory yet, nothing to wait for" "started|ran" \
   "$(run_wait "$scratch/wait/none/.check.lock" 5 echo ran)"
 same "waitScript: the command's exit status is the run's" "started|exit 3" \
   "$( { bash -c "$wait_script" omabump-wait "$wait_lock" 5 bash -c 'exit 3'; echo "exit $?"; } | paste -sd'|')"
+
+# A run that left on the lock ran nothing and failed nothing: only the other
+# outcomes set checkError and lastCheckEndMs (IPC refresh's throttle), and
+# its line on stderr stays out of the shell's log.
+on_exited=$(sed -n '/^    onExited: function(exitCode) {$/,/^    }$/p' "$root/Main.qml")
+same "onExited sets checkError and lastCheckEndMs only for a run that did not leave on the lock" \
+  'notRun root.checkError|ran root.checkError|ran root.lastCheckEndMs' \
+  "$(awk '/^      if \(outcome === "notRun"\) \{$/ { b = "notRun" } /^      \} else if \(outcome !== "left"\) \{$/ { b = "ran" }
+    /^      \}$/ { b = "" } /root\.(checkError|lastCheckEndMs) = / { print (b == "" ? "outside" : b), $1 }' <<<"$on_exited" | paste -sd'|')"
+check "onExited logs no stderr for a run that left on the lock" \
+  grep -q '^      if (err !== "" && outcome !== "left") console.warn("omabump", err)$' <<<"$on_exited"
+# A change of Show mise tools behind this shell's own check queues a run
+# that is not a Refresh's, and a queued run waits for the lock only when
+# this shell's own check may not have held it to its end: on two monitors,
+# every copy then leaves on the lock once one post-change check holds it.
+same "a Show mise tools change queues a run that is not a Refresh's" '    if (run === "queue") checkQueued = true' \
+  "$(sed -n '/^  onShowMiseChanged: {$/,/^  }$/p' "$root/Main.qml" | grep -E 'checkQueued|queuedForRefresh')"
+check "a queued run is a Refresh's only when a Refresh queued it" \
+  grep -q '^    if (checkQueued && !checkProcess.running) runCheck(wait, queuedForRefresh)$' "$root/Main.qml"
+check "a queued run waits for the lock by how this shell's own check ended" \
+  grep -q '^      Qt.callLater(root.runQueued, Model.queuedRunWaits(outcome))$' <<<"$on_exited"
+check "a Refresh's run counts as one without the wait too (refreshRunning)" grep -q '^    runForRefresh = own$' "$root/Main.qml"
 
 # The panel decides skips between checks: mise and self versions as strings,
 # every other source with vercmp, as row_skipped does.
@@ -81,9 +110,17 @@ check "bin/omabump-check writes runError into status.json" \
 
 # The widget reads states from status.json's fields, never from the
 # checker's wording: no "Update check skipped" prefix for unchecked, no
-# pattern that strips a switch clause out of a note.
+# pattern that strips a switch clause out of a note, but on one legacy path:
+# a file from before schemaVersion 1 still has the clause in its notes, and
+# Model.legacyFirstClause cuts it from the row's second line, as that
+# release's panel did; only shortNote calls it, for such a file alone.
+model_current=$(sed '/^function legacyFirstClause(/,/^}$/d' "$root/Model.js")
 refuse "the widget recognises no state by the checker's wording" \
-  grep -qE 'Update check skipped|\(Update switches\|switch\)' "$root/Main.qml" "$root/Panel.qml" "$root/Model.js"
+  grep -qE 'Update check skipped|\(Update switches\|switch\)|(Update switches|switch) to "\)' \
+  "$root/Main.qml" "$root/Panel.qml" <(printf '%s\n' "$model_current")
+same "only shortNote reads an older file's switch clause, and only in such a file" \
+  "  if (schema < 1) return legacyFirstClause(app.note)" \
+  "$(grep -h 'legacyFirstClause(' "$root/Main.qml" "$root/Panel.qml" <(printf '%s\n' "$model_current"))"
 
 # Every Model.x the QML reads is a function or value Model.js defines: a
 # typo would show only as a binding error in the shell's log.

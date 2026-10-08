@@ -88,8 +88,9 @@ Panel {
   // one answers it. While this shell's own check for a Refresh runs, or for
   // a minute after its last check ended with none running now, it is
   // throttled and starts nothing. So it queues one more only behind the
-  // timer's check, and during another's (a terminal's, another monitor's)
-  // it runs after that one, as Refresh does.
+  // timer's check or one for a Show mise tools change, and during
+  // another's (a terminal's, another monitor's) it runs after that one, as
+  // Refresh does.
   function ipcRefresh() {
     if (checker.refreshPending) return "ok"
     if (checker.refreshRunning || !checker.checking && Date.now() - checker.lastCheckEndMs < 60000) return "throttled"
