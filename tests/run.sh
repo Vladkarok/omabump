@@ -727,6 +727,57 @@ rm -f "$disc/bin/omp"; ln -s "$disc/real-omp" "$disc/bin/omp"
 same "discover: a symlink in its place is silent" '' "$(errors_of)"
 rm -f "$disc/bin/omp"
 same "discover: a missing wrapper is silent" '' "$(errors_of)"
+# Whether a rejected file runs mise is read as shell: a here-document's body
+# is data (an apostrophe in it opens no string), a command substitution in a
+# string has quotes of its own, text that ends inside a quote or a
+# here-document is also read line by line, and exec, sudo, env, nice,
+# timeout and time may come by path and carry their own options. Each run is
+# bounded, so a match that backtracks fails its test instead of holding a
+# core for hours.
+mise_warning() {
+  printf '%s\n' '#!/bin/bash' "$@" >"$disc/bin/omp"
+  timeout 10 python3 "$root/bin/omabump-discover" --stock "$disc/stock.jsonc" --user "$disc/user.jsonc" --bin-dir "$disc/bin" \
+    | jq -r '.agents[] | select(.command == "omp") | if .warning then "warned" else "silent" end'
+}
+# shellcheck disable=SC2016 # the literal text of the script
+x='exec mise x "a" -- "omp" "$@"'
+# The last line closes the quote that a misread body would leave open, so
+# the text ends balanced either way and the line-by-line fallback cannot
+# hide the misread.
+closer="echo it\\'s"
+same "discover: mise after an apostrophe in a here-document warns" warned "$(mise_warning 'cat <<EOF' "don't" EOF "$x" "$closer")"
+same "discover: and after <<-EOF with tabs" warned "$(mise_warning 'cat <<-EOF' $'\tit\'s' $'\tEOF' "$x" "$closer")"
+same "discover: and after <<'EOF'" warned "$(mise_warning "cat <<'EOF'" "it's" EOF "$x" "$closer")"
+same "discover: and after <<\\EOF" warned "$(mise_warning 'cat <<\EOF' "it's" EOF "$x" "$closer")"
+same "discover: and after <<\"EOF\" with a \" in the body" warned "$(mise_warning 'cat <<"EOF"' 'say "hi' EOF "$x" '# "')"
+same "discover: mise in a here-document's body is data, even fed to bash" silent "$(mise_warning "bash <<'EOF'" "$x" EOF)"
+same "discover: a here-string is no here-document" warned "$(mise_warning 'cat <<<EOF' "$x" EOF)"
+# shellcheck disable=SC2016 # the literal text of the script
+same "discover: an arithmetic << without a delimiter line falls back to each line" warned "$(mise_warning 'n=$((1<<2))' "$x")"
+same "discover: a quote left open falls back to each line" warned "$(mise_warning "echo it's" "$x")"
+same "discover: \$'...' ends at a ' no backslash quotes" warned "$(mise_warning "echo \$'it\\'s'" "$x" "$closer")"
+# shellcheck disable=SC2016 # the literal text of the script
+same "discover: a string inside a string's \$(...) is its own" warned "$(mise_warning 'm="$(echo "it'\''s")"' "$x" "$closer")"
+# shellcheck disable=SC2016 # the literal text of the script
+same "discover: a string's \$(...) runs its commands" warned "$(mise_warning 'v="$(mise x "a" -- "omp" --version)"')"
+for line in 'sudo -E mise use -g "a"' 'env -i PATH=/usr/bin mise use -g "a"' '/usr/bin/env mise use -g "a"' \
+  "exec /usr/bin/nice -n 19 ${x#exec }" '/usr/bin/timeout 60 mise use -g "a"' 'timeout -s KILL -k 5 1m mise use -g "a"' \
+  'sudo -u root mise use -g "a"' "exec -a omp ${x#exec }" 'sudo -s mise use -g "a"' 'sudo -p "pw:" mise use -g "a"' \
+  '/usr/bin/time -a -o log mise use -g "a"' 'env -S "mise use -g a"'; do
+  same "discover: $line warns" warned "$(mise_warning "$line")"
+done
+for line in 'sudo -E echo "mise use -g a"' "nice -n 5 echo 'mise x a'" 'command -v mise >/dev/null || exit 1' \
+  'echo "run mise use -g a first"'; do
+  same "discover: $line is silent" silent "$(mise_warning "$line")"
+done
+# A runner's options, their values and numbers each read one way, so a long
+# run of them that runs nothing cannot make the match backtrack.
+t0=$(date +%s%N)
+same "discover: 40 runner options that run nothing are silent" silent \
+  "$(mise_warning "$(printf 'sudo -E -u x env -i -/env 1 %.0s' {1..40})echo" "$(printf 'exec -a %.0s' {1..40})y" \
+    "$(printf 'time -a -o x timeout -s 1 -k 2 3 nice -n 1 %.0s' {1..40})y")"
+ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+check "discover: and are read within a second ($ms ms)" test "$ms" -lt 1000
 wrapper omp github:can1357/oh-my-pi >"$disc/bin/omp"
 printf '{"setup.default.agent.zed\\n": {"label": "Trailing newline"}, "setup.default.agent.pi": {"label": "Pi"}}' >"$disc/user.jsonc"
 same "discover: a menu id must match whole, no trailing newline" 'pi' \
