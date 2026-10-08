@@ -114,6 +114,12 @@ rm -f "$d2/bin/omp"
 python3 -c 'print("{\"a\": " + "[" * 100000 + "]" * 100000 + "}")' >"$d2/user.jsonc"
 same "menu: one nested too deeply is that menu's error, the stock agents still count" '1|omp hermes' \
   "$(disc2 | jq -r '[(.errors | map(select(test("nested too deeply"))) | length), (.agents | map(.command) | join(" "))] | join("|")')"
+# The limit is Omabump's own, the same on any stack: 64 levels pass, 65 do not,
+# and brackets inside strings do not count.
+python3 -c 'print("{\"a\": \"[[[[\", \"b\": " + "[" * 63 + "]" * 63 + "}")' >"$d2/user.jsonc"
+same "menu: 64 levels are read" '0' "$(disc2 | jq -r '.errors | map(select(test("nested too deeply"))) | length')"
+python3 -c 'print("{\"b\": " + "[" * 64 + "]" * 64 + "}")' >"$d2/user.jsonc"
+same "menu: 65 levels are too deep" '1' "$(disc2 | jq -r '.errors | map(select(test("nested too deeply"))) | length')"
 : >"$d2/user.jsonc"
 same "menu: a user menu without agents is no error" '' "$(disc2 | jq -r '.errors | join("|")')"
 printf '{"setup.default.agents.claude": {"label": "Claude"}}' >"$d2/stock.jsonc"

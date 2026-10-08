@@ -139,6 +139,10 @@ MAX_WRAPPER = 4096
 MAX_MENU = 4 * 1024 * 1024
 MAX_LABEL = 64
 MAX_AGENTS = 64
+# Omarchy's menu nests a handful of levels. Deeper is refused before the
+# decoder sees it: how deep json.loads gets before it gives up depends on the
+# machine's stack, so that is no limit to rely on.
+MAX_DEPTH = 64
 
 
 class NoWrapper(ValueError):
@@ -208,6 +212,32 @@ def read_bounded(fd, limit):
     return b"".join(chunks)
 
 
+def nesting_depth(text):
+    """How deep [ and { nest outside JSON strings; it stops counting once
+    past MAX_DEPTH."""
+    depth = deepest = 0
+    in_string = escaped = False
+    for ch in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch in "[{":
+            depth += 1
+            if depth > deepest:
+                deepest = depth
+                if deepest > MAX_DEPTH:
+                    break
+        elif ch in "]}":
+            depth -= 1
+    return deepest
+
+
 def read_menu(path, uid):
     """The menu's items by id: a flat object, or one under "items". A menu
     may be a symlink (dotfile setups use them), but what it opens must be a
@@ -230,8 +260,10 @@ def read_menu(path, uid):
     text = strip_jsonc(raw.decode("utf-8"))
     if not text.strip():
         return {}
-    # The decoder recurses once per nesting level: a deep enough menu runs
-    # out of stack, which must be this menu's error, not discovery's end.
+    # The decoder recurses once per nesting level: a deep menu must be this
+    # menu's error, not discovery's end, on any stack.
+    if nesting_depth(text) > MAX_DEPTH:
+        raise ValueError("nested too deeply")
     try:
         data = json.loads(text)
     except RecursionError:
