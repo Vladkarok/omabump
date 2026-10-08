@@ -14,9 +14,13 @@
 #             anything else fails loudly. With $STUB_SUDO_INSTALL set (HUP
 #             or TERM), install sends that signal to the installer once
 #             the copy is written, and waits until the installer has
-#             ended. It keeps no password per terminal as the real one
-#             does: sudo -n succeeds unless $STUB_SUDO_N=fail, which is
-#             what a run whose terminal was closed gets (or one whose
+#             ended; with $STUB_SUDO_ASKS set, it sends it before (as
+#             while sudo asks for a password) and writes the copy once
+#             the installer has ended. rm -f does the same with
+#             $STUB_SUDO_RM set: the signal, then rm once the installer
+#             has ended. It keeps no password per terminal as the real
+#             one does: sudo -n succeeds unless $STUB_SUDO_N=fail, which
+#             is what a run whose terminal was closed gets (or one whose
 #             password timed out)
 #   curl      serves files from a local directory
 #   makepkg   reads the test recipe's PKGBUILD and "builds" a plain tar
@@ -84,18 +88,28 @@ cat >"$istubs/sudo" <<'EOF'
 echo "sudo $*" >>"$STUB_LOG/calls"
 dest=${*: -1}
 [[ $dest == "$STUB_STAGING"/* && $dest != *..* ]] || { echo "sudo stub: refusing $*" >&2; exit 97; }
+# The signal $1 to the installer, then nothing until it has ended.
+signal_installer() {
+  kill "-$1" "$PPID"
+  for _ in {1..100}; do kill -0 "$PPID" 2>/dev/null || break; sleep 0.05; done
+}
 case "$*" in
   "install -o root -g root -m 0644 -D /dev/stdin $dest")
+    # kill while sudo asks for the password: sudo is not signalled, and
+    # copies the package once you answer, after the installer has ended.
+    [[ -z ${STUB_SUDO_ASKS:-} ]] || signal_installer "$STUB_SUDO_ASKS"
     mkdir -p "${dest%/*}" && cat >"$dest" || exit 1
     [[ -z ${STUB_TAMPER:-} ]] || printf 'x' >>"$dest"
     # The terminal closing or kill once the copy is there, before pacman.
     if [[ -n ${STUB_SUDO_INSTALL:-} ]]; then
-      kill "-$STUB_SUDO_INSTALL" "$PPID"
-      for _ in {1..100}; do kill -0 "$PPID" 2>/dev/null || break; sleep 0.05; done
+      signal_installer "$STUB_SUDO_INSTALL"
       exit 1
     fi ;;
   "pacman -U -- $dest") exec pacman -U -- "$dest" ;;
-  "rm -f -- $dest") exec rm -f -- "$dest" ;;
+  # kill as the copy is removed, once pacman has ended.
+  "rm -f -- $dest")
+    [[ -z ${STUB_SUDO_RM:-} ]] || signal_installer "$STUB_SUDO_RM"
+    exec rm -f -- "$dest" ;;
   "-n rm -f -- $dest")
     [[ ${STUB_SUDO_N:-} != fail ]] || { echo "sudo: a password is required" >&2; exit 1; }
     exec rm -f -- "$dest" ;;
@@ -166,12 +180,16 @@ chmod +x "$istubs"/*
 inst_env=(env HOME="$ihome" PATH="$istubs:$PATH" XDG_CONFIG_HOME="$ihome/.config" XDG_STATE_HOME="$it/state"
   XDG_CACHE_HOME="$it/cache" GIT_CONFIG_NOSYSTEM=1
   STUB_DB="$idb" STUB_LOG="$ilog" STUB_SERVED="$iserved" STUB_STAGING="$istaging")
-# inst <args...>: a run of the installer copy, staging in $istaging, with
-# $idb/db.lck as pacman's lock file; its output in $iout, status in $irc.
-# Both are set the only way there is: sourced, before install_main.
+# The child bash's first line: staging in $istaging, with $idb/db.lck as
+# pacman's lock file. Both are set the only way there is: before the
+# installer is sourced.
+# shellcheck disable=SC2016 # expanded by the child bash
+inst_dirs='staging_dir=$STUB_STAGING pacman_lock=$STUB_DB/db.lck; '
+# inst <args...>: a run of the installer copy; its output in $iout, status
+# in $irc.
 inst() {
   # shellcheck disable=SC2016 # expanded by the child bash
-  iout=$("${inst_env[@]}" timeout 120 bash -c 'source "$1" "${@:2}"; staging_dir=$STUB_STAGING pacman_lock=$STUB_DB/db.lck; install_main' \
+  iout=$("${inst_env[@]}" timeout 120 bash -c "$inst_dirs"'source "$1" "${@:2}"; install_main' \
     omabump-test "$iplugin/bin/omabump-install" "$@" </dev/null 2>&1)
   irc=$?
 }
@@ -182,7 +200,7 @@ inst_src() {
   local code=$1
   shift
   # shellcheck disable=SC2016 # expanded by the child bash
-  iout=$("${inst_env[@]}" timeout 120 bash -c 'source "$1" "${@:2}" >/dev/null 2>&1 || exit 99; '"$code" \
+  iout=$("${inst_env[@]}" timeout 120 bash -c "$inst_dirs"'source "$1" "${@:2}" >/dev/null 2>&1 || exit 99; '"$code" \
     omabump-test "$iplugin/bin/omabump-install" "$@" </dev/null 2>&1)
   irc=$?
 }
@@ -235,14 +253,19 @@ says "install --prepare (vendor): checks the download" 'sha512 matches.'
 says "install --prepare (vendor): the staged copy goes whether pacman installed it or not" \
   "Would run: sudo rm -f -- $vstaged (whether pacman installed it or not)"
 no_call "install --prepare (vendor): never calls sudo" 'sudo '
+same "install --prepare (vendor): the download is for the real run, not a stopped one" '' "$(grep -F 'the build and download files stay' <<<"$iout")"
 
-# Run as a command, the installer stages in /var/cache/omabump whatever the
-# environment says.
+# Run as a command, the installer stages in /var/cache/omabump and reads
+# pacman's own lock file whatever the environment says.
 fresh 'testapp 1.0.0-1'
-iout=$("${inst_env[@]}" OMABUMP_TEST_STAGING_DIR="$istaging" timeout 120 "$iplugin/bin/omabump-install" --prepare testapp </dev/null 2>&1)
+: >"$idb/db.lck"
+iout=$("${inst_env[@]}" OMABUMP_TEST_STAGING_DIR="$istaging" staging_dir="$istaging" pacman_lock="$idb/db.lck" \
+  timeout 120 "$iplugin/bin/omabump-install" --prepare testapp </dev/null 2>&1)
 same "install --prepare, run as a command: succeeds" 0 "$?"
 says "install, run as a command: no environment variable moves the staging directory" \
   "Would run: sudo pacman -U -- /var/cache/omabump/$vpkg ("
+refuse "install, run as a command: nor pacman's lock file" grep -qF "$idb/db.lck" <<<"$iout"
+rm -f "$idb/db.lck"
 
 fresh 'testapp 1.0.0-1'
 STUB_PACMAN_U=no inst testapp
@@ -255,6 +278,15 @@ check "install, n at pacman's prompt: no staged copy left" test ! -e "$vstaged"
 check "install, n at pacman's prompt: the verified file stays in the user cache" test -f "$vcached"
 same "install, n at pacman's prompt: nothing installed" 'testapp 1.0.0-1' "$(<"$idb/installed")"
 no_call "install, n at pacman's prompt: no panel refresh" 'omabump-check'
+
+# kill once pacman has ended (n at its prompt), as the copy is removed:
+# nothing reads it any more, so on_exit removes it with sudo -n.
+fresh 'testapp 1.0.0-1'
+STUB_PACMAN_U=no STUB_SUDO_RM=TERM inst testapp
+same "install, TERM once pacman has ended: the run ends" 143 "$irc"
+calls "install, TERM once pacman has ended: removes the staged copy with sudo -n" "sudo -n rm -f -- $vstaged"
+check "install, TERM once pacman has ended: no staged copy left" test ! -e "$vstaged"
+check "install, TERM once pacman has ended: nothing recorded as left" test ! -e "$ileft/testapp"
 
 # kill once the copy is staged, the terminal still open: the run ends there
 # and then, and the staged copy goes all the same, through sudo -n.
@@ -277,6 +309,18 @@ same "install, the terminal closed once the copy is staged, sudo -n refused: and
 says "install, the terminal closed once the copy is staged, sudo -n refused: the message names the copy and how to remove it" \
   "omabump: the staged copy stays in $vstaged; remove it with: sudo rm -f -- $vstaged (the next Update of Test App removes it too)"
 
+# kill while sudo asks for its password, before the copy is there: sudo,
+# not signalled, writes it once you answer, after the run has ended. There
+# is nothing for sudo -n to remove yet, so the copy is recorded.
+fresh 'testapp 1.0.0-1'
+STUB_SUDO_ASKS=TERM inst testapp
+same "install, TERM while sudo asks: the run ends" 143 "$irc"
+no_call "install, TERM while sudo asks: no sudo -n rm on a copy not there yet" 'sudo -n'
+check "install, TERM while sudo asks: sudo writes the copy after the run" test -e "$vstaged"
+same "install, TERM while sudo asks: the copy is recorded" "$vstaged" "$(cat "$ileft/testapp" 2>&1)"
+says "install, TERM while sudo asks: the message names the copy and how to remove it once sudo has ended" \
+  "omabump: sudo was still copying the package to $vstaged, so the copy may appear there; once sudo has ended, remove it with: sudo rm -f -- $vstaged (the next Update of Test App removes it too)"
+
 # kill at pacman's prompt: the run ends there and then, but pacman, a
 # process of its own under sudo, goes on and may still install the copy.
 # It is left to pacman, and recorded for the next Update.
@@ -290,6 +334,8 @@ same "install, TERM at pacman's prompt: the copy is recorded" "$vstaged" "$(cat 
 says "install, TERM at pacman's prompt: the message names the copy and how to remove it once pacman has ended" \
   "omabump: pacman may still be reading the staged copy, so it stays in $vstaged; once pacman has ended, remove it with: sudo rm -f -- $vstaged (the next Update of Test App removes it too)"
 same "install, TERM at pacman's prompt: nothing installed" 'testapp 1.0.0-1' "$(<"$idb/installed")"
+says "install, TERM at pacman's prompt: the download stays, and the message says so" \
+  "omabump: the build and download files stay in $it/cache/omabump/{build,packages,sources}"
 
 # The terminal closing at the prompt: the same, sudo -n or not.
 fresh 'testapp 1.0.0-1'
@@ -307,12 +353,29 @@ same "install, the terminal closed at pacman's prompt: the copy is recorded" "$v
 printf '%s\n' 'testapp 2.0.0-1' >"$idb/installed"
 inst testapp
 says "install, while pacman runs: a recorded copy stays, and the message says why" \
-  "omabump: pacman is running and may be reading the staged copy a stopped run left, so it stays in $vstaged; once pacman has ended, remove it with: sudo rm -f -- $vstaged (the next Update of Test App removes it too)"
+  "omabump: pacman's lock file $idb/db.lck is there, so a pacman may be reading the staged copy a stopped run left; it stays in $vstaged. Once pacman has ended, remove it with: sudo rm -f -- $vstaged (the next Update of Test App removes it too)"
 no_call "install, while pacman runs: no sudo" 'sudo '
 check "install, while pacman runs: the copy is there" test -e "$vstaged"
 same "install, while pacman runs: and still recorded" "$vstaged" "$(cat "$ileft/testapp" 2>&1)"
-rm -f "$idb/db.lck"
+
+# Nor does one with a newer version to install stage over that copy (and
+# then remove it): nothing is staged while pacman's lock file is there.
 printf '%s\n' 'testapp 1.0.0-1' >"$idb/installed"
+cp "$vstaged" "$it/held"
+: >"$ilog/calls"
+STUB_PACMAN_U=ok inst testapp
+same "install, while pacman runs, a newer version: a failure" 1 "$irc"
+says "install, while pacman runs, a newer version: says why" \
+  "omabump: pacman's lock file $idb/db.lck is there: a pacman is running, or one ended without removing it. Not staging $vstaged; run Update again once no pacman runs (if none does, the lock file is stale: sudo rm $idb/db.lck)"
+no_call "install, while pacman runs, a newer version: nothing staged" 'sudo install'
+no_call "install, while pacman runs, a newer version: nothing removed" 'rm -f --'
+check "install, while pacman runs, a newer version: the copy pacman may read is untouched" cmp -s "$it/held" "$vstaged"
+same "install, while pacman runs, a newer version: and still recorded" "$vstaged" "$(cat "$ileft/testapp" 2>&1)"
+same "install, while pacman runs, a newer version: nothing installed" 'testapp 1.0.0-1' "$(<"$idb/installed")"
+inst --prepare testapp
+says "install --prepare, while pacman runs: says it would refuse" \
+  "Would refuse while pacman's lock file $idb/db.lck is there: a pacman is running, or one ended without removing it"
+rm -f "$idb/db.lck" "$it/held"
 
 # The next Update, in a terminal, pacman gone: the copy goes first.
 inst --prepare testapp
@@ -340,6 +403,18 @@ same "install, nothing newer: a recorded copy is removed before the feed is read
   "$(grep -m1 -e '^sudo ' -e '^curl ' "$ilog/calls")"
 check "install, nothing newer: the copy is gone" test ! -e "$vstaged"
 check "install, nothing newer: and so is the record" test ! -e "$ileft/testapp"
+
+# Right after the app's lock is taken: an Update that stops before its
+# route (here a --switch with nothing to switch) removes the copy too.
+fresh 'testapp 1.0.0-1'
+mkdir -p "$ileft" "$istaging"
+: >"$vstaged"
+printf '%s\n' "$vstaged" >"$ileft/testapp"
+inst --switch testapp
+says "install, a refused --switch: says why" 'Test App is not installed under another name; nothing to switch'
+calls "install, a refused --switch: a recorded copy is removed all the same" "sudo rm -f -- $vstaged"
+check "install, a refused --switch: the copy is gone" test ! -e "$vstaged"
+check "install, a refused --switch: and so is the record" test ! -e "$ileft/testapp"
 
 # The record is a file of yours: only a file name in the staging directory
 # reaches sudo rm.
@@ -370,6 +445,7 @@ same "install (vendor): pacman has the new version" 'testapp 2.0.0-1' "$(<"$idb/
 check "install (vendor): no staged copy left" test ! -e "$vstaged"
 check "install (vendor): the package file is cleaned up" test ! -e "$vcached"
 says "install (vendor): restart to use it" 'Restart Test App to use 2.0.0-1.'
+same "install (vendor): no word of files that stay" '' "$(grep -F 'the build and download files stay' <<<"$iout")"
 
 fresh 'testapp 1.0.0-1'
 STUB_PACMAN_U=ok STUB_TAMPER=1 inst testapp
@@ -544,6 +620,7 @@ check "install (omarchy): no staged copy left" test ! -e "$ostaged"
 check "install (omarchy): the package file is cleaned up" test ! -e "$it/cache/omabump/packages/$opkg"
 check "install (omarchy): the build tree is cleaned up" test ! -e "$it/cache/omabump/build/testpkg"
 says "install (omarchy): restart to use it" 'Restart Test Pkg to use 2.0.0-1.'
+same "install (omarchy): no word of files that stay" '' "$(grep -F 'the build and download files stay' <<<"$iout")"
 
 # --- Omabump's own update: the fast-forward and its rollback ---------------------------
 
