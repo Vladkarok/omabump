@@ -49,10 +49,13 @@ Item {
   // shell's own, and one from a terminal or the installer too, since
   // bin/omabump-check reads showMise from shell.json itself. Turned on,
   // such a run lists no CLI rows, so one more must start after it: behind
-  // this shell's own check it is queued; otherwise it waits for the lock
-  // (runCheck(true, false)). Either way each monitor's copy of the widget
-  // starts one once the lock is free, the first to take it runs for all
-  // and the others leave on the lock. It is not a Refresh's run: an IPC
+  // this shell's own check it is queued (runQueued); otherwise it waits for
+  // the lock (runCheck(true, false)). Each monitor's copy of the widget
+  // does the same, and their checkers then reach the lock together: the
+  // first to take it runs for all and the others leave on it. A queued run
+  // behind a check that completed does not wait first
+  // (Model.queuedRunWaits), so it too leaves on a check another copy
+  // started after that one ended. It is not a Refresh's run: an IPC
   // refresh during it still gets one after it, as during the timer's
   // (refreshRunning). The wait asks the lock, not status.json's mark,
   // which a killed run leaves behind. Turned off, the run keeps
@@ -178,25 +181,28 @@ Item {
     runCheck(true, true)
   }
 
-  // A queued run waits too: the run it came during may have left at once
-  // on the lock (the timer's does) while a check from before the request
-  // held it.
-  function runQueued() {
-    if (checkQueued && !checkProcess.running) runCheck(true, queuedForRefresh)
+  // The run queued behind this shell's own check, once that one has ended.
+  // wait (Model.queuedRunWaits): that check may not have held the lock to
+  // its end, as when it left at once on it (the timer's does), and a check
+  // from before the request may hold it now; this one then runs after it.
+  // Behind a check that completed it does not wait: a check holding the
+  // lock now took it later and answers the request, and this one leaves on
+  // it instead of running a second check after it.
+  function runQueued(wait) {
+    if (checkQueued && !checkProcess.running) runCheck(wait, queuedForRefresh)
   }
 
   // wait: wait for a check that holds the lock now (waitScript) instead of
   // leaving at once on it, as the timer's run does. own: a Refresh's
-  // (refreshRunning). The checker itself never waits (no --wait): one that
-  // finds the lock taken after waitScript's wait lost it to a check that
-  // started after the request (or to another bar's waitScript, whose check
-  // starts next), and leaves the answer to that one (Model.checkOutcome's
-  // "left"). So every bar's copy that waited for the same check leaves on
-  // the lock once one of them holds it.
+  // (refreshRunning), with or without the wait. The checker itself never
+  // waits (no --wait): one that finds the lock taken after waitScript's
+  // wait lost it to a check that started after the request (or to another
+  // bar's waitScript, whose check starts next), and leaves the answer to
+  // that one (Model.checkOutcome's "left").
   function runCheck(wait, own) {
     checkQueued = false
     queuedForRefresh = false
-    runForRefresh = wait && own
+    runForRefresh = own
     runWaiting = wait
     runAskedMs = Date.now()
     // An overall deadline: ten minutes, then TERM, then KILL ten seconds
@@ -291,9 +297,13 @@ Item {
       }
       // A run that left on the lock changes neither checkError nor
       // lastCheckEndMs: the check holding it answers, and clears an error
-      // by the same rule as any other's (parse()).
+      // by the same rule as any other's (parse()). Its line on stderr is
+      // for a terminal; here it is no news (with two bars, one copy leaves
+      // on every tick), so it stays out of the shell's log.
+      var err = checkStderr.text.trim()
+      if (err !== "" && outcome !== "left") console.warn("omabump", err)
       statusFile.reload()
-      Qt.callLater(root.runQueued)
+      Qt.callLater(root.runQueued, Model.queuedRunWaits(outcome))
     }
 
     // waitScript's word that the wait is over.
@@ -301,9 +311,11 @@ Item {
       onRead: function(line) { if (line === "started") root.runWaiting = false }
     }
 
+    // Logged by onExited, by the run's outcome: Quickshell ends the stream
+    // before it reports the exit, so the whole text is there by then.
     stderr: StdioCollector {
+      id: checkStderr
       waitForEnd: true
-      onStreamFinished: if (text.trim() !== "") console.warn("omabump", text.trim())
     }
   }
 

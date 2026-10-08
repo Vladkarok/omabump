@@ -341,6 +341,10 @@ test("checkOutcome: a lock wait that gave up ran nothing, a checker that found t
     ["notRun", "left", "ok", "ok", "failed", "failed", "failed"])
 })
 
+test("queuedRunWaits: not behind a check that completed, behind any other end", () => {
+  same(["ok", "failed", "left", "notRun"].map(outcome => m.queuedRunWaits(outcome)), [false, true, true, true])
+})
+
 test("checkErrorText: none for a check that ran, else why", () => {
   same([m.checkErrorText("ok", 0, 660), m.checkErrorText("failed", 3, 660), m.checkErrorText("notRun", 75, 660)],
     ["", "Check failed (exit 3), see the shell log", "Check not run: another check held the lock for over 11 min"])

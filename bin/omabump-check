@@ -49,12 +49,6 @@ while (( $# )); do
   esac
   shift
 done
-# Muted rows (the panel's mutedApps setting) and rows at a version the user
-# skipped (skippedVersions) never notify; status.json still says the truth
-# about them, plus "muted" and "skipped".
-load_quiet
-[[ -n $notify ]] || if [[ $setting_notify == false ]]; then notify=0; else notify=1; fi
-[[ -n $with_mise ]] || if [[ $setting_show_mise == false ]]; then with_mise=0; else with_mise=1; fi
 
 mkdir -p "$state_dir"
 # The shell timer and a hand run can overlap; the second one has nothing to
@@ -69,6 +63,16 @@ elif ! flock -n 9; then
   echo "omabump-check: another check is running and will write status.json; no check ran (--wait runs one after it)" >&2
   exit 75
 fi
+# Muted rows (the panel's mutedApps setting) and rows at a version the user
+# skipped (skippedVersions) never notify; status.json still says the truth
+# about them, plus "muted" and "skipped". They and the notify and showMise
+# settings are read under the lock, so a run that waited for it checks with
+# the settings as they are when it starts: the widget counts on a check
+# that took the lock after a change of Show mise tools to honour it.
+load_quiet
+[[ -n $notify ]] || if [[ $setting_notify == false ]]; then notify=0; else notify=1; fi
+[[ -n $with_mise ]] || if [[ $setting_show_mise == false ]]; then with_mise=0; else with_mise=1; fi
+
 # Only a check makes these, and only under the lock: any left over is from
 # a run that was killed outright. .check.?????? and .notified.?????? are an
 # older release's; the lock itself, .check.lock, matches none of them, and

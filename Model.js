@@ -419,11 +419,25 @@ var lockBusyExit = 75
 // from before the request. "left": the checker found the lock taken and
 // left the check to the one holding it. The timer's run does not wait; a
 // run that waited lost it, after waitScript's wait, to a check that
-// therefore started after the request, and that one answers it. "ok" or
+// therefore started after the request, and so did a queued run that did
+// not wait (queuedRunWaits): either way that check answers it. "ok" or
 // "failed" otherwise.
 function checkOutcome(exitCode, waited) {
   if (exitCode === lockBusyExit) return waited ? "notRun" : "left"
   return exitCode === 0 ? "ok" : "failed"
+}
+
+// Whether the run queued behind this shell's own check (Main.qml's
+// runQueued) waits for the lock, by how that check ended. Not after one
+// that completed: its checker took the lock with none held (it never
+// waits) and kept it until it ended, which was after the Refresh or Show
+// mise tools change that queued the run, so a check holding the lock now
+// took it later and answers that. The queued run then leaves on it
+// instead of running a second check after it. After any other end, a
+// check from before the request may hold the lock: one that failed may
+// have failed before it took it.
+function queuedRunWaits(outcome) {
+  return outcome !== "ok"
 }
 
 // checkError for a run that took the lock, or for "notRun": "" once a check

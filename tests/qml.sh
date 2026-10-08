@@ -69,6 +69,28 @@ same "waitScript: no lock directory yet, nothing to wait for" "started|ran" \
 same "waitScript: the command's exit status is the run's" "started|exit 3" \
   "$( { bash -c "$wait_script" omabump-wait "$wait_lock" 5 bash -c 'exit 3'; echo "exit $?"; } | paste -sd'|')"
 
+# A run that left on the lock ran nothing and failed nothing: only the other
+# outcomes set checkError and lastCheckEndMs (IPC refresh's throttle), and
+# its line on stderr stays out of the shell's log.
+on_exited=$(sed -n '/^    onExited: function(exitCode) {$/,/^    }$/p' "$root/Main.qml")
+same "onExited sets checkError and lastCheckEndMs only for a run that did not leave on the lock" \
+  'notRun root.checkError|ran root.checkError|ran root.lastCheckEndMs' \
+  "$(awk '/^      if \(outcome === "notRun"\) \{$/ { b = "notRun" } /^      \} else if \(outcome !== "left"\) \{$/ { b = "ran" }
+    /^      \}$/ { b = "" } /root\.(checkError|lastCheckEndMs) = / { print (b == "" ? "outside" : b), $1 }' <<<"$on_exited" | paste -sd'|')"
+check "onExited logs no stderr for a run that left on the lock" \
+  grep -q '^      if (err !== "" && outcome !== "left") console.warn("omabump", err)$' <<<"$on_exited"
+# A change of Show mise tools behind this shell's own check queues a run
+# that is not a Refresh's, and a queued run waits for the lock only when
+# this shell's own check may not have held it to its end: on two monitors,
+# every copy then leaves on the lock once one post-change check holds it.
+same "a Show mise tools change queues a run that is not a Refresh's" '    if (run === "queue") checkQueued = true' \
+  "$(sed -n '/^  onShowMiseChanged: {$/,/^  }$/p' "$root/Main.qml" | grep -E 'checkQueued|queuedForRefresh')"
+check "a queued run is a Refresh's only when a Refresh queued it" \
+  grep -q '^    if (checkQueued && !checkProcess.running) runCheck(wait, queuedForRefresh)$' "$root/Main.qml"
+check "a queued run waits for the lock by how this shell's own check ended" \
+  grep -q '^      Qt.callLater(root.runQueued, Model.queuedRunWaits(outcome))$' <<<"$on_exited"
+check "a Refresh's run counts as one without the wait too (refreshRunning)" grep -q '^    runForRefresh = own$' "$root/Main.qml"
+
 # The panel decides skips between checks: mise and self versions as strings,
 # every other source with vercmp, as row_skipped does.
 qml_strings=$(grep -o '^function stringVersions(source) { return source === "[a-z-]*" || source === "[a-z-]*" }$' "$root/Model.js" \

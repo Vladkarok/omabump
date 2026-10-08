@@ -459,20 +459,25 @@ done
 
 # --wait (the installer's refresh) waits for a held lock instead, says so,
 # and runs once the lock is free. The holder lets go by itself within 10 s,
-# so a test that breaks cannot hang the suite.
+# so a test that breaks cannot hang the suite. Show mise tools turned off
+# during the wait counts: the settings are read once the lock is held.
 rm -f "$run_dir/held" "$run_dir/go"
 ( exec 8>"$run_state/.check.lock" && flock 8 && echo held >"$run_dir/held" && appears "$run_dir/go" ) &
 holder=$!
 appears "$run_dir/held"
+run_settings ', "showMise": true'
+: >"$run_dir/mise.log"
 env "${run_env[@]}" timeout -k 5 120 "$root/bin/omabump-check" --no-notify --wait >/dev/null 2>"$run_dir/wait.err" &
 waiter=$!
 appears "$run_dir/wait.err"
 check "--wait: still waiting while the lock is held" kill -0 "$waiter"
+run_settings ', "showMise": false'
 echo go >"$run_dir/go"
 wait "$holder"
 wait "$waiter"; rc=$?
 same "--wait: says it waits, then runs once the lock is free" '0|Waiting for the running check to end...|false|' \
   "$rc|$(head -1 "$run_dir/wait.err")|$(run_status '"\(.checking)|\(.runError)"')"
+same "--wait: reads showMise once it holds the lock, not before its wait" '' "$(cat "$run_dir/mise.log")"
 # A wait that gives up (a flock that always fails stands in for 11 minutes
 # of a held lock) exits 75 too, says so, and leaves status.json as it was.
 mkdir -p "$run_dir/busy"
