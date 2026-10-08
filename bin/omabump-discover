@@ -27,11 +27,12 @@ A wrapper is read line by line: the bash shebang first, then exactly one
 A wrapper that does not parse is ignored, and the agent falls back to its
 command name as the key (source "command"); the check accepts that key only
 when mise has exactly it installed and active. When the rejected file runs
-mise (a command, outside quotes, comments and here-document bodies, that is
-mise use, x or exec, also after &&, ;, if, NAME=value, or exec, sudo, env,
-nice or timeout with their options, by name or by path), the agent carries a
-"warning" naming it, so a changed template shows in the panel (unless the
-user disabled that command's row). Anything else in its place stays silent:
+mise (a command outside quotes, comments and here-document bodies, or in a
+string's "$(...)", that is mise use, x or exec, also after &&, ;, if,
+NAME=value, or exec, sudo, env, nice, timeout or time with their options,
+by name or by path), the agent carries a "warning" naming it, so a changed
+template shows in the panel (unless the user disabled that command's row).
+Anything else in its place stays silent:
 no file, a symlink, a binary, or a script that does not run mise, even if a
 message or a comment in it names mise (Omarchy installs some agents, Hermes
 and OpenClaw, with their own launchers, and ~/.local/bin holds the user's
@@ -69,28 +70,54 @@ USE_FLAGS = {"-g", "--global", "-q", "--quiet", "-y", "--yes", "-f", "--force", 
 # A command that runs mise as a wrapper does (use, x or exec), so a file
 # that fails to parse is still worth a warning. The command is one of
 # shell_commands, and its first word, after any NAME=value, a keyword (if,
-# then, do, ...), ! or {, or a command that runs another (exec, command,
-# env, sudo, nohup, time, nice, timeout, by name or by path) with its
-# options and numbers (sudo -E, env -i, nice -n 19, timeout 60), is mise or
-# a path ending in /mise. Of those commands' options, the ones in
-# RUNNER_VALUE_FLAG take the next word as their value (sudo -u root, exec
-# -a NAME); any other word ends the options, so `sudo -E echo "mise use"`
-# stays an echo. Global flags may come before the subcommand, with the
-# value of those that take one. omarchy-mise-install itself,
-# `mise exec-env`, and mise in an echo or a comment do not count. Each
-# token matches one way only, so a long run of them cannot make the regex
-# backtrack exponentially: a flag that takes a value never also matches as
-# a bare flag, and a command's path never starts with - or a digit, as an
-# option or a number does.
+# then, do, ...), ! or {, or a command in RUNNERS (by name or by path) with
+# its options and numbers (sudo -E, env -i, nice -n 19, timeout 60), is
+# mise or a path ending in /mise. Global flags may come before the
+# subcommand, with the value of those that take one. omarchy-mise-install
+# itself, `mise exec-env`, and mise in an echo or a comment do not count.
+# Each token matches one way only, so a long run of them cannot make the
+# regex backtrack exponentially: a flag that takes a value never also
+# matches as a bare flag, and a command's path never starts with - or a
+# digit, as an option or a number does.
 MISE_VALUE_FLAG = r"(?:-C|--cd|-E|--env|-P|--profile|-j|--jobs|--log-level)"
-RUNNER_VALUE_FLAG = r"(?:-[aCDfgoRrsTtUu]|--(?:argv0|chdir|format|group|output|signal|unset|user))"
+# The commands that run the command after them, each with its own options
+# that take the next word as their value (sudo -u root, exec -a NAME,
+# timeout -s KILL). Any other word that starts with - is an option alone
+# (sudo -E, sudo -s, time -a), one that starts with a digit is a number
+# (timeout 60), and any other word ends the options, so
+# `sudo -E echo "mise use"` stays an echo. env -S takes the command line
+# itself as its value, so it reads as an option alone and
+# `env -S "mise use ..."` runs mise; sudo -h, which may also be help, reads
+# as taking a host.
+RUNNERS = {
+    "exec": r"-a",
+    "command": None,
+    "env": r"-[Cu]|--(?:chdir|unset)",
+    "sudo": r"-[CDRTUacghprtu]|--(?:chdir|chroot|close-from|command-timeout|group|host|login-class"
+            r"|other-user|prompt|role|type|user)",
+    "nohup": None,
+    "time": r"-[fo]|--(?:format|output)",
+    "nice": r"-n|--adjustment",
+    "timeout": r"-[ks]|--(?:kill-after|signal)",
+}
+
+
+def runner_pattern(name, value_flag):
+    """A runner's name and its options, numbers and the values of its
+    value_flag options (see RUNNERS)."""
+    option = r"\d\S*|"
+    if value_flag:
+        option += r"(?:{0})\s+\S+|(?!(?:{0})\s)".format(value_flag)
+    return name + r"(?:\s+(?:" + option + r"-\S*))*"
+
+
 KEYWORD = r"(?:if|elif|while|until|then|do|else|!|\{)"
 ASSIGNMENT = r"[A-Za-z_]\w*=(?:\"[^\"]*\"|'[^']*'|[^\s\"'])*"
-RUNNER = r"(?![-\d])(?:[^\s\"'=]*/)?(?:exec|command|env|sudo|nohup|time|nice|timeout)"
+RUNNER = (r"(?![-\d])(?:[^\s\"'=]*/)?(?:"
+          + "|".join(runner_pattern(name, flag) for name, flag in RUNNERS.items()) + ")")
 MISE = r"(?![-\d])[\"']?(?:[^\s\"'=]*/)?mise[\"']?"
 RUNS_MISE = re.compile(
-    r"(?:" + KEYWORD + r"\s+|" + ASSIGNMENT + r"\s+|" + RUNNER
-    + r"(?:\s+(?:" + RUNNER_VALUE_FLAG + r"\s+\S+|(?!" + RUNNER_VALUE_FLAG + r"\s)-\S*|\d\S*))*\s+)*"
+    r"(?:" + KEYWORD + r"\s+|" + ASSIGNMENT + r"\s+|" + RUNNER + r"\s+)*"
     + MISE +
     r"(?:\s+(?:" + MISE_VALUE_FLAG + r"\s+\S+|(?!" + MISE_VALUE_FLAG + r"\s)-\S+))*"
     r"\s+(?:use|x|exec)(?![\w-])")
@@ -276,15 +303,21 @@ def shell_commands(text):
     line) and backslash-newlines, and whether the text ends outside any
     quote and here-document. Quotes are only followed, never removed, so
     mise inside an echo's string stays part of the echo, even across lines.
-    A here-document's body is data and is skipped whole, up to its
-    delimiter line, without following quotes: an apostrophe in it is text,
-    not the start of a string. One that feeds a shell (bash <<EOF) is not
-    followed either. Nothing is expanded."""
-    out, cur, quote, heredocs, i, n = [], [], None, [], 0, len(text)
+    A command substitution inside a double-quoted string ("$(...)") runs
+    commands, split out like any others, and starts quotes of its own:
+    "$(echo "it's")" is one string. A here-document's body is data and is
+    skipped whole, up to its delimiter line, without following quotes: an
+    apostrophe in it is text, not the start of a string. One that feeds a
+    shell (bash <<EOF) is not followed either. Nothing is expanded."""
+    # The open quotes, innermost last: ' " $' or ( for a command
+    # substitution's parentheses inside a string.
+    out, cur, quotes, heredocs, i, n = [], [], [], [], 0, len(text)
     while i < n:
         c = text[i]
+        quote = quotes[-1] if quotes else None
         if quote == "'":
-            quote = None if c == "'" else quote
+            if c == "'":
+                quotes.pop()
         elif c == "\\":
             # A backslash quotes the next character, and a newline after it
             # continues the line.
@@ -294,14 +327,22 @@ def shell_commands(text):
             cur.append(text[i:i + 2])
             i += 2
             continue
-        elif quote is not None:
+        elif quote == '"' and text.startswith("$(", i):
+            # A command substitution in a string: its commands start here.
+            quotes.append("(")
+            out.append("".join(cur) + "$")
+            cur = []
+            i += 2
+            continue
+        elif quote in ('"', "$'"):
             # Inside "..." or $'...', where a backslash escapes (above).
-            quote = None if c == quote[-1] else quote
+            if c == quote[-1]:
+                quotes.pop()
         elif c == "'" and cur and cur[-1] == "$":
             # $'...' ends at a ' that no backslash quotes ($'it\'s').
-            quote = "$'"
+            quotes.append("$'")
         elif c in "'\"":
-            quote = c
+            quotes.append(c)
         elif c == "#" and (not cur or text[i - 1].isspace()):
             j = text.find("\n", i)
             i = n if j < 0 else j
@@ -319,6 +360,12 @@ def shell_commands(text):
             i = m.end()
             continue
         elif c in COMMAND_BREAK:
+            # Inside a substitution in a string, parentheses are counted:
+            # the one that closes it returns to the string.
+            if quotes and c == "(":
+                quotes.append("(")
+            elif quotes and c == ")":
+                quotes.pop()
             out.append("".join(cur))
             cur = []
             i += 1
@@ -332,7 +379,7 @@ def shell_commands(text):
         cur.append(c)
         i += 1
     out.append("".join(cur))
-    return out, quote is None
+    return out, not quotes
 
 
 def runs_mise(text):
@@ -341,8 +388,11 @@ def runs_mise(text):
     a quote or a here-document without its delimiter line, something was
     likely misread (a quoting form not followed, an arithmetic << taken for
     a here-document) and the split may have swallowed real commands, so
-    each line is also tried on its own, as before the split: a stray quote
-    can add a warning, never drop one."""
+    each line is also tried on its own, as before the split: then the
+    misread can add a warning, never drop one. A misread that still ends
+    outside any quote can drop one: a quote inside a backtick or a ${...}
+    in a string, or an arithmetic $((1<<n)) whose n a later line holds
+    alone, as if it ended a here-document. Those are rare in a launcher."""
     commands, closed = shell_commands(text)
     if not closed:
         commands += text.splitlines()
