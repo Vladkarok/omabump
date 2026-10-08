@@ -187,6 +187,8 @@ pacman versions are compared with `vercmp`; mise versions are left to mise.
 
 Update executes code from that repository (`bin/sync-upstream` and each recipe's upstream hook), so it runs only code from a commit reviewed for the release, never a moving branch. The marketplace baseline checks for exactly this. Bumping the pin is a plugin release: resolve the new commit with `git ls-remote https://github.com/omacom/omarchy-pkgs.git refs/heads/master`, read the diff of `bin/` and the recipes, update `pins.json`, and release.
 
+The pin moves when there is a reason, not on a schedule: a weekly workflow (`.github/workflows/pin-watch.yml`) compares it with master and keeps one issue open while `bin/sync-upstream`, `helpers/` or a shipped app's recipe changed beyond a routine sync (pkgver, pkgrel and checksums, which sync-upstream rewrites on every Update anyway), or while a `recipeCommit` app's recipe on master has gained an upstream watch. The issue holds the diff and the newest master commit at least 3 days old to bump to, and closes once nothing worth a look is left. `.github/scripts/pin-watch` prints the same report from a terminal. Close the issue once the pin moves; closed by hand while the changes are still there, it comes back as a new one the next week. GitHub pauses scheduled workflows after 60 days without commits; Actions then offers to enable it again.
+
 Grok's recipe comes from omarchy-pkgs PR #725, pinned in `apps.json` as `recipeCommit` `c6576fa7f51966cc6f9d6fed574adec123741a16`. When a pin bump brings a master recipe with an upstream watch, the row says "Pinned recipe no longer needed" and the entry can go.
 
 To track master instead, at your own risk, create `~/.config/omarchy/omabump/pins.json`:

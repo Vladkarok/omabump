@@ -1,0 +1,66 @@
+name: omarchy-pkgs pin
+
+# Once a week, compare the omarchy-pkgs commit pins.json pins with master
+# (.github/scripts/pin-watch). When the code Update runs or a shipped app's recipe
+# changed beyond a routine sync, keep one issue open with the diff and the
+# commit to bump to; close it once nothing worth a look is left.
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: pin-watch
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TITLE: "omarchy-pkgs: changes since the pin worth a look"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Compare the pin with master
+        id: compare
+        run: |
+          rc=0
+          .github/scripts/pin-watch >"$RUNNER_TEMP/report.md" || rc=$?
+          # An issue body holds at most 65536 characters.
+          if (( $(wc -c <"$RUNNER_TEMP/report.md") > 60000 )); then
+            head -c 60000 "$RUNNER_TEMP/report.md" >"$RUNNER_TEMP/cut.md"
+            printf '\n```\n\n(Report cut at 60000 characters: run .github/scripts/pin-watch for all of it.)\n' >>"$RUNNER_TEMP/cut.md"
+            mv "$RUNNER_TEMP/cut.md" "$RUNNER_TEMP/report.md"
+          fi
+          case $rc in
+            0) echo "news=false" >>"$GITHUB_OUTPUT" ;;
+            3) echo "news=true" >>"$GITHUB_OUTPUT" ;;
+            *) exit "$rc" ;;
+          esac
+      - name: Find the open issue
+        id: issue
+        run: |
+          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 --json number,title \
+            --jq 'map(select(.title == env.TITLE))[0].number // empty')
+          echo "number=$number" >>"$GITHUB_OUTPUT"
+      - name: Open or update it
+        if: steps.compare.outputs.news == 'true'
+        env:
+          NUMBER: ${{ steps.issue.outputs.number }}
+        run: |
+          if [[ -n $NUMBER ]]; then
+            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/report.md"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body-file "$RUNNER_TEMP/report.md"
+          fi
+      - name: Close it when nothing is left
+        if: steps.compare.outputs.news == 'false' && steps.issue.outputs.number != ''
+        env:
+          NUMBER: ${{ steps.issue.outputs.number }}
+        run: |
+          gh issue close "$NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --comment "The pin is current: nothing worth a look is left between it and master."

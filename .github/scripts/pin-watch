@@ -1,0 +1,175 @@
+#!/bin/bash
+# shellcheck disable=SC2016 # the report is Markdown: backticks in it are text, not commands
+# Compares the omarchy-pkgs commit pins.json pins with master and prints, as
+# Markdown, what an Update would run differently after a pin bump:
+#
+#   - bin/sync-upstream and helpers/, the code Update runs from that repo;
+#   - the recipes of the omarchy apps in apps.json, less pkgver, pkgrel and
+#     checksum arrays: sync-upstream rewrites those itself on every Update,
+#     so a routine "sync upstream releases" commit is not news;
+#   - for an app pinned to a recipeCommit, whether master's own recipe now
+#     has an upstream watch, so the entry can go.
+#
+# Prints nothing and exits 0 when none of that changed. Exits 3 with the
+# report on stdout when something did. Anything else is an error. Used by
+# .github/workflows/pin-watch.yml; runs the same from a terminal.
+#
+#   .github/scripts/pin-watch [--repo URL] [--plugin-dir DIR] [--age DAYS]
+set -euo pipefail
+
+repo=https://github.com/omacom/omarchy-pkgs.git
+plugin_dir=$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)
+age=3
+usage="usage: pin-watch [--repo URL] [--plugin-dir DIR] [--age DAYS]"
+while (( $# )); do
+  case $1 in
+    --repo) repo=${2:?$usage}; shift ;;
+    --plugin-dir) plugin_dir=${2:?$usage}; shift ;;
+    --age) age=${2:?$usage}; shift ;;
+    *) echo "$usage" >&2; exit 2 ;;
+  esac
+  shift
+done
+[[ $age =~ ^[0-9]{1,3}$ ]] || { echo "pin-watch: --age takes whole days" >&2; exit 2; }
+
+pin=$(jq -r '.omarchyPkgs.commit // ""' "$plugin_dir/pins.json")
+[[ $pin =~ ^[0-9a-f]{40}$ ]] || { echo "pin-watch: pins.json pins no 40-hex commit" >&2; exit 1; }
+ref=$(jq -r '.omarchyPkgs.ref // "refs/heads/master"' "$plugin_dir/pins.json")
+[[ $ref =~ ^refs/heads/[A-Za-z0-9._/-]+$ && $ref != *..* ]] || { echo "pin-watch: bad ref '$ref' in pins.json" >&2; exit 1; }
+branch=${ref#refs/heads/}
+mapfile -t apps < <(jq -r '.[] | select(.source == "omarchy") | .pkg' "$plugin_dir/apps.json")
+mapfile -t pinned_apps < <(jq -r '.[] | select(.source == "omarchy" and (.recipeCommit // "") != "") | .pkg' "$plugin_dir/apps.json")
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+g() { git -C "$work/pkgs" "$@"; }
+# Blob-less: file contents arrive only for the paths read below.
+git clone -q --filter=blob:none --no-checkout --single-branch --branch "$branch" -- "$repo" "$work/pkgs" </dev/null
+tip=$(g rev-parse --verify -q "refs/remotes/origin/$branch^{commit}")
+g cat-file -e "$pin^{commit}" 2>/dev/null || g fetch -q origin -- "$pin" </dev/null 2>/dev/null \
+  || { echo "pin-watch: cannot fetch the pinned commit ${pin:0:12}" >&2; exit 1; }
+g merge-base --is-ancestor "$pin" "$tip" \
+  || { echo "pin-watch: the pinned commit ${pin:0:12} is not on $branch" >&2; exit 1; }
+[[ $tip != "$pin" ]] || exit 0
+
+# A recipe file as sync-upstream would leave it alone: no pkgver or pkgrel
+# line, no checksum array, however many lines the array spans.
+routine_free() {
+  awk '
+    /^[[:space:]]*(pkgver|pkgrel)=/ { next }
+    /^[[:space:]]*(ck|md5|sha1|sha224|sha256|sha384|sha512|b2)sums(_[A-Za-z0-9_]+)?=\(/ { skip = ($0 !~ /\)/); next }
+    skip { if ($0 ~ /\)/) skip = 0; next }
+    { print }'
+}
+
+# Files of a recipe that changed beyond what sync-upstream rewrites.
+recipe_changes() {
+  local dir=$1 file before after
+  while IFS= read -r file; do
+    if [[ ${file##*/} == PKGBUILD ]]; then
+      before=$(g show "$pin:$file" 2>/dev/null | routine_free) || before=""
+      after=$(g show "$tip:$file" 2>/dev/null | routine_free) || after=""
+      [[ $before == "$after" ]] && continue
+    fi
+    printf '%s\n' "$file"
+  done < <(g diff --no-renames --name-only "$pin" "$tip" -- "$dir")
+}
+
+# Standard input in a fenced diff block, cut at $1 lines.
+fenced() {
+  local max=$1 out lines
+  out=$(cat)
+  lines=$(wc -l <<<"$out")
+  printf '```diff\n'
+  head -n "$max" <<<"$out"
+  printf '```\n'
+  (( lines <= max )) || printf '\n(%d more lines; see the compare link.)\n' "$(( lines - max ))"
+}
+
+# The changes of a recipe's files. A PKGBUILD is compared without the lines
+# sync-upstream rewrites, so only the change that matters shows; git diff
+# --no-index needs no diffutils.
+recipe_diff() {
+  local file
+  for file; do
+    if [[ ${file##*/} == PKGBUILD ]]; then
+      mkdir -p "$work/old/${file%/*}" "$work/new/${file%/*}"
+      { g show "$pin:$file" 2>/dev/null || true; } | routine_free >"$work/old/$file"
+      { g show "$tip:$file" 2>/dev/null || true; } | routine_free >"$work/new/$file"
+      (cd "$work" && git diff --no-index --no-color "old/$file" "new/$file") || true
+    else
+      g diff --no-renames --no-color "$pin" "$tip" -- "$file"
+    fi
+  done
+}
+
+# True when the recipe of $1 at $tip has an upstream watch or hook that
+# sync-upstream would follow.
+watched_at_head() {
+  local meta
+  meta=$(g show "$tip:pkgbuilds/$1/.omarchy/package.json" 2>/dev/null) || meta='{}'
+  jq -e '.sync == false' >/dev/null 2>&1 <<<"$meta" && return 1
+  g cat-file -e "$tip:pkgbuilds/$1/.omarchy/upstream.sh" 2>/dev/null && return 0
+  jq -e '.upstream' >/dev/null 2>&1 <<<"$meta"
+}
+
+runner=$(g diff --no-renames --name-only "$pin" "$tip" -- bin/sync-upstream helpers)
+changed=() changed_files=()
+for app in "${apps[@]}"; do
+  mapfile -t files < <(recipe_changes "pkgbuilds/$app")
+  (( ${#files[@]} )) || continue
+  changed+=("$app")
+  changed_files+=("${files[@]}")
+done
+unpinnable=()
+for app in "${pinned_apps[@]}"; do
+  watched_at_head "$app" && unpinnable+=("$app")
+done
+[[ -n $runner || ${#changed[@]} -gt 0 || ${#unpinnable[@]} -gt 0 ]] || exit 0
+
+web=https://github.com/omacom/omarchy-pkgs
+[[ $repo == "$web.git" || $repo == "$web" ]] || web=""
+link() { if [[ -n $web ]]; then printf '[`%s`](%s/commit/%s)' "${1:0:7}" "$web" "$1"; else printf '`%s`' "${1:0:7}"; fi; }
+day() { g show -s --format=%cs "$1"; }
+
+printf '<!-- pin-watch -->\n'
+printf 'pins.json pins omarchy-pkgs %s (%s). %s is %s (%s), %d commits ahead' \
+  "$(link "$pin")" "$(day "$pin")" "$branch" "$(link "$tip")" "$(day "$tip")" "$(g rev-list --count "$pin..$tip")"
+if [[ -n $web ]]; then printf ': [compare](%s/compare/%s...%s).\n\n' "$web" "$pin" "$tip"; else printf '.\n\n'; fi
+printf 'Routine syncs (pkgver, pkgrel and checksums of a recipe) are left out: sync-upstream makes those on every Update anyway.\n'
+
+if [[ -n $runner ]]; then
+  printf '\n### Code Update runs\n\n'
+  printf 'Update runs `bin/sync-upstream` and its `helpers/` from the pinned commit. Changed since the pin:\n\n'
+  # shellcheck disable=SC2086 # one path per line, none with blanks
+  g diff --no-renames --no-color "$pin" "$tip" -- $runner | fenced 200
+fi
+
+if (( ${#changed[@]} )); then
+  printf '\n### Recipes of the shipped apps\n\n'
+  printf 'Changed beyond a routine sync: %s. PKGBUILDs are shown without their pkgver, pkgrel and checksum lines.\n\n' \
+    "$(printf '`%s`, ' "${changed[@]}" | sed 's/, $//')"
+  recipe_diff "${changed_files[@]}" | fenced 300
+fi
+
+if (( ${#unpinnable[@]} )); then
+  printf '\n### Pinned recipes\n\n'
+  for app in "${unpinnable[@]}"; do
+    printf -- '- `%s`: the recipe on %s now has an upstream watch, so its `recipeCommit` entry in apps.json can go with the bump.\n' "$app" "$branch"
+  done
+fi
+
+candidate=$(g rev-list -1 --first-parent --before="$age days ago" "$tip")
+printf '\n### Bumping the pin\n\n'
+if [[ -n $candidate && $candidate != "$pin" ]] && g merge-base --is-ancestor "$pin" "$candidate"; then
+  printf 'The newest %s commit at least %d days old is %s (%s): a bad commit usually gets reverted within that time. Read the changes above, then:\n\n' \
+    "$branch" "$age" "$(link "$candidate")" "$(day "$candidate")"
+  printf '1. pins.json: `"commit": "%s"`, `"date": "%s"`.\n' "$candidate" "$(g show -s --format=%cI "$candidate")"
+else
+  printf 'No %s commit past the pin is %d days old yet; wait for one before bumping. Then:\n\n' "$branch" "$age"
+  printf '1. pins.json: the new commit and its date.\n'
+fi
+printf '2. CHANGELOG: one line saying the pin moved and why.\n'
+printf '3. Release, as any change to the code Update runs is a plugin release.\n\n'
+printf 'The next run updates this issue, and closes it once nothing worth a look is left between the pin and %s.\n' "$branch"
+exit 3
