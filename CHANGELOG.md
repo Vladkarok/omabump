@@ -14,12 +14,14 @@ Checks and the panel:
 - mise: Omabump's disabled backends now include yours; a pinned row shows the real newest release; an odd entry in mise's answer is a row error, not a crash; Update asks mise only about its own tool.
 - A malformed `pins.json` is a pin error on the omarchy rows instead of stopping every check and install. A recipe file the blob-less clone cannot download is a check error, not "no recipe".
 - Feeds: a regex that matched nothing and a JSON path with several values are errors, not the versions "None" or two versions run together. A JSON feed body must be exactly one document; an empty body or several documents give a plain error instead of a bash arithmetic error.
+- The widget waits for a running check only before its 10-minute deadline and never passes `--wait`, so a Refresh no longer reads "Check failed (exit 124)" when another check takes the lock first; a check that started after the request answers it, and a run that merely left on the lock no longer clears "Check not run" or counts for the refresh throttle. On two monitors a Show mise tools change or a Refresh during a check runs one more check, not one per bar, and a bar whose run left logs nothing.
 - Turning Show mise tools on or off while another check runs gets a check after it, so the CLI rows no longer stay missing until the next timer tick. A Refresh that waited over 11 minutes behind another check says "Check not run" instead of passing as done.
 - The panel applies mutes and skips by the checker's rules (valid ids and versions, the first 200 entries), so the two no longer disagree about a row.
 - Skip needs Shift+K: with CapsLock on, j and k move the cursor. The selected row scrolls into view on open and on every move. IPC open, toggle and settings open the panel on the focused monitor.
+- Discovery reads a wrapper-like file as shell: an apostrophe in a here-document no longer hides `mise` after it, a here-document's body is data, `"$(...)"` inside a string is followed, and mise after `nice`, `timeout`, `time`, `command`, `nohup`, a runner given by path or runner options (`sudo -E`, `env -i`) counts. A file that ends inside an open quote is also checked line by line.
 - Discovery: `mise` in an `echo` string or a comment no longer counts as running mise, while mise after `&&`, `env`, `sudo` or with value flags (`-C dir`) still does; a long line of flags no longer stalls discovery; an `@version` holding a colon is dropped from the key.
 - Checks remove the day-old scratch files a killed Update or an older release left in `~/.cache/omabump` and the state directory.
-- status.json has `"schemaVersion": 1`. A row's note no longer carries "Installed as X, switch to Y"; the panel writes that from `installedName`, `switchable`, `updateAvailable` and `installable`. An older file is read as before.
+- status.json has `"schemaVersion": 1`. A row's note no longer carries "Installed as X, switch to Y"; the panel writes that from `installedName`, `switchable`, `updateAvailable` and `installable`. An older file is read as before (its rows show "Installed as X", as in 0.1.1).
 - The widget's logic moved into `Model.js`, tested with node, `vercmp` included against a table taken from `/usr/bin/vercmp`. CI installs node.
 
 Update:
@@ -28,9 +30,9 @@ Update:
 - The omarchy route checks the staged copy against the sha256 of the package makepkg built.
 - Switch (and Update replacing a package installed under another name) reads the declared conflict from the recipe before building.
 - A self update that fails or is stopped part way rolls back fully, waiting for git first, and says whether the rollback worked. A second Ctrl-C or a closed terminal no longer cuts the rollback's git reset short.
-- A run stopped at pacman's prompt removes its staged copy (`sudo -n rm`); if the terminal was closed, the next Update of that app removes it and says so.
+- A run stopped before pacman starts removes its staged copy (`sudo -n rm`). A run stopped while pacman runs (killed, or the terminal closed at its prompt) leaves the copy to pacman, records it and prints the `sudo rm` to run; the next Update of that app removes recorded copies first, before any feed or download, and nothing is staged while pacman's lock file exists. A run ended by TERM or HUP after the build or download began says which files stay.
 - Update on a mise row whose `mise outdated` entry is not an object fails with the check's wording instead of calling the tool newest or held.
-- `omabump-check --wait` exits 75 when its wait for a running check times out, as the widget's own wait does.
+- `omabump-check` exits 75 when it ran no check: without `--wait` when another check holds the lock (it used to exit 0), with `--wait` when its wait passes 11 minutes; one line on stderr says so. The settings are read once the check holds the lock.
 
 Earlier in this release:
 
