@@ -369,7 +369,8 @@ says "install, while pacman runs, a newer version: says why" \
   "omabump: pacman's lock file $idb/db.lck is there: a pacman is running, or one ended without removing it. Not staging $vstaged; run Update again once no pacman runs (if none does, the lock file is stale: sudo rm $idb/db.lck)"
 no_call "install, while pacman runs, a newer version: nothing staged" 'sudo install'
 no_call "install, while pacman runs, a newer version: nothing removed" 'rm -f --'
-check "install, while pacman runs, a newer version: the copy pacman may read is untouched" cmp -s "$it/held" "$vstaged"
+same "install, while pacman runs, a newer version: the copy pacman may read is untouched" \
+  "$(sha256sum <"$it/held")" "$(sha256sum <"$vstaged" 2>&1)"
 same "install, while pacman runs, a newer version: and still recorded" "$vstaged" "$(cat "$ileft/testapp" 2>&1)"
 same "install, while pacman runs, a newer version: nothing installed" 'testapp 1.0.0-1' "$(<"$idb/installed")"
 inst --prepare testapp
