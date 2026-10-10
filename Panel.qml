@@ -5,6 +5,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import Quickshell.Io
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "Model.js" as Model
 
@@ -14,15 +15,15 @@ Panel {
   ipcTarget: "io.github.vladkarok.omabump"
   manageIpc: false
 
-  readonly property color foreground: bar ? bar.foreground : Color.foreground
-  readonly property color urgent: bar ? bar.urgent : Color.urgent
+  readonly property color foreground: bar ? bar.foreground : Commons.Color.foreground
+  readonly property color urgent: bar ? bar.urgent : Commons.Color.urgent
   // Part way from the foreground to the card's background, so it is dimmer
   // on light themes too (Qt.darker turns dark text darker still). Flattened
   // rather than Util.alpha(foreground, …): buttons that take dim as their
   // foreground replace its alpha. 0.6 about matches the old
   // Qt.darker(foreground, 1.55) on dark themes.
   readonly property color dim: Qt.tint(Qt.rgba(surface.r, surface.g, surface.b, 1), Util.alpha(foreground, 0.6))
-  readonly property color surface: Color.popups.background
+  readonly property color surface: Commons.Color.popups.background
   readonly property bool lightSurface: Model.luminance(surface) >= 0.5
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property string glyph: ""
@@ -697,8 +698,8 @@ Panel {
                 width: parent.width
                 implicitHeight: Math.max(54, intervalTitle.implicitHeight + Style.spacing.huge)
                 radius: Style.cornerRadius
-                color: Style.controlFill(false, hot, root.foreground, Color.accent)
-                borderSpec: Border.controlSpec(hot ? "hover-cursor" : "normal", root.foreground, Color.accent)
+                color: Style.controlFill(false, hot, root.foreground, Commons.Color.accent)
+                borderSpec: Border.controlSpec(hot ? "hover-cursor" : "normal", root.foreground, Commons.Color.accent)
 
                 HoverHandler {
                   onHoveredChanged: if (hovered) {
@@ -777,8 +778,8 @@ Panel {
                 width: parent.width
                 implicitHeight: Math.max(54, quietLabel.implicitHeight + Style.spacing.huge)
                 radius: Style.cornerRadius
-                color: Style.controlFill(false, hot, root.foreground, Color.accent)
-                borderSpec: Border.controlSpec(hot ? "hover-cursor" : "normal", root.foreground, Color.accent)
+                color: Style.controlFill(false, hot, root.foreground, Commons.Color.accent)
+                borderSpec: Border.controlSpec(hot ? "hover-cursor" : "normal", root.foreground, Commons.Color.accent)
 
                 HoverHandler {
                   onHoveredChanged: if (hovered) {
