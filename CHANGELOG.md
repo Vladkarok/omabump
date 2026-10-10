@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.3 (2026-10-10)
+
+- The panel reads the shell palette as `Commons.Color`. qt6-declarative 6.12 ships a QtQuick `Color` type that shadows the Omarchy shell's palette singleton, so the panel background and the accent resolved to undefined and the shell log said "Unable to assign [undefined] to QColor". Same fix as Omarchy's own plugins (basecamp/omarchy#14553).
+
 ## 0.1.2 (2026-10-08)
 
 Worth knowing before you update:

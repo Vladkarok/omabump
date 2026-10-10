@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.vladkarok.omabump",
   "name": "Omabump",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "author": "vladkarok",
   "license": "MIT",
   "description": "Agent desktop apps and CLIs at the version the vendor shipped, ahead of the Omarchy repo.",
