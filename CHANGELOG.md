@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.4 (2026-10-16)
+
+- The omarchy-pkgs pin moves from 2c1d7c0 (2026-10-01) to eba2a95 (2026-10-13). T3 Code 0.1.0 renamed the compatibility libraries inside its AppImage, and the old recipe's check stopped the build ("Unexpected files in the AppImage's usr/ tree"); the new recipe accepts the new names, which are still left out of the package.
+- Grok's recipe is omarchy-pkgs' own now (PR #725 was merged), with its own watch on Cursor's apt index; the `recipeCommit` entry in apps.json is gone.
+- What else the bump brings: routine version bumps, LM Studio's recipe adds aarch64 (on x86_64 its sync also downloads the arm64 AppImage to hash it, about 1.3 GB), and `auto_merge` in omarchy-pkgs for most of these recipes, so the [omarchy] repo follows their vendors within hours. The code Update runs (`bin/sync-upstream`, `helpers/`) changed only where no shipped app reaches it. Hermes still has no upstream watch, so it still has no Update.
+
 ## 0.1.3 (2026-10-10)
 
 - The panel reads the shell palette as `Commons.Color`. qt6-declarative 6.12 ships a QtQuick `Color` type that shadows the Omarchy shell's palette singleton, so the panel background and the accent resolved to undefined and the shell log said "Unable to assign [undefined] to QColor". Same fix as Omarchy's own plugins (basecamp/omarchy#14553).

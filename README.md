@@ -75,7 +75,7 @@ Mute, skip, Notify and Show mise tools apply to every check, whoever starts it: 
 | `openai-codex-desktop` | Codex (also found as AUR `chatgpt-desktop`) | omarchy |
 | `t3code-bin` | T3 Code | omarchy |
 | `hermes-desktop` | Hermes | omarchy, no Update until the recipe has an upstream watch |
-| `grok-bot` | Grok | omarchy, recipe from omarchy-pkgs PR #725 |
+| `grok-bot` | Grok | omarchy |
 | `lmstudio-bin` | LM Studio | omarchy |
 | `openclaw` | OpenClaw | omarchy |
 | `perplexity` | Perplexity | omarchy |
@@ -109,7 +109,7 @@ Every mise call Omabump makes, in the check and in Update, runs with `MISE_DISAB
 
 Update opens a floating terminal and runs `bin/omabump-install <pkg>`. The row's route decides what happens.
 
-**omarchy.** The apps behind Omarchy's Install > AI menu come from the [omarchy] pacman repo, built from the recipes in [omacom/omarchy-pkgs](https://github.com/omacom/omarchy-pkgs). That repo notices a vendor release within hours, but the update waits for a reviewed pull request, so the repo can lag the vendor by days. Update checks out the pinned omarchy-pkgs commit (see Pinned snapshots) detached in `~/.cache/omabump/omarchy-pkgs`, runs its `bin/sync-upstream <pkg>`, prints the recipe diff (normally `pkgver` and checksums), checks that the recipe builds the expected package at a full version newer than the installed one, builds it with `makepkg` and installs it with `sudo pacman -U`. The sync tool and the recipe's hook have run by the time the diff shows, so read the diff as a record. pacman asks before it installs; that prompt is the point where you can still stop.
+**omarchy.** The apps behind Omarchy's Install > AI menu come from the [omarchy] pacman repo, built from the recipes in [omacom/omarchy-pkgs](https://github.com/omacom/omarchy-pkgs). That repo notices a vendor release within hours. For most of these apps its bot's version bumps now merge on their own once CI passes, so the repo follows within hours too; for the rest (T3 Code, Hermes) a bump waits for a reviewed pull request, and the repo can lag the vendor by days. Omabump closes that gap, and covers the hours in between. Update checks out the pinned omarchy-pkgs commit (see Pinned snapshots) detached in `~/.cache/omabump/omarchy-pkgs`, runs its `bin/sync-upstream <pkg>`, prints the recipe diff (normally `pkgver` and checksums), checks that the recipe builds the expected package at a full version newer than the installed one, builds it with `makepkg` and installs it with `sudo pacman -U`. The sync tool and the recipe's hook have run by the time the diff shows, so read the diff as a record. pacman asks before it installs; that prompt is the point where you can still stop.
 
 A recipe may hold new releases for a while (`min_release_age`; openclaw and voxtype: 24 h), and `bin/sync-upstream` does not move it to a younger release. Such a row shows the update, without an Update button or a notification, and says from when Update works. A feed gives no release date, so the wait counts from the first check that saw the version.
 
@@ -182,14 +182,14 @@ pacman versions are compared with `vercmp`; mise versions are left to mise.
 `pins.json` holds the omarchy-pkgs commit every check and Update starts from:
 
 ```json
-{ "omarchyPkgs": { "commit": "2c1d7c03466e500f3e21c27f75924662729a7163", "date": "2026-10-01T06:54:25-07:00", "ref": "refs/heads/master" } }
+{ "omarchyPkgs": { "commit": "eba2a95f2e9ef209e906a93e93db70b9a856b910", "date": "2026-10-13T07:33:03Z", "ref": "refs/heads/master" } }
 ```
 
 Update executes code from that repository (`bin/sync-upstream` and each recipe's upstream hook), so it runs only code from a commit reviewed for the release, never a moving branch. The marketplace baseline checks for exactly this. Bumping the pin is a plugin release: resolve the new commit with `git ls-remote https://github.com/omacom/omarchy-pkgs.git refs/heads/master`, read the diff of `bin/` and the recipes, update `pins.json`, and release.
 
 The pin moves when there is a reason, not on a schedule: a weekly workflow (`.github/workflows/pin-watch.yml`) compares it with master and keeps one issue open while `bin/sync-upstream`, `helpers/` or a shipped app's recipe changed beyond a routine sync (pkgver, pkgrel and checksums, which sync-upstream rewrites on every Update anyway), or while a `recipeCommit` app's recipe on master has gained an upstream watch. The issue holds the diff and the newest master commit at least 3 days old to bump to, and closes once nothing worth a look is left. `.github/scripts/pin-watch` prints the same report from a terminal. Close the issue once the pin moves; closed by hand while the changes are still there, it comes back as a new one the next week. GitHub pauses scheduled workflows after 60 days without commits; Actions then offers to enable it again.
 
-Grok's recipe comes from omarchy-pkgs PR #725, pinned in `apps.json` as `recipeCommit` `c6576fa7f51966cc6f9d6fed574adec123741a16`. When a pin bump brings a master recipe with an upstream watch, the row says "Pinned recipe no longer needed" and the entry can go.
+omarchy-pkgs merges most of these recipes' bot pull requests on its own, so a recipe can change on master without a person reading it. A pin bump is where that reading happens: the whole diff of the code Update runs, hooks, install scripts and `package()` included, not only the version lines.
 
 To track master instead, at your own risk, create `~/.config/omarchy/omabump/pins.json`:
 
