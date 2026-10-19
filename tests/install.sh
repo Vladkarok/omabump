@@ -3,15 +3,16 @@
 # helpers, $root and $scratch). The installer runs in a child bash from a
 # copy of the plugin whose bin/omabump-check is a stub, staging in a test
 # directory instead of /var/cache/omabump, with these first on PATH:
-#   pacman    -Q and -Qi from a fixture database, -Qp and -Qip from the
-#             package's .PKGINFO (-Qp fails on a staged copy with
+#   pacman    -Q and -Qi from a fixture database, -Qqo from its file
+#             owners, -Qp and -Qip from the package's .PKGINFO (-Qp fails on a staged copy with
 #             $STUB_QP_FAIL set), -U as $STUB_PACMAN_U says (ok, no,
 #             hookfail, or HUP or TERM: that signal to the installer at
 #             the prompt, after which pacman goes on until the installer
 #             has ended and records whether the package was still there)
 #   sudo      records its arguments and runs only the installer's four
-#             commands, as you, on files in the test staging directory;
-#             anything else fails loudly. With $STUB_SUDO_INSTALL set (HUP
+#             commands, as you, on files in the test staging directory,
+#             and rm -f on one in the test bin directory; anything else
+#             fails loudly. With $STUB_SUDO_INSTALL set (HUP
 #             or TERM), install sends that signal to the installer once
 #             the copy is written, and waits until the installer has
 #             ended; with $STUB_SUDO_ASKS set, it sends it before (as
@@ -34,8 +35,9 @@
 it=$scratch/install
 ihome=$it/home
 iplugin=$ihome/.config/omarchy/plugins/io.github.vladkarok.omabump
-istubs=$it/stubs idb=$it/db ilog=$it/log iserved=$it/served istaging=$it/staging
-mkdir -p "$iplugin/bin" "$istubs" "$idb/qi" "$ilog" "$iserved" "$ihome/.config/omarchy/omabump"
+istubs=$it/stubs idb=$it/db ilog=$it/log iserved=$it/served istaging=$it/staging ibin=$it/bin
+mkdir -p "$iplugin/bin" "$istubs" "$idb/qi" "$ilog" "$iserved" "$ibin" "$ihome/.config/omarchy/omabump"
+: >"$idb/files"
 for f in bin/omabump-install bin/omabump-common bin/omabump-discover apps.json pins.json manifest.json; do
   cp "$root/$f" "$iplugin/$f"
 done
@@ -54,6 +56,8 @@ field() { sed -n "s/^$1 = //p" <<<"$2"; }
 case $1 in
   -Q) awk -v n="$last" '$1 == n { print; found = 1; exit } END { exit !found }' "$STUB_DB/installed" ;;
   -Qi) cat "$STUB_DB/qi/$last" 2>/dev/null ;;
+  -Qqo) awk -F'\t' -v p="$last" '$1 == p { print $2; found = 1 } END { exit !found }' "$STUB_DB/files" \
+    || { echo "error: No package owns $last" >&2; exit 1; } ;;
   -Qp) [[ -z ${STUB_QP_FAIL:-} || $last != "$STUB_STAGING"/* ]] || { echo "error: cannot read $last" >&2; exit 1; }
     info=$(pkginfo "$last") || exit 1
     echo "$(field pkgname "$info") $(field pkgver "$info")" ;;
@@ -87,7 +91,7 @@ cat >"$istubs/sudo" <<'EOF'
 #!/bin/bash
 echo "sudo $*" >>"$STUB_LOG/calls"
 dest=${*: -1}
-[[ $dest == "$STUB_STAGING"/* && $dest != *..* ]] || { echo "sudo stub: refusing $*" >&2; exit 97; }
+[[ ($dest == "$STUB_STAGING"/* || $* == "rm -f -- $STUB_BIN/"*) && $dest != *..* ]] || { echo "sudo stub: refusing $*" >&2; exit 97; }
 # The signal $1 to the installer, then nothing until it has ended.
 signal_installer() {
   kill "-$1" "$PPID"
@@ -179,12 +183,12 @@ chmod +x "$istubs"/*
 
 inst_env=(env HOME="$ihome" PATH="$istubs:$PATH" XDG_CONFIG_HOME="$ihome/.config" XDG_STATE_HOME="$it/state"
   XDG_CACHE_HOME="$it/cache" GIT_CONFIG_NOSYSTEM=1
-  STUB_DB="$idb" STUB_LOG="$ilog" STUB_SERVED="$iserved" STUB_STAGING="$istaging")
+  STUB_DB="$idb" STUB_LOG="$ilog" STUB_SERVED="$iserved" STUB_STAGING="$istaging" STUB_BIN="$ibin")
 # The child bash's first line: staging in $istaging, with $idb/db.lck as
-# pacman's lock file. Both are set the only way there is: before the
-# installer is sourced.
+# pacman's lock file and $ibin as /usr/bin. All are set the only way there
+# is: before the installer is sourced.
 # shellcheck disable=SC2016 # expanded by the child bash
-inst_dirs='staging_dir=$STUB_STAGING pacman_lock=$STUB_DB/db.lck; '
+inst_dirs='staging_dir=$STUB_STAGING pacman_lock=$STUB_DB/db.lck bin_dir=$STUB_BIN; '
 # inst <args...>: a run of the installer copy; its output in $iout, status
 # in $irc.
 inst() {
@@ -447,6 +451,35 @@ check "install (vendor): no staged copy left" test ! -e "$vstaged"
 check "install (vendor): the package file is cleaned up" test ! -e "$vcached"
 says "install (vendor): restart to use it" 'Restart Test App to use 2.0.0-1.'
 same "install (vendor): no word of files that stay" '' "$(grep -F 'the build and download files stay' <<<"$iout")"
+
+# A link the vendor's install script made in /usr/bin, owned by no package,
+# to a file of the package: it goes, or pacman refuses the same-named AUR
+# package that ships that path. A link a package owns, or one to another
+# package's file, stays.
+itarget=$it/opt/testapp/testapp
+mkdir -p "${itarget%/*}" && : >"$itarget" && itarget=$(readlink -f "$itarget")
+orphan() { fresh 'testapp 1.0.0-1'; ln -sfn "$itarget" "$ibin/testapp"; printf '%s\n' "$@" >"$idb/files"; }
+orphan "$itarget"$'\t'testapp
+inst --prepare testapp
+says "install --prepare (vendor): names the orphan link it would remove" \
+  "Would run: sudo rm -f -- $ibin/testapp (a link to $itarget that no package owns)"
+no_call "install --prepare (vendor), an orphan link: never calls sudo" 'sudo '
+orphan "$itarget"$'\t'testapp
+STUB_PACMAN_U=ok inst testapp
+same "install (vendor), an orphan link: a success" 0 "$irc"
+calls "install (vendor), an orphan link: removed with sudo rm" "sudo rm -f -- $ibin/testapp"
+says "install (vendor), an orphan link: and says so" "Removed $ibin/testapp, a link to $itarget that no package owns"
+check "install (vendor), an orphan link: gone" test ! -L "$ibin/testapp"
+check "install (vendor), an orphan link: its target stays" test -f "$itarget"
+orphan "$itarget"$'\t'testapp "$ibin/testapp"$'\t'testapp
+STUB_PACMAN_U=ok inst testapp
+no_call "install (vendor): a link a package owns stays" "rm -f -- $ibin/testapp"
+orphan "$itarget"$'\t'other
+STUB_PACMAN_U=ok inst testapp
+no_call "install (vendor): a link to another package's file stays" "rm -f -- $ibin/testapp"
+check "install (vendor): the links that stay are there" test -L "$ibin/testapp"
+rm -rf "${ibin:?}/testapp" "$it/opt"
+: >"$idb/files"
 
 fresh 'testapp 1.0.0-1'
 STUB_PACMAN_U=ok STUB_TAMPER=1 inst testapp

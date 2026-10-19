@@ -64,11 +64,12 @@ app_id_ok "$pkg" || die "'$pkg' is not a package name Omabump accepts"
 label=$(jq -r '.label // .pkg' <<<"$app" | term_safe | tr '\t\n' '  ' | sed 's/ *$//')
 
 # pacman -U reads the package from a root-owned copy in staging_dir
-# (stage_and_install), and a running pacman holds pacman_lock. Run as a
-# command, nothing changes either, whatever the environment says: only the
-# tests, which source this file (see the end), set their own first.
-(return 0 2>/dev/null) || unset staging_dir pacman_lock
-staging_dir=${staging_dir:-/var/cache/omabump} pacman_lock=${pacman_lock:-/var/lib/pacman/db.lck}
+# (stage_and_install), a running pacman holds pacman_lock, and bin_dir is
+# where drop_orphan_link looks. Run as a command, nothing changes either,
+# whatever the environment says: only the tests, which source this file
+# (see the end), set their own first.
+(return 0 2>/dev/null) || unset staging_dir pacman_lock bin_dir
+staging_dir=${staging_dir:-/var/cache/omabump} pacman_lock=${pacman_lock:-/var/lib/pacman/db.lck} bin_dir=${bin_dir:-/usr/bin}
 # The staged copies stopped runs left (on_exit), one record per app: only a
 # run holding the app's lock (fd 7) reads or writes it, while updates of
 # other apps may run at the same time.
@@ -582,6 +583,28 @@ install_omarchy() {
   exec 8>&-
 }
 
+# A vendor package's install script can link $bin_dir/<pkg> to its binary
+# without the package owning the link (ZCode's post_install runs ln -sf
+# /opt/ZCode/zcode /usr/bin/zcode). pacman then refuses the same-named
+# repository or AUR package that ships that path ("exists in filesystem"),
+# and with it the whole yay -Sua. The link goes when no package owns it
+# and the package just installed owns its target. A link that cannot go is
+# named, not fatal: the install itself is done.
+drop_orphan_link() {
+  local link=$bin_dir/$pkg target
+  [[ -L $link ]] || return 0
+  pacman -Qqo -- "$link" >/dev/null 2>&1 && return 0
+  target=$(readlink -f -- "$link") || return 0
+  [[ $(pacman -Qqo -- "$target" 2>/dev/null) == "$pkg" ]] || return 0
+  if (( prepare )); then
+    echo "Would run: sudo rm -f -- $link (a link to $target that no package owns)"
+  elif run_unlocked sudo rm -f -- "$link"; then
+    echo "Removed $link, a link to $target that no package owns: pacman would refuse a $pkg package that ships it."
+  else
+    echo "omabump: could not remove $link, a link to $target that no package owns; pacman refuses a $pkg package that ships it until you remove it with: sudo rm -f -- $link" >&2
+  fi
+}
+
 # pacman would download a URL itself, but it checks remote files against
 # RemoteFileSigLevel, which defaults to SigLevel (Required) and vendors do not
 # sign these packages. So curl fetches the file over HTTPS, its digest must
@@ -638,6 +661,7 @@ install_vendor_pkg() {
   show_switch "$file"
   stage_and_install "$file" "$line" "$algo" "$want"
   if (( prepare )); then
+    drop_orphan_link
     echo "Prepared: stopping before sudo."
     started=0
     return 0
@@ -645,6 +669,7 @@ install_vendor_pkg() {
   now_line=$(installed_package "$pkg") || die "pacman -Q $pkg finds nothing after the install"
   [[ $now_line == "$pkg $ver" ]] || die "pacman -Q says '$now_line', expected '$pkg $ver'"
   echo "Installed $now_line."
+  drop_orphan_link
   clean_after_install "$file"
   started=0
   target_version=$ver
