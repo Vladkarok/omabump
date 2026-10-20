@@ -79,7 +79,7 @@ Mute, skip, Notify and Show mise tools apply to every check, whoever starts it: 
 | `lmstudio-bin` | LM Studio | omarchy |
 | `openclaw` | OpenClaw | omarchy |
 | `perplexity` | Perplexity | omarchy |
-| `voxtype-bin` | Dictation (voxtype) | omarchy |
+| `voxtype-bin` | Dictation (voxtype) | omarchy, no Update until [omarchy-pkgs#937](https://github.com/omacom/omarchy-pkgs/pull/937) fixes its install script |
 | `zcode` | ZCode (also found as AUR `z-code-bin`) | vendor |
 | `antigravity` | Antigravity (or `antigravity-appimage`) | indicator, version from the AUR; `omarchy update` updates it |
 | `antigravity-ide` | Antigravity IDE | indicator, version from the AUR; `omarchy update` updates it |
@@ -112,6 +112,8 @@ Update opens a floating terminal and runs `bin/omabump-install <pkg>`. The row's
 **omarchy.** The apps behind Omarchy's Install > AI menu come from the [omarchy] pacman repo, built from the recipes in [omacom/omarchy-pkgs](https://github.com/omacom/omarchy-pkgs). That repo notices a vendor release within hours. For most of these apps its bot's version bumps now merge on their own once CI passes, so the repo follows within hours too; for the rest (T3 Code, Hermes) a bump waits for a reviewed pull request, and the repo can lag the vendor by days. Omabump closes that gap, and covers the hours in between. Update checks out the pinned omarchy-pkgs commit (see Pinned snapshots) detached in `~/.cache/omabump/omarchy-pkgs`, runs its `bin/sync-upstream <pkg>`, prints the recipe diff (normally `pkgver` and checksums), checks that the recipe builds the expected package at a full version newer than the installed one, builds it with `makepkg` and installs it with `sudo pacman -U`. The sync tool and the recipe's hook have run by the time the diff shows, so read the diff as a record. pacman asks before it installs; that prompt is the point where you can still stop.
 
 A recipe may hold new releases for a while (`min_release_age`; openclaw and voxtype: 24 h), and `bin/sync-upstream` does not move it to a younger release. Such a row shows the update, without an Update button or a notification, and says from when Update works. A feed gives no release date, so the wait counts from the first check that saw the version.
+
+Update is off for voxtype-bin for now: its recipe's root install script hands a path from `pre_upgrade` to `post_upgrade` through `/tmp`, where another local user can plant one ([omarchy-pkgs#937](https://github.com/omacom/omarchy-pkgs/pull/937) moves it to `/run`). The [omarchy] repo package runs the same script on every `pacman -Syu` that upgrades it; Omabump only stops adding its own route to it, and turns Update back on with the pin bump that brings the fix.
 
 A local build says `Packager: Unknown Packager` in `pacman -Qi`. pacman replaces it with the repo package once the repo's full version is higher, and `sudo pacman -S <pkg>` puts the repo package back at any time. Switching Omarchy's channel (`omarchy channel set`) runs `pacman -Syyuu --noconfirm`, which also puts the repo's older version back, without asking.
 
@@ -162,6 +164,7 @@ Fields:
 - `checksum` (vendor-pkg, required for Update): `"feed"` reads the base64 `sha512` listed next to the file's `url` in the feed document (electron-updater's `latest.yml` format, as ZCode's manifest uses), or `{"url": ..., "algo": "sha256"|"sha512"}` reads a `sha256sum`-style list.
 - `recipeCommit` (optional, omarchy): a 40-hex omarchy-pkgs commit whose recipe tree replaces the pinned one, for a package whose upstream watch is still in an unmerged PR. `recipeFetch` names a ref to fetch it from and `recipeNote` is the text the row shows. Once the pinned commit's own recipe has a watch, it is ignored.
 - `configDir` (optional): where the app keeps its settings, printed before a switch.
+- `updateBlocked` (optional): a short reason, at most 200 characters, that turns Omabump's Update off for the row, Ask agent included: the row still shows its versions and notifies, and says "Update off: <reason>", and `bin/omabump-install` refuses it. The shipped table uses it for a known problem in what Update would install. `"updateBlocked": ""` in your own file turns a shipped block off.
 - `feed`: where the newest version comes from. `url` may be a string or an object keyed by `uname -m`, and must be HTTPS.
   - `apt-index` with `url` and `package`: a Debian `Packages` file.
   - `zcode-manifest` or `latest-yml` with `url`: YAML with `version:`.

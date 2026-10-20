@@ -239,9 +239,19 @@ cat >"$ihome/.config/omarchy/omabump/apps.json" <<'EOF'
    "vendorPkg": "https://example.invalid/testapp-{version}-1-x86_64.pkg.tar", "checksum": "feed", "configDir": "~/.config/TestApp"},
   {"pkg": "testpkg", "label": "Test Pkg", "source": "omarchy", "installed": ["testpkg", "testpkg-bin"]},
   {"pkg": "nocon", "label": "No Conflict", "source": "omarchy", "installed": ["nocon", "nocon-bin"]},
-  {"pkg": "mise:testtool", "label": "Test Tool", "source": "mise", "tool": "testtool"}
+  {"pkg": "mise:testtool", "label": "Test Tool", "source": "mise", "tool": "testtool"},
+  {"pkg": "blockedapp", "label": "Blocked App", "source": "omarchy", "updateBlocked": "a known problem in its install script, see x#1"}
 ]
 EOF
+
+# --- an app whose Update apps.json turned off ---------------------------------------
+
+fresh 'blockedapp 1.0-1'
+inst blockedapp
+same "install, updateBlocked: refuses" 1 "$irc"
+says "install, updateBlocked: says why" 'omabump: Update of Blocked App is off in Omabump: a known problem in its install script, see x#1'
+no_call "install, updateBlocked: nothing staged" 'sudo'
+no_call "install, updateBlocked: nothing built" 'makepkg'
 
 # --- the vendor route ------------------------------------------------------------
 

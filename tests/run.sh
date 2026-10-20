@@ -146,6 +146,8 @@ EOF
 same "apps_table: entries with bad pkg, installed or tool names are dropped" \
   'a b c mise:g' "$(apps_table 2>/dev/null | jq -r 'map(.pkg) | join(" ")')"
 same "apps_table: each dropped entry is named on stderr" 5 "$(apps_table 2>&1 >/dev/null | grep -c '^ignoring app')"
+printf '[{"pkg": "a", "source": "indicator", "updateBlocked": true}, {"pkg": "b", "source": "indicator", "updateBlocked": "fine"}]\n' >"$user_apps"
+same "apps_table: updateBlocked must be a short string" 'b:fine' "$(apps_table 2>/dev/null | jq -r 'map(select(.pkg == "a" or .pkg == "b")) | map("\(.pkg):\(.updateBlocked // "")") | join(" ")')"
 # jq's $ matches before a final newline; bash's =~ and the rules here do not.
 printf '[{"pkg": "a\\n", "source": "indicator"}, {"pkg": "mise:j", "source": "mise", "tool": "j\\n"}]\n' >"$user_apps"
 same "apps_table: a name ending in a newline is dropped" 'a b c' "$(apps_table 2>/dev/null | jq -r 'map(.pkg) | join(" ")')"

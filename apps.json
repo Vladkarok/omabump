@@ -94,7 +94,8 @@
     "feed": {
       "type": "github-release",
       "repo": "peteonrails/voxtype"
-    }
+    },
+    "updateBlocked": "the recipe's install script hands a path to root through /tmp; waiting for omarchy-pkgs#937"
   },
   {
     "pkg": "zcode",

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.5 (2026-10-20)
+
+- Update is off for voxtype-bin until omarchy-pkgs#937 is merged and pinned. Its recipe's root install script hands the active backend from `pre_upgrade` to `post_upgrade` through `/tmp/.voxtype-backend-upgrade`, and another local user can plant that file to have their own executable installed as `/usr/bin/voxtype` (reported in the marketplace review, omacom/omarchy-plugin-marketplace#10910). The row still shows its versions and notifies; Update and Ask agent are gone, and the row says why.
+- A new `apps.json` field, `updateBlocked`, turns Update off for a row with a reason; the checker marks such rows `blocked` in status.json and `bin/omabump-install` refuses them.
+
 ## 0.1.4 (2026-10-16)
 
 - The omarchy-pkgs pin moves from 2c1d7c0 (2026-10-01) to eba2a95 (2026-10-13). T3 Code 0.1.0 renamed the compatibility libraries inside its AppImage, and the old recipe's check stopped the build ("Unexpected files in the AppImage's usr/ tree"); the new recipe accepts the new names, which are still left out of the package.

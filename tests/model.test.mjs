@@ -389,8 +389,8 @@ test("updatable: an update the plugin installs", () => {
 test("askable: an update with no install path, or a mise tool held below a newer release", () => {
   same([m.askable(indicator), m.askable(update), m.askable(pinnedNoRoute), m.askable(Object.assign({}, pinnedNoRoute, { error: "x" })),
     m.askable(row({ source: "self", installable: false, updateAvailable: true })), m.askable(Object.assign({}, indicator, { held: true })),
-    m.askable(Object.assign({}, indicator, { omarchyUpdate: true })), m.askable(null)],
-    [true, false, true, false, false, false, false, false])
+    m.askable(Object.assign({}, indicator, { omarchyUpdate: true })), m.askable(Object.assign({}, indicator, { blocked: true })), m.askable(null)],
+    [true, false, true, false, false, false, false, false, false])
 })
 
 test("hasAction and primaryAction: Update, Ask agent or Switch", () => {

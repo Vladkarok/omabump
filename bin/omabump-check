@@ -298,6 +298,18 @@ while IFS= read -r app; do
     *)
       route_error="unknown source '$source'" ;;
   esac
+  # apps.json can turn Omabump's Update off for a row (updateBlocked says
+  # why): a known problem in what Update would install. The versions still
+  # show and still notify; only the route is closed, and Ask agent with it.
+  blocked=$(jq -r '.updateBlocked // ""' <<<"$app")
+  if [[ -n $blocked && $source != self ]]; then
+    installable=false
+    note="Update off: $blocked${note:+; $note}"
+  else
+    blocked=""
+  fi
+  is_blocked=false
+  [[ -z $blocked ]] || is_blocked=true
 
   # Everything but mise reads its newest version from the feed in apps.json.
   if [[ $source != mise ]]; then
@@ -382,13 +394,13 @@ while IFS= read -r app; do
     --arg latest "$(clean_text "$latest")" --arg versionFrom "$from" --argjson update "$update" \
     --argjson installable "$installable" --arg error "$error" --arg note "$(clean_text "$note")" \
     --argjson stale "$stale" --argjson switchable "$switchable" --arg recipe "$(clean_text "$recipe")" --arg recipeCommit "$recipe_commit" \
-    --arg request "$(clean_text "$request")" --argjson muted "$muted" --argjson skipped "$skipped" --argjson unchecked "$unchecked" --argjson held "$held" --argjson omarchyUpdate "$omarchy_update" \
+    --arg request "$(clean_text "$request")" --argjson muted "$muted" --argjson skipped "$skipped" --argjson unchecked "$unchecked" --argjson held "$held" --argjson omarchyUpdate "$omarchy_update" --argjson blocked "$is_blocked" \
     --arg icon "$(jq -r '.icon // ""' <<<"$app")" --arg iconLight "$(jq -r '.iconLight // ""' <<<"$app")" \
     '{pkg: $pkg, label: $label, source: $source, installedName: $installedName,
       installed: $installed, latest: $latest, versionFrom: $versionFrom,
       updateAvailable: $update, installable: $installable, error: $error, note: $note,
       stale: $stale, switchable: $switchable, recipe: $recipe, recipeCommit: $recipeCommit,
-      request: $request, muted: $muted, skipped: $skipped, unchecked: $unchecked, held: $held, omarchyUpdate: $omarchyUpdate,
+      request: $request, muted: $muted, skipped: $skipped, unchecked: $unchecked, held: $held, omarchyUpdate: $omarchyUpdate, blocked: $blocked,
       icon: $icon, iconLight: $iconLight}')")
   write_status 0
 done < <(jq -c '.[]' <<<"$table"; echo "$self_app")

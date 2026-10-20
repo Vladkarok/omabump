@@ -489,7 +489,7 @@ function updatable(app) { return !!app && app.updateAvailable === true && app.in
 // note says so): there is nothing to plan.
 function askable(app) {
   if (!app || app.installable === true || app.source === "self" || app.held === true
-    || app.omarchyUpdate === true) return false
+    || app.omarchyUpdate === true || app.blocked === true) return false
   if (app.updateAvailable === true) return true
   return app.source === "mise" && String(app.error || "") === ""
     && String(app.latest || "") !== "" && app.latest !== app.installed

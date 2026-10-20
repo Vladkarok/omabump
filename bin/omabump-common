@@ -118,7 +118,8 @@ jq_name_rules='
   def entry_ok: (.pkg | id_ok) and ((.pkg | pkg_ok) or .source == "mise")
     and (.source | IN("omarchy", "vendor-pkg", "mise", "indicator"))
     and ((.installed // []) | type == "array" and all(.[]; pkg_ok))
-    and ([.tool // empty] | flatten | all(.[]; tool_ok));'
+    and ([.tool // empty] | flatten | all(.[]; tool_ok))
+    and ((.updateBlocked // "") | type == "string" and length <= 200);'
 
 # A version as mise or a feed prints it, for a skipped version: what
 # version_ok allows plus "-" (mise versions such as 1.0.0-beta.1). Model.js

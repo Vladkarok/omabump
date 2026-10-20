@@ -519,6 +519,15 @@ foo_app 2.0
 check_run
 same "switch: with a newer version Update switches, the note has no switch clause" 'foo-old|true|true|false|' "$(run_status "$foo_row")"
 same "status.json: every row has unchecked" 0 "$(run_status '[.apps[] | select(.unchecked | type != "boolean")] | length')"
+# The same row with its Update turned off in apps.json: the update still
+# shows, the route does not, and the row says why.
+jq -c '.[0].updateBlocked = "a known problem, see x#1"' "$run_dir/config/omarchy/omabump/apps.json" >"$run_dir/blocked.json"
+mv "$run_dir/blocked.json" "$run_dir/config/omarchy/omabump/apps.json"
+check_run
+same "updateBlocked: the update shows, Update and Switch are off, the note says why" \
+  'true|false|false|true|Update off: a known problem, see x#1' \
+  "$(run_status '.apps[] | select(.pkg == "foo-bin") | "\(.updateAvailable)|\(.installable)|\(.switchable)|\(.blocked)|\(.note)"')"
+same "updateBlocked: rows without it say blocked false" 0 "$(run_status '[.apps[] | select(.pkg != "foo-bin" and .blocked != false)] | length')"
 rm -f "$run_dir/config/omarchy/omabump/apps.json"
 
 # status.json, read with the jq filter $1 while a check runs: the check

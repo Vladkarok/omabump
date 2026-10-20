@@ -118,6 +118,10 @@ flock -n 7 || die "another update of $label is already running"
 # The copies stopped runs left go first, whatever the run does next (a
 # refusal, no newer version yet, a failed download).
 clear_staged_left
+# apps.json turned Update off for this app (updateBlocked): a known problem in
+# what it would install. The check shows the same reason on the row.
+blocked=$(jq -r '.updateBlocked // ""' <<<"$app")
+[[ -z $blocked ]] || die "Update of $label is off in Omabump: $(term_safe <<<"$blocked" | tr '\t\n' '  ' | sed 's/ *$//')"
 
 installed_name="" installed=""
 [[ $(jq -r '.source' <<<"$app") == mise ]] && mise_load 0
