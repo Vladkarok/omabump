@@ -23,6 +23,10 @@
 # before it removes the old package, and the scripts the new package runs
 # are printed first. On the omarchy path the conflict pacman needs is read
 # from the recipe before the build, and from the built package again after.
+# An Update whose route has nothing newer than what is installed succeeds
+# when the app has already reached the version the panel showed (something
+# else updated it since the last check) and fails when the route is behind
+# that version (nothing_newer).
 #
 # --prepare fetches, syncs and prepares the recipe (this runs omarchy-pkgs'
 # sync tool and the recipe's hook, and makepkg reads the PKGBUILD), and stops
@@ -30,6 +34,7 @@
 # package and stops before pacman -U. Nothing is installed and sudo is never
 # called; the staging and install commands are printed instead. On the self
 # row it fetches the release tag, prints the plan and stops before asking.
+# Where a run would stop early, it prints what that run would decide.
 set -euo pipefail
 # BASH_SOURCE, not $0: the tests source this file (see the end).
 here=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
@@ -258,6 +263,58 @@ guard_version() {
   return 1
 }
 
+# The field $1 of this app's row in the last check's status.json, which the
+# panel shows until the next check, on one line. Nothing when no check ran,
+# the file is not one the check wrote, or the row or field is missing.
+panel_row() {
+  jq -r --arg pkg "$pkg" --arg f "$1" '[.apps[]? | objects | select(.pkg == $pkg)][0][$f] | strings' \
+    "$status_file" 2>/dev/null | head -n1 | term_safe || true
+}
+
+# The route reaches nothing newer than the version installed now, $1 (the
+# full version on pacman rows), yet Update was pressed: the panel showed a
+# newer one, the row's latest from the last check. Apps update outside
+# Omabump too, often minutes after a check (Omarchy's wrappers update mise
+# CLIs on launch, omarchy update runs mise up and pacman), and the panel
+# shows that check until the next one. When the version installed has
+# reached the one the panel showed, or no check showed one, nothing is left
+# to do: Update says so, refreshes the panel so the row clears, and ends as
+# a success. Otherwise the route is behind the panel, and Update fails with
+# "$2, not the <latest> $3". Pacman rows compare with vercmp, the upstream
+# part against the feed's version as the check does. mise rows compare as
+# strings, mise deciding what is newer: the same version, or one that moved
+# since the check while mise finds nothing newer (only then is this
+# called). With --prepare it prints the decision and returns.
+nothing_newer() {
+  local now=$1 shown reached=0 msg
+  shown=$(panel_row latest)
+  if [[ -z $shown ]]; then
+    reached=1
+  elif string_versions "$source"; then
+    if [[ $now == "$shown" || $now != "$(panel_row installed)" ]]; then reached=1; fi
+  elif ! newer "$shown" "$(upstream_part "$now")"; then
+    reached=1
+  fi
+  if (( reached )); then
+    msg="$label $now is already installed; nothing to do."
+    if (( prepare )); then
+      echo "Would say: $msg"
+      echo "Would run: $here/omabump-check --no-notify --wait (the panel's refresh)"
+      return 0
+    fi
+    echo "$msg"
+    # The check reads the omarchy-pkgs clone: under this run's lock it would
+    # find the clone busy and give every omarchy row the last result.
+    if (( restore_clone )); then pkgs_restore "$pkg"; restore_clone=0; fi
+    pkgs_drop_lock
+    refresh_panel
+    exit 0
+  fi
+  msg="$2, not the $shown $3; Update cannot install it yet."
+  (( prepare )) && { echo "Would refuse: $msg"; return 0; }
+  die "$msg"
+}
+
 # pacman -Qi wraps long fields to COLUMNS when it is set, which would hide
 # names on continuation lines from qi_names.
 pacman_qi() { env -u COLUMNS pacman "$@"; }
@@ -370,16 +427,21 @@ show_switch() {
 }
 
 # Refuses unless the recipe in $1 builds a package named $2 that is newer than
-# what is installed right now. Sets target_version.
+# what is installed right now; an Update that finds the recipe's version
+# installed already ends in nothing_newer. Sets target_version.
 check_target() {
-  local dir=$1 want=$2 name msg
+  local dir=$1 want=$2 name msg now
   read -r name target_version < <(recipe_version <"$dir/PKGBUILD") || die "cannot read the recipe version"
   [[ $name == "$want" ]] || die "recipe builds '$name', expected '$want'"
   echo "Recipe builds $name $target_version"
-  if ! msg=$(guard_version "$target_version"); then
-    (( prepare )) && { echo "Would refuse: $msg"; return 0; }
-    die "$msg; nothing to do"
+  msg=$(guard_version "$target_version") && return 0
+  if (( ! switch )); then
+    now=$(installed_package "$installed_name") || now=" $installed"
+    nothing_newer "${now#* }" "omarchy-pkgs' recipe reaches $target_version" "the vendor's feed shows"
+    return 0
   fi
+  (( prepare )) && { echo "Would refuse: $msg"; return 0; }
+  die "$msg; nothing to do"
 }
 
 # pacman -U reads the package from a root-owned copy: the verified file in
@@ -632,7 +694,8 @@ install_vendor_pkg() {
     if (( switch )); then
       if newer "$have" "$latest"; then msg="$latest is older than the installed $installed_name $installed"; fi
     elif ! newer "$latest" "$have"; then
-      msg="$latest is not newer than the installed $installed_name $installed"
+      nothing_newer "$installed" "the vendor's feed gives $latest now" "it gave at the last check"
+      return 0
     fi
   fi
   if [[ -n $msg ]]; then
@@ -707,7 +770,7 @@ install_mise() {
       [[ $request == latest ]] && die "$label is held back at $installed by your mise settings ($now exists); mise up would not move it. See mise settings."
       die "$label is held at $installed by its mise request '$request' ($now exists); mise up would not move it. Change the request with mise use."
     fi
-    echo "$label $installed is the newest mise up can install."
+    nothing_newer "$installed" "mise up keeps $label at $installed" "mise showed at the last check"
     exit 0
   fi
   echo "mise up -- $tool would install $target"

@@ -41,9 +41,12 @@ mkdir -p "$iplugin/bin" "$istubs" "$idb/qi" "$ilog" "$iserved" "$ibin" "$ihome/.
 for f in bin/omabump-install bin/omabump-common bin/omabump-discover apps.json pins.json manifest.json; do
   cp "$root/$f" "$iplugin/$f"
 done
+# The panel's refresh, recorded, and whether the installer still held the
+# omarchy-pkgs clone's lock then.
 cat >"$iplugin/bin/omabump-check" <<'EOF'
 #!/bin/bash
 echo "omabump-check $*" >>"$STUB_LOG/calls"
+[[ ! -e $STUB_PKGS_LOCK ]] || flock -n "$STUB_PKGS_LOCK" true || echo "omabump-check: the clone is locked" >>"$STUB_LOG/calls"
 EOF
 chmod +x "$iplugin/bin/omabump-check"
 
@@ -183,7 +186,8 @@ chmod +x "$istubs"/*
 
 inst_env=(env HOME="$ihome" PATH="$istubs:$PATH" XDG_CONFIG_HOME="$ihome/.config" XDG_STATE_HOME="$it/state"
   XDG_CACHE_HOME="$it/cache" GIT_CONFIG_NOSYSTEM=1
-  STUB_DB="$idb" STUB_LOG="$ilog" STUB_SERVED="$iserved" STUB_STAGING="$istaging" STUB_BIN="$ibin")
+  STUB_DB="$idb" STUB_LOG="$ilog" STUB_SERVED="$iserved" STUB_STAGING="$istaging" STUB_BIN="$ibin"
+  STUB_PKGS_LOCK="$it/cache/omabump/omarchy-pkgs.lock")
 # The child bash's first line: staging in $istaging, with $idb/db.lck as
 # pacman's lock file and $ibin as /usr/bin. All are set the only way there
 # is: before the installer is sourced.
@@ -214,10 +218,19 @@ says() { if grep -qF -- "$2" <<<"$iout"; then pass "$1"; else fail "$1" "no '$2'
 calls() { if grep -qF -- "$2" "$ilog/calls"; then pass "$1"; else fail "$1" "no '$2' in: $(<"$ilog/calls")"; fi; }
 no_call() { if grep -qF -- "$2" "$ilog/calls"; then fail "$1" "'$2' in: $(<"$ilog/calls")"; else pass "$1"; fi; }
 # fresh <installed lines...>: an empty call log and staging directory, no
-# staged copy recorded as left, no pacman running (its lock file), and
-# pacman's database holding these "<name> <version>" lines.
+# staged copy recorded as left, no pacman running (its lock file), no check
+# run yet (status.json), and pacman's database holding these "<name>
+# <version>" lines.
 ileft=$it/cache/omabump/staged-left
-fresh() { : >"$ilog/calls"; rm -rf "$istaging" "$ileft" "$idb/db.lck"; printf '%s\n' "$@" >"$idb/installed"; }
+istatus=$it/state/omarchy/plugins/io.github.vladkarok.omabump/status.json
+fresh() { : >"$ilog/calls"; rm -rf "$istaging" "$ileft" "$idb/db.lck" "$istatus"; printf '%s\n' "$@" >"$idb/installed"; }
+# shown <pkg> <latest> <installed>: status.json from a check that saw <pkg>
+# at <installed> and showed <latest>, as the panel does until the next one.
+shown() {
+  mkdir -p "${istatus%/*}"
+  jq -n --arg pkg "$1" --arg latest "$2" --arg installed "$3" '{schemaVersion: 1, apps: [{pkg: $pkg,
+    installed: $installed, latest: $latest, updateAvailable: ($latest != $installed), installable: true}]}' >"$istatus"
+}
 
 # A package file as the pacman stub reads it: a tar with these .PKGINFO
 # lines and, with $install_text set, an .INSTALL.
@@ -413,11 +426,70 @@ mkdir -p "$ileft" "$istaging"
 : >"$vstaged"
 printf '%s\n' "$vstaged" >"$ileft/testapp"
 inst testapp
-says "install, nothing newer: says so" '2.0.0 is not newer than the installed testapp 2.0.0-1; nothing to do'
+says "install, nothing newer: says so" 'Test App 2.0.0-1 is already installed; nothing to do.'
 same "install, nothing newer: a recorded copy is removed before the feed is read" "sudo rm -f -- $vstaged" \
   "$(grep -m1 -e '^sudo ' -e '^curl ' "$ilog/calls")"
 check "install, nothing newer: the copy is gone" test ! -e "$vstaged"
 check "install, nothing newer: and so is the record" test ! -e "$ileft/testapp"
+
+# Nothing newer in the feed, after a check that saw 1.0.0-1 and showed
+# 2.0.0, which something else installed since (omarchy update, here): Update
+# has nothing left to do, a success, and the panel's refresh clears the row.
+fresh 'testapp 2.0.0-1'
+shown testapp 2.0.0 1.0.0-1
+inst testapp
+same "install (vendor), the version the panel showed installed since: a success" 0 "$irc"
+says "install (vendor), the version the panel showed installed since: says so" 'Test App 2.0.0-1 is already installed; nothing to do.'
+calls "install (vendor), the version the panel showed installed since: refreshes the panel" 'omabump-check --no-notify --wait'
+no_call "install (vendor), the version the panel showed installed since: downloads nothing" "$vpkg"
+no_call "install (vendor), the version the panel showed installed since: stages nothing" 'sudo '
+: >"$ilog/calls"
+inst --prepare testapp
+same "install --prepare (vendor), the version the panel showed installed: succeeds" 0 "$irc"
+says "install --prepare (vendor), the version the panel showed installed: says what a run would say" \
+  'Would say: Test App 2.0.0-1 is already installed; nothing to do.'
+says "install --prepare (vendor), the version the panel showed installed: and that it would refresh the panel" \
+  "/omabump-check --no-notify --wait (the panel's refresh)"
+no_call "install --prepare (vendor), the version the panel showed installed: without refreshing it" 'omabump-check'
+
+# Past the version the panel showed, by a newer release or a pkgrel: done
+# too, and never a downgrade to the feed's.
+fresh 'testapp 2.0.1-1'
+shown testapp 2.0.0 1.0.0-1
+inst testapp
+same "install (vendor), past the version the panel showed: a success" 0 "$irc"
+says "install (vendor), past the version the panel showed: says so" 'Test App 2.0.1-1 is already installed; nothing to do.'
+no_call "install (vendor), past the version the panel showed: downloads nothing" "$vpkg"
+fresh 'testapp 2.0.0-2'
+shown testapp 2.0.0 1.0.0-1
+inst testapp
+same "install (vendor), the version the panel showed at a newer pkgrel: a success" 0 "$irc"
+
+# No check to go by: a status.json that is not JSON, or one without this
+# app's row. The feed's newest is installed, so there is nothing to do.
+fresh 'testapp 2.0.0-1'
+mkdir -p "${istatus%/*}" && printf 'not json' >"$istatus"
+inst testapp
+same "install (vendor), nothing newer, status.json unreadable: a success" 0 "$irc"
+says "install (vendor), nothing newer, status.json unreadable: says so" 'Test App 2.0.0-1 is already installed; nothing to do.'
+shown testpkg 3.0.0 1.0.0-1
+inst testapp
+same "install (vendor), nothing newer, no row in status.json: a success" 0 "$irc"
+
+# The feed gives less than the panel showed (the vendor pulled 2.1.0):
+# Update cannot install it, and says which two versions it found.
+fresh 'testapp 2.0.0-1'
+shown testapp 2.1.0 2.0.0-1
+inst testapp
+same "install (vendor), the feed behind the panel: a failure" 1 "$irc"
+says "install (vendor), the feed behind the panel: names both versions" \
+  "omabump: the vendor's feed gives 2.0.0 now, not the 2.1.0 it gave at the last check; Update cannot install it yet."
+no_call "install (vendor), the feed behind the panel: no panel refresh" 'omabump-check'
+no_call "install (vendor), the feed behind the panel: downloads nothing" "$vpkg"
+inst --prepare testapp
+same "install --prepare (vendor), the feed behind the panel: succeeds" 0 "$irc"
+says "install --prepare (vendor), the feed behind the panel: says it would refuse" \
+  "Would refuse: the vendor's feed gives 2.0.0 now, not the 2.1.0 it gave at the last check; Update cannot install it yet."
 
 # Right after the app's lock is taken: an Update that stops before its
 # route (here a --switch with nothing to switch) removes the copy too.
@@ -523,6 +595,14 @@ says "install --prepare --switch (vendor): the declared conflict" 'pacman will a
 says "install --prepare --switch (vendor): the package's install script" '--- testapp install script (.INSTALL), run as root:'
 says "install --prepare --switch (vendor): the app's settings directory" 'Test App keeps its settings in ~/.config/TestApp.'
 rm -f "$vcached"
+# Switch installs the version installed under the other name, whatever the
+# panel showed: the version is the same, the package is not.
+shown testapp 2.0.0 2.0.0-1
+STUB_PACMAN_U=ok inst --switch testapp
+same "install --switch (vendor): at the same version, a success" 0 "$irc"
+same "install --switch (vendor): at the same version, pacman replaced the old package" 'testapp 2.0.0-1' "$(<"$idb/installed")"
+refuse "install --switch (vendor): at the same version, not taken for 'already installed'" grep -qF 'already installed' <<<"$iout"
+rm -f "$idb/qi/testapp-bin"
 
 # --- the mise route --------------------------------------------------------------
 
@@ -538,6 +618,41 @@ says "install (mise): also worded as the check words it" 'mise outdated --bump g
 no_call "install (mise): mise up never runs then" 'mise up'
 STUB_MISE_OUTDATED='{"testtool": {"latest": "1.1.0"}}' STUB_MISE_BUMP='{"testtool": 5}' inst --prepare mise:testtool
 says "install --prepare (mise): an update mise up reaches does not read the --bump table" 'Would run: mise up -- testtool (in '
+
+# Nothing newer for mise up, nothing held back: what is installed is the
+# newest mise knows. Compared with the panel's row as strings.
+fresh
+inst mise:testtool
+same "install (mise), nothing newer, no check yet: a success" 0 "$irc"
+says "install (mise), nothing newer, no check yet: says so" 'Test Tool 1.0.0 is already installed; nothing to do.'
+calls "install (mise), nothing newer, no check yet: refreshes the panel" 'omabump-check --no-notify --wait'
+no_call "install (mise), nothing newer, no check yet: mise up never runs" 'mise up'
+# Omarchy's wrapper updated the tool on launch, after a check that saw
+# 0.9.0: to the version the panel showed, or past it.
+fresh
+shown mise:testtool 1.0.0 0.9.0
+inst mise:testtool
+same "install (mise), the version the panel showed installed since: a success" 0 "$irc"
+says "install (mise), the version the panel showed installed since: says so" 'Test Tool 1.0.0 is already installed; nothing to do.'
+calls "install (mise), the version the panel showed installed since: refreshes the panel" 'omabump-check --no-notify --wait'
+fresh
+shown mise:testtool 0.9.5 0.9.0
+inst mise:testtool
+same "install (mise), moved past the version the panel showed: a success" 0 "$irc"
+# The check saw 1.0.0 and mise offered 1.1.0, which mise up no longer
+# reaches: Update cannot install it.
+fresh
+shown mise:testtool 1.1.0 1.0.0
+inst mise:testtool
+same "install (mise), mise up behind the panel: a failure" 1 "$irc"
+says "install (mise), mise up behind the panel: names both versions" \
+  'omabump: mise up keeps Test Tool at 1.0.0, not the 1.1.0 mise showed at the last check; Update cannot install it yet.'
+no_call "install (mise), mise up behind the panel: no panel refresh" 'omabump-check'
+inst --prepare mise:testtool
+same "install --prepare (mise), mise up behind the panel: succeeds" 0 "$irc"
+says "install --prepare (mise), mise up behind the panel: says it would refuse" \
+  'Would refuse: mise up keeps Test Tool at 1.0.0, not the 1.1.0 mise showed at the last check'
+no_call "install --prepare (mise): mise up never runs" 'mise up'
 
 # --- functions, sourced ---------------------------------------------------------------
 
@@ -665,6 +780,63 @@ check "install (omarchy): the package file is cleaned up" test ! -e "$it/cache/o
 check "install (omarchy): the build tree is cleaned up" test ! -e "$it/cache/omabump/build/testpkg"
 says "install (omarchy): restart to use it" 'Restart Test Pkg to use 2.0.0-1.'
 same "install (omarchy): no word of files that stay" '' "$(grep -F 'the build and download files stay' <<<"$iout")"
+
+# The synced recipe reaches 2.0.0-1, which omarchy update installed after a
+# check that saw 1.0.0-1 and showed 2.0.0: nothing left to do, a success.
+# The panel's refresh runs once the clone is back at the pin and unlocked.
+fresh 'testpkg 2.0.0-1'
+shown testpkg 2.0.0 1.0.0-1
+inst testpkg
+same "install (omarchy), the version the panel showed installed since: a success" 0 "$irc"
+says "install (omarchy), the version the panel showed installed since: says so" 'Test Pkg 2.0.0-1 is already installed; nothing to do.'
+calls "install (omarchy), the version the panel showed installed since: refreshes the panel" 'omabump-check --no-notify --wait'
+no_call "install (omarchy), the version the panel showed installed since: not under the clone's lock" 'omabump-check: the clone is locked'
+no_call "install (omarchy), the version the panel showed installed since: builds nothing" ' -sfC'
+same "install (omarchy), the version the panel showed installed since: the clone is back at the pinned recipe" \
+  'pkgver=1.0.0' "$(grep '^pkgver=' "$pk/pkgbuilds/testpkg/PKGBUILD")"
+: >"$ilog/calls"
+inst --prepare testpkg
+same "install --prepare (omarchy), the version the panel showed installed: succeeds" 0 "$irc"
+says "install --prepare (omarchy), the version the panel showed installed: says what a run would say" \
+  'Would say: Test Pkg 2.0.0-1 is already installed; nothing to do.'
+no_call "install --prepare (omarchy), the version the panel showed installed: without refreshing the panel" 'omabump-check'
+
+# Installed past the recipe: done, and guard_version still never builds the
+# older recipe.
+fresh 'testpkg 2.1.0-1'
+shown testpkg 2.1.0 2.0.0-1
+inst testpkg
+same "install (omarchy), installed past the recipe: a success" 0 "$irc"
+says "install (omarchy), installed past the recipe: says so" 'Test Pkg 2.1.0-1 is already installed; nothing to do.'
+no_call "install (omarchy), installed past the recipe: no downgrade built" ' -sfC'
+same "install (omarchy), installed past the recipe: nothing installed" 'testpkg 2.1.0-1' "$(<"$idb/installed")"
+
+# The panel showed 2.1.0 from the vendor's feed, and omarchy-pkgs' recipe
+# syncs only to 2.0.0, which is installed: Update cannot reach 2.1.0 yet.
+fresh 'testpkg 2.0.0-1'
+shown testpkg 2.1.0 2.0.0-1
+inst testpkg
+same "install (omarchy), the recipe behind the panel: a failure" 1 "$irc"
+says "install (omarchy), the recipe behind the panel: names both versions" \
+  "omabump: omarchy-pkgs' recipe reaches 2.0.0-1, not the 2.1.0 the vendor's feed shows; Update cannot install it yet."
+no_call "install (omarchy), the recipe behind the panel: no panel refresh" 'omabump-check'
+no_call "install (omarchy), the recipe behind the panel: builds nothing" ' -sfC'
+same "install (omarchy), the recipe behind the panel: the clone is back at the pinned recipe" \
+  'pkgver=1.0.0' "$(grep '^pkgver=' "$pk/pkgbuilds/testpkg/PKGBUILD")"
+inst --prepare testpkg
+same "install --prepare (omarchy), the recipe behind the panel: succeeds" 0 "$irc"
+says "install --prepare (omarchy), the recipe behind the panel: says it would refuse" \
+  "Would refuse: omarchy-pkgs' recipe reaches 2.0.0-1, not the 2.1.0 the vendor's feed shows; Update cannot install it yet."
+
+# --switch at the same version builds and installs, whatever the panel showed.
+fresh 'testpkg-bin 2.0.0-1'
+printf 'Name            : testpkg-bin\nProvides        : None\nConflicts With  : None\n' >"$idb/qi/testpkg-bin"
+shown testpkg 2.0.0 2.0.0-1
+STUB_PACMAN_U=ok inst --switch testpkg
+same "install --switch (omarchy): at the same version, a success" 0 "$irc"
+calls "install --switch (omarchy): at the same version, after the build" ' -sfC'
+same "install --switch (omarchy): at the same version, pacman replaced the old package" 'testpkg 2.0.0-1' "$(<"$idb/installed")"
+rm -f "$idb/qi/testpkg-bin"
 
 # --- Omabump's own update: the fast-forward and its rollback ---------------------------
 
