@@ -168,12 +168,17 @@ row_switchable() {
 #                      what is known until one runs (the widget starts it)
 #   no_status_exit     no status.json of a finished check to start from;
 #                      nothing written
-#   pacman_busy_exit   pacman's database is in the middle of a transaction,
-#                      which pacman -Q may read half way: the pacman rows and
-#                      inventoryAt stay as they were, for a later try
+#   pacman_busy_exit   pacman was in the middle of a transaction
+#                      (pacman_busy) before, during or after the reads;
+#                      nothing written, for a later try
 # and 75 when a check or another local refresh held the lock (above).
 local_refresh() {
-  local previous pacman_db="" pacman_busy=0 need_full=0 changes=() at inventory out app pkg source name installed prev row why
+  local previous need_full=0 changes=() at out app pkg source name installed prev row why
+  # pacman's transaction first: every other answer may ask for a check,
+  # which reads pacman with no such guard. So the mise rows wait too; the
+  # next try, once the transaction is over, finds them as this one would
+  # have.
+  ! pacman_busy || local_pacman_busy
   previous=""
   [[ -s $status_file ]] && previous=$(<"$status_file")
   if ! jq -e 'type == "object" and .schemaVersion == 1 and .checking != true and (.apps | type == "array")
@@ -192,12 +197,6 @@ local_refresh() {
   printf '%s\n' "$previous" >"$tmp/previous.json"
   at=$(date -Iseconds)
 
-  read -r pacman_db < <(pacman-conf DBPath 2>/dev/null </dev/null) || true
-  pacman_db=${pacman_db:-/var/lib/pacman/}
-  if [[ -e ${pacman_db%/}/db.lck ]]; then
-    pacman_busy=1
-    echo "omabump-check: pacman is running (${pacman_db%/}/db.lck), so the pacman rows stay as they were" >&2
-  fi
   load_table
   order=$(jq -c 'map(.pkg)' <<<"$app_table")
   # The inventory alone, under a shorter limit than a check's: mise ls names
@@ -208,14 +207,16 @@ local_refresh() {
     [[ -z $mise_inventory_error ]] || echo "omabump-check: $mise_inventory_error; the mise rows stay as they were" >&2
   fi
 
+  # Discovery and mise ls can take a while, and a transaction that started
+  # meanwhile would be read half way: pacman's lock is looked for again
+  # right before its rows are read, and once more after them.
+  ! pacman_busy || local_pacman_busy
   while IFS= read -r app; do
     pkg=$(jq -r '.pkg' <<<"$app")
     source=$(jq -r '.source' <<<"$app")
     # A mise tool mise could not list is never read as uninstalled.
     if [[ $source == mise ]]; then
       (( with_mise )) && [[ -z $mise_inventory_error ]] || continue
-    elif (( pacman_busy )); then
-      continue
     fi
     prev=$(jq -c --arg pkg "$pkg" '[.apps[] | select(.pkg == $pkg)][0] // {}' <<<"$previous")
     if ! read -r _ name installed < <(installed_app "$app"); then
@@ -230,23 +231,40 @@ local_refresh() {
       need_full=1
     fi
   done < <(jq -c '.[]' <<<"$app_table")
+  ! pacman_busy || local_pacman_busy
 
-  # Rows pacman could not be asked about were read when inventoryAt says.
-  inventory=$at
-  (( ! pacman_busy )) || inventory=$(jq -r '.inventoryAt | strings' <<<"$previous")
-  if (( ${#changes[@]} || ! pacman_busy )); then
-    out=$(mktemp "$tmp/.status.XXXXXX")
-    printf '%s\n' "${changes[@]}" | jq -s --slurpfile prevs "$tmp/previous.json" --argjson order "$order" \
-      --arg inventory "$inventory" "$jq_row_order"'
-      $prevs[0] as $prev
-      | reduce .[] as $c ($prev.apps;
-          if any(.[]; .pkg == $c.pkg) then map(if .pkg == $c.pkg then $c else . end) else . + [$c] end)
-      | $prev + {inventoryAt: $inventory, apps: (map(select(._drop != true)) | row_order($order))}' >"$out"
-    mv -f "$out" "$status_file"
-  fi
+  out=$(mktemp "$tmp/.status.XXXXXX")
+  printf '%s\n' "${changes[@]}" | jq -s --slurpfile prevs "$tmp/previous.json" --argjson order "$order" \
+    --arg inventory "$at" "$jq_row_order"'
+    $prevs[0] as $prev
+    | reduce .[] as $c ($prev.apps;
+        if any(.[]; .pkg == $c.pkg) then map(if .pkg == $c.pkg then $c else . end) else . + [$c] end)
+    | $prev + {inventoryAt: $inventory, apps: (map(select(._drop != true)) | row_order($order))}' >"$out"
+  mv -f "$out" "$status_file"
   (( ! need_full )) || exit "$full_check_exit"
-  (( ! pacman_busy )) || exit "$pacman_busy_exit"
   exit 0
+}
+
+# pacman's lock file is there while a transaction runs, and pacman -Q may
+# read the database half way through one: a package being replaced reads as
+# uninstalled, its row would go, and the next run would bring it back as
+# new and ask for a check it does not need. pacman_lock is where it looks.
+pacman_lock=""
+pacman_busy() {
+  local db=""
+  if [[ -z $pacman_lock ]]; then
+    read -r db < <(pacman-conf DBPath 2>/dev/null </dev/null) || true
+    db=${db:-/var/lib/pacman/}
+    pacman_lock=${db%/}/db.lck
+  fi
+  [[ -e $pacman_lock ]]
+}
+
+# A local refresh that found pacman busy leaves with nothing written: what
+# it read so far goes with its run's dir.
+local_pacman_busy() {
+  echo "omabump-check: pacman is running ($pacman_lock); nothing changed, a later try reads the installed versions" >&2
+  exit "$pacman_busy_exit"
 }
 
 # The row of $app ($pkg, $source) now that it is installed as $name at

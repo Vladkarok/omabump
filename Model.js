@@ -496,8 +496,10 @@ var localRetryExit = 82
 // What a local refresh's exit means (Main.qml's localProcess): "done";
 // "full", a row changed in a way only a check reads, or there is no
 // status.json of a check to start from; "retry", pacman was in the middle
-// of a transaction, so its rows wait for the next tick; "left", a check or
-// another local refresh held the lock; else "failed", which is only logged.
+// of a transaction, so nothing changed and the next tick reads it all again
+// (never a check meanwhile, which would read pacman half way); "left", a
+// check or another local refresh held the lock; else "failed", which is
+// only logged.
 function localOutcome(exitCode) {
   if (exitCode === 0) return "done"
   if (exitCode === localFullExit || exitCode === localNoStatusExit) return "full"

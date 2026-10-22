@@ -346,12 +346,14 @@ refuse "run_killable: and the command it ran is stopped" kill -0 "${slept:-0}"
 # --- whole runs of omabump-check ----------------------------------------------------------
 
 # Fake pacman (only claude-desktop and foo-old installed, or with
-# $OMABUMP_TEST_PKGS set the "<name> <version>" lines of that file),
+# $OMABUMP_TEST_PKGS set the "<name> <version>" lines of that file; with
+# $OMABUMP_TEST_Q_HOOK set, each -Q runs that shell command first),
 # pacman-conf (the database in $run_dir/pacman-db), curl (every fetch
 # fails), sudo (only looked for, never run), git (every call fails) and mise
 # (logs its calls, knows no tool; with $OMABUMP_TEST_HANG set, `mise ls
 # --json` hangs and notes its pid there, with $OMABUMP_TEST_LS_FAIL set it
-# fails, with $OMABUMP_TEST_MISE_LS set it prints that file). curl and git
+# fails, with $OMABUMP_TEST_LS_HOOK set it runs that shell command first,
+# with $OMABUMP_TEST_MISE_LS set it prints that file). curl and git
 # note each call in net.log, but the git config reads omabump-common makes
 # when it is sourced. HOME, the XDG directories and Omarchy's menu all point
 # into $run_dir, and every run passes --no-notify.
@@ -360,6 +362,7 @@ mkdir -p "$run_dir/bin" "$run_dir/home/.config/omarchy" "$run_dir/pacman-db"
 cat >"$run_dir/bin/pacman" <<'EOF'
 #!/bin/sh
 [ "$1" = -Q ] || exit 1
+[ -z "${OMABUMP_TEST_Q_HOOK:-}" ] || sh -c "$OMABUMP_TEST_Q_HOOK"
 if [ -n "${OMABUMP_TEST_PKGS:-}" ]; then
   awk -v n="$3" '$1 == n { print; found = 1 } END { exit !found }' "$OMABUMP_TEST_PKGS"
   exit
@@ -383,6 +386,9 @@ fi
 if [ "$*" = "ls --json" ] && [ -n "${OMABUMP_TEST_LS_FAIL:-}" ]; then
   echo "mise: no inventory" >&2
   exit 1
+fi
+if [ "$*" = "ls --json" ] && [ -n "${OMABUMP_TEST_LS_HOOK:-}" ]; then
+  sh -c "$OMABUMP_TEST_LS_HOOK"
 fi
 if [ "$*" = "ls --json" ] && [ -n "${OMABUMP_TEST_MISE_LS:-}" ]; then
   cat "$OMABUMP_TEST_MISE_LS"
@@ -685,18 +691,21 @@ JSON
 loc_pkgs() { printf '%s\n' "$@" >"$run_dir/pkgs"; }
 loc_tools() { jq -n '[$ARGS.positional[] | split("=") | {(.[0]): [{version: .[1], active: true}]}] | add // {}' --args "$@" >"$run_dir/mise-ls.json"; }
 loc_same() { loc_pkgs 'loc-a 1.0-1' 'loc-b 2.0-1' 'loc-held 1.0-1' 'loc-gone 3.0-1'; loc_tools t=1.0 u=2.0 k=1.0; }
-# A local refresh as the widget runs it, then $? is its exit; loc_row reads
-# the jq filter $2 of the row $1, and loc_was the row loc_status wrote.
-local_run() { OMABUMP_TEST_PKGS=$run_dir/pkgs OMABUMP_TEST_MISE_LS=$run_dir/mise-ls.json check_run --local; }
+# A local refresh as the widget runs it (with the options $@), then $? is
+# its exit; loc_row reads the jq filter $2 of the row $1, loc_was the row
+# loc_status wrote, and loc_md5 what is in status.json.
+local_run() { OMABUMP_TEST_PKGS=$run_dir/pkgs OMABUMP_TEST_MISE_LS=$run_dir/mise-ls.json check_run --local "$@"; }
 loc_row() { run_status ".apps[] | select(.pkg == \"$1\") | $2"; }
 loc_was() { jq -c --arg p "$1" '.apps[] | select(.pkg == $p)' "$run_dir/fixture.json"; }
+loc_md5() { md5sum <"$run_state/status.json"; }
 read -r local_full local_nostatus local_busy < <(sed -n \
   's/^full_check_exit=\([0-9]*\) no_status_exit=\([0-9]*\) pacman_busy_exit=\([0-9]*\)$/\1 \2 \3/p' "$root/bin/omabump-check")
 
 loc_status
 loc_same
 echo '{"loc-a": "1.2"}' >"$run_state/notified.json"
-notified_md5=$(md5sum <"$run_state/notified.json")
+echo '{"loc-held": {"version": "1.1", "at": 1767225540}}' >"$run_state/seen.json"
+notified_md5=$(md5sum <"$run_state/notified.json") seen_md5=$(md5sum <"$run_state/seen.json")
 local_run; rc=$?
 same "--local: nothing moved, exit 0 and every row as it was" "0|$(jq -c .apps "$run_dir/fixture.json")" "$rc|$(run_status '.apps | tojson')"
 same "--local: checkedAt and startedAt stay the check's, inventoryAt is this run's" \
@@ -715,14 +724,35 @@ same "--local: a held release once installed: no hold, Update back, the hold's c
   'false|false|true|Recipe from omarchy-pkgs 0123456789ab' "$(loc_row loc-held '"\(.updateAvailable)|\(.held)|\(.installable)|\(.note)"')"
 same "--local: an app no longer installed loses its row" '' "$(loc_row loc-gone .pkg)"
 same "--local: a row that did not move stays as it was" "$(loc_was loc-b)" "$(loc_row loc-b 'tojson')"
-same "--local: notified.json is never read or written" "$notified_md5" "$(md5sum <"$run_state/notified.json")"
-rm -f "$run_state/notified.json"
+same "--local: notified.json and seen.json are never written" "$notified_md5|$seen_md5" \
+  "$(md5sum <"$run_state/notified.json")|$(md5sum <"$run_state/seen.json")"
+rm -f "$run_state/notified.json" "$run_state/seen.json"
 
 loc_status
 loc_pkgs 'loc-a 1.3-1' 'loc-b 2.0-1' 'loc-held 1.0-1' 'loc-gone 3.0-1'
 local_run; rc=$?
 same "--local: installed past the newest known version asks for a check, no update meanwhile" "$local_full|1.3-1|false" \
   "$rc|$(loc_row loc-a '"\(.installed)|\(.updateAvailable)"')"
+same "--local: and makes no notified.json or seen.json" '' \
+  "$(find "$run_state" -maxdepth 1 \( -name notified.json -o -name seen.json \) -printf '%f\n')"
+
+# A newer version of a held release, still below the held one: the hold
+# and its note stay, and so does the row's Update, still not installable.
+loc_status
+loc_pkgs 'loc-a 1.0-1' 'loc-b 2.0-1' 'loc-held 1.0.5-1' 'loc-gone 3.0-1'
+local_run; rc=$?
+same "--local: a held app moved, still below the held release: the hold stays, no check needed" \
+  "0|1.0.5-1|true|true|false|$(loc_was loc-held | jq -r .note)" \
+  "$rc|$(loc_row loc-held '"\(.installed)|\(.updateAvailable)|\(.held)|\(.installable)|\(.note)"')"
+
+# A row that names another source than the app table (the user moved the
+# app to another route): only a check can say what it is now.
+loc_status
+jq '.apps |= map(if .pkg == "loc-b" then .source = "indicator" else . end)' "$run_dir/fixture.json" >"$run_state/status.json"
+loc_pkgs 'loc-a 1.0-1' 'loc-b 2.1-1' 'loc-held 1.0-1' 'loc-gone 3.0-1'
+local_run; rc=$?
+same "--local: a row of another source than the table's stays as it was and asks for a check" "$local_full|indicator|2.0-1" \
+  "$rc|$(loc_row loc-b '"\(.source)|\(.installed)"')"
 loc_status
 loc_pkgs 'loc-a 1.0-1' 'loc-b-old 2.0-1' 'loc-held 1.0-1' 'loc-gone 3.0-1'
 local_run; rc=$?
@@ -757,21 +787,48 @@ loc_tools t=1.1 u=2.1 k=1.0
 OMABUMP_TEST_LS_FAIL=1 local_run; rc=$?
 same "--local: mise ls failed: the mise rows stay as they were, none read as uninstalled" \
   "0|$(jq -c '[.apps[] | select(.source == "mise")]' "$run_dir/fixture.json")" "$rc|$(run_status '[.apps[] | select(.source == "mise")] | tojson')"
+loc_status
+loc_tools u=2.1 npm:k=1.6
+local_run --no-mise; rc=$?
+same "--local --no-mise: the mise rows stay as they were, and mise is never asked" \
+  "0|$(jq -c '[.apps[] | select(.source == "mise")]' "$run_dir/fixture.json")|" \
+  "$rc|$(run_status '[.apps[] | select(.source == "mise")] | tojson')|$(cat "$run_dir/mise.log")"
 
 # pacman's lock file while a transaction runs: pacman -Q could read its
-# database half way and miss a package being replaced.
+# database half way and miss a package being replaced. Nothing is read or
+# written then, not even the mise rows: a change of theirs would ask for a
+# check, which reads pacman too. Once the transaction is over, the next try
+# finds it all.
 loc_status
-loc_same
 loc_pkgs 'loc-a 1.2-1' 'loc-b 2.0-1' 'loc-held 1.0-1'
-: >"$run_dir/pacman-db/db.lck"
-local_run; rc=$?
-same "--local: pacman mid-transaction: its rows and inventoryAt stay, try again later" \
-  "$local_busy|1.0-1|loc-gone|2026-01-01T00:09:00+00:00" "$rc|$(loc_row loc-a .installed)|$(loc_row loc-gone .pkg)|$(run_status .inventoryAt)"
 loc_tools t=1.0 u=2.1 k=1.0
+: >"$run_dir/pacman-db/db.lck"
+status_md5=$(loc_md5)
 local_run; rc=$?
-same "--local: the mise rows are still read then, and a check they ask for comes first" "$local_full|2.1|1.0-1" \
-  "$rc|$(loc_row mise:u .installed)|$(loc_row loc-a .installed)"
+same "--local: pacman mid-transaction: try again later, status.json as it was, mise not asked" \
+  "$local_busy|$status_md5|" "$rc|$(loc_md5)|$(cat "$run_dir/mise.log")"
+mv "$run_state/status.json" "$run_dir/status.keep"
+local_run; rc=$?
+same "--local: pacman mid-transaction and no status.json: try again later all the same, no check now" "$local_busy" "$rc"
+mv "$run_dir/status.keep" "$run_state/status.json"
 rm -f "$run_dir/pacman-db/db.lck"
+local_run; rc=$?
+same "--local: once it is over, the rows move and the mise change asks for its check" "$local_full|1.2-1|2.1|" \
+  "$rc|$(loc_row loc-a .installed)|$(loc_row mise:u .installed)|$(loc_row loc-gone .pkg)"
+# A transaction that starts during the run: while mise ls runs (after
+# discovery, before pacman's rows are read), or while they are read. It
+# takes loc-a out of pacman's database, as replacing a package does.
+for when in LS Q; do
+  loc_status
+  loc_same
+  status_md5=$(loc_md5)
+  export "OMABUMP_TEST_${when}_HOOK=: >'$run_dir/pacman-db/db.lck'; sed -i '/^loc-a /d' '$run_dir/pkgs'"
+  local_run; rc=$?
+  unset "OMABUMP_TEST_${when}_HOOK"
+  same "--local: pacman starts a transaction during the run ($when hook): try again later, status.json as it was" \
+    "$local_busy|$status_md5" "$rc|$(loc_md5)"
+  rm -f "$run_dir/pacman-db/db.lck"
+done
 
 rm -f "$run_state/status.json"
 local_run; rc=$?
