@@ -73,7 +73,7 @@ Mute, skip, Notify and Show mise tools apply to every check, whoever starts it: 
 |---|---|---|
 | `claude-desktop` | Claude Desktop | omarchy |
 | `openai-codex-desktop` | Codex (also found as AUR `chatgpt-desktop`) | omarchy |
-| `t3code-bin` | T3 Code | omarchy |
+| `t3code-bin` | T3 Code | omarchy, while installed as a package: Omarchy's migration 1792345511 replaces the package with T3 Code's self-updating app, and the row goes with it |
 | `hermes-desktop` | Hermes | omarchy, no Update until the recipe has an upstream watch |
 | `grok-bot` | Grok | omarchy |
 | `lmstudio-bin` | LM Studio | omarchy |
