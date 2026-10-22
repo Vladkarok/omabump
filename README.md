@@ -211,6 +211,7 @@ The bar tooltip and the panel footer then say "omarchy-pkgs: following master (u
 | Step | What runs | As whom |
 |---|---|---|
 | Background check (timer, Refresh) | curl of the feeds below; the pinned omarchy-pkgs commit, fetched with git; recipes read as text with `git show`; Omarchy's menu and agent wrappers read as text; your `shell.json` read for the widget's settings; `mise ls` and `mise outdated` for the listed tools on the allowed backends, asdf and vfox disabled; your own `command` feeds | you |
+| Local refresh (panel open, every 5 minutes) | `pacman -Q` and `mise ls` (and `mise settings get`), with asdf and vfox disabled; no network, no notification | you |
 | Update, omarchy row | `bin/sync-upstream` and the recipe's upstream hook from the pinned commit, then makepkg and the PKGBUILD | you; sudo for missing build dependencies |
 | Update, vendor row | download, digest check against the vendor's published list, `pacman -Qp` | you |
 | Install of any built or vendor package | `sudo install` into `/var/cache/omabump`, `pacman -U` on that copy, the package's install script, pacman hooks | root |
@@ -247,7 +248,7 @@ The two baseline findings that apply to this kind of plugin are addressed: omarc
 
 ### External services contacted
 
-The background check (every hour by default) fetches version feeds:
+The local refresh contacts no host. The background check (every hour by default) fetches version feeds:
 
 - `downloads.claude.ai` (Claude Desktop apt index)
 - `persistent.oaistatic.com` (Codex apt index)
