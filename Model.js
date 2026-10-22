@@ -371,6 +371,9 @@ function parseStatus(text, showMise) {
     return !!app && typeof app === "object" && (showMise || app.source !== "mise")
   })
   var started = file.startedAt ? new Date(file.startedAt).getTime() : NaN
+  // When the installed versions were last read, by a check or a local
+  // refresh; a file from before the field has none.
+  var inventory = file.inventoryAt ? new Date(file.inventoryAt).getTime() : NaN
   var pkgs = file.omarchyPkgs && typeof file.omarchyPkgs === "object" ? file.omarchyPkgs : {}
   var schema = Number(file.schemaVersion)
   return {
@@ -379,6 +382,7 @@ function parseStatus(text, showMise) {
     checkedAt: file.checkedAt ? String(file.checkedAt) : "",
     checking: file.checking === true,
     startedMs: isFinite(started) ? started : 0,
+    inventoryMs: isFinite(inventory) ? inventory : 0,
     pkgsCommit: String(pkgs.commit || ""),
     // The user opted out of the pinned omarchy-pkgs commit (pins.json).
     pkgsFollowing: pkgs.following === true,
@@ -477,6 +481,57 @@ function failureText(f, apps, muted) {
   return ""
 }
 
+// --- local refreshes ----------------------------------------------------------------
+
+// How often each bar reads the installed versions again
+// (bin/omabump-check --local, Main.qml's localTimer).
+var localIntervalSec = 300
+
+// What bin/omabump-check --local exits with besides 0 and lockBusyExit
+// (full_check_exit, no_status_exit and pacman_busy_exit there).
+var localFullExit = 80
+var localNoStatusExit = 81
+var localRetryExit = 82
+
+// What a local refresh's exit means (Main.qml's localProcess): "done";
+// "full", a row changed in a way only a check reads, or there is no
+// status.json of a check to start from; "retry", pacman was in the middle
+// of a transaction, so its rows wait for the next tick; "left", a check or
+// another local refresh held the lock; else "failed", which is only logged.
+function localOutcome(exitCode) {
+  if (exitCode === 0) return "done"
+  if (exitCode === localFullExit || exitCode === localNoStatusExit) return "full"
+  if (exitCode === localRetryExit) return "retry"
+  return exitCode === lockBusyExit ? "left" : "failed"
+}
+
+// Whether a check follows a local refresh: the one it asked for, unless
+// this shell's own check runs. That one takes the lock after the refresh
+// let go of it (a check that finds a local refresh holding the lock waits
+// for it), so it reads what the refresh found. Never one per bar: the
+// other bars' refreshes left on the lock, or ran after this one and found
+// the rows as it left them, with nothing more to ask.
+function localWantsCheck(outcome, checkRunning) {
+  return outcome === "full" && !checkRunning
+}
+
+// Whether the timer's local refresh is due. Every monitor's bar runs one,
+// so installed versions read less than an interval (less 30 s of slack)
+// ago, by another bar's refresh or by a check (inventoryAt), are recent
+// enough. A time ahead of the clock proves nothing.
+function localDue(nowMs, inventoryMs, intervalSec) {
+  var age = nowMs - inventoryMs
+  return !(inventoryMs > 0 && age >= 0 && age < (intervalSec - 30) * 1000)
+}
+
+// What opening the panel runs (Main.qml's panelOpened): nothing while a
+// check runs, which reads the installed versions too; the timer's check
+// when one is due (checkDue); else a local refresh.
+function openedRun(checking, due) {
+  if (checking) return ""
+  return due ? "full" : "local"
+}
+
 // --- rows ------------------------------------------------------------------------
 
 function updatable(app) { return !!app && app.updateAvailable === true && app.installable === true }
@@ -486,10 +541,12 @@ function updatable(app) { return !!app && app.updateAvailable === true && app.in
 // Or a mise tool whose request holds it below a newer release. Not a
 // release omarchy-pkgs still holds (held): Update comes back by itself.
 // Not an AUR package omarchy update already updates (omarchyUpdate, its
-// note says so): there is nothing to plan.
+// note says so): there is nothing to plan. Not a row no check has read
+// (unchecked): a local refresh found a mise tool at another version than
+// its newest one was known for, and the check it asked for says.
 function askable(app) {
   if (!app || app.installable === true || app.source === "self" || app.held === true
-    || app.omarchyUpdate === true || app.blocked === true) return false
+    || app.omarchyUpdate === true || app.blocked === true || app.unchecked === true) return false
   if (app.updateAvailable === true) return true
   return app.source === "mise" && String(app.error || "") === ""
     && String(app.latest || "") !== "" && app.latest !== app.installed

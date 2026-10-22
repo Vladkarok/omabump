@@ -298,14 +298,20 @@ test("parseStatus: an empty file is null, a broken one throws", () => {
 test("parseStatus: the fields the widget reads", () => {
   const status = m.parseStatus(JSON.stringify({
     schemaVersion: 1, checkedAt: "2026-10-07T10:00:00+00:00", startedAt: "2026-10-07T09:59:00+00:00", checking: true,
+    inventoryAt: "2026-10-07T10:04:00+00:00",
     omarchyPkgs: { commit: "abc", following: true, error: "e", note: "n" }, discoveryError: "d", miseError: "m", runError: "r",
     apps: [row({}), null, 5, row({ pkg: "mise:x", source: "mise" })]
   }), true)
   same(status, {
     schemaVersion: 1, apps: [row({}), row({ pkg: "mise:x", source: "mise" })], checkedAt: "2026-10-07T10:00:00+00:00",
-    checking: true, startedMs: Date.parse("2026-10-07T09:59:00+00:00"), pkgsCommit: "abc", pkgsFollowing: true,
-    pkgsError: "e", pkgsNote: "n", discoveryError: "d", miseError: "m", runError: "r"
+    checking: true, startedMs: Date.parse("2026-10-07T09:59:00+00:00"), inventoryMs: Date.parse("2026-10-07T10:04:00+00:00"),
+    pkgsCommit: "abc", pkgsFollowing: true, pkgsError: "e", pkgsNote: "n", discoveryError: "d", miseError: "m", runError: "r"
   })
+})
+
+test("parseStatus: no inventoryAt (a file from before it), or one that is no time, is 0", () => {
+  same([m.parseStatus("{}", true).inventoryMs, m.parseStatus('{"inventoryAt": ""}', true).inventoryMs,
+    m.parseStatus('{"inventoryAt": "soon"}', true).inventoryMs], [0, 0, 0])
 })
 
 test("parseStatus: no schemaVersion (an older file) is 0", () => {
@@ -376,6 +382,32 @@ test("failureText: the checker's error first, a source failure only while not al
     m.failureText(f, apps, [])], ["c", "r", "p", "m", "", ""])
 })
 
+// --- local refreshes ----------------------------------------------------------------
+
+test("localOutcome: done, a check wanted (a change, or no status to start from), retry, left, else failed", () => {
+  same([model.localFullExit, model.localNoStatusExit, model.localRetryExit, model.localIntervalSec], [80, 81, 82, 300])
+  same([0, 80, 81, 82, 75, 1, 2, 124, 143].map(code => m.localOutcome(code)),
+    ["done", "full", "full", "retry", "left", "failed", "failed", "failed", "failed"])
+})
+
+test("localWantsCheck: a check for a refresh that asked, unless this shell's own check runs", () => {
+  same([m.localWantsCheck("full", false), m.localWantsCheck("full", true), m.localWantsCheck("done", false),
+    m.localWantsCheck("retry", false), m.localWantsCheck("left", false), m.localWantsCheck("failed", false)],
+    [true, false, false, false, false, false])
+})
+
+test("localDue: due with no inventory, not within the interval less 30 s, and a future time proves nothing", () => {
+  const now = Date.parse("2026-10-07T12:00:00Z")
+  same([m.localDue(now, 0, 300), m.localDue(now, Date.parse("2026-10-07T11:57:00Z"), 300),
+    m.localDue(now, Date.parse("2026-10-07T11:55:20Z"), 300), m.localDue(now, Date.parse("2026-10-07T11:55:40Z"), 300),
+    m.localDue(now, Date.parse("2026-10-07T12:01:00Z"), 300)], [true, false, true, false, true])
+})
+
+test("openedRun: nothing while a check runs, the check when due, else a local refresh", () => {
+  same([m.openedRun(true, true), m.openedRun(true, false), m.openedRun(false, true), m.openedRun(false, false)],
+    ["", "", "full", "local"])
+})
+
 // --- rows -----------------------------------------------------------------------------------
 
 const indicator = row({ pkg: "kimi", installedName: "kimi", source: "indicator", installable: false, latest: "2.0", updateAvailable: true })
@@ -391,6 +423,11 @@ test("askable: an update with no install path, or a mise tool held below a newer
     m.askable(row({ source: "self", installable: false, updateAvailable: true })), m.askable(Object.assign({}, indicator, { held: true })),
     m.askable(Object.assign({}, indicator, { omarchyUpdate: true })), m.askable(Object.assign({}, indicator, { blocked: true })), m.askable(null)],
     [true, false, true, false, false, false, false, false, false])
+})
+
+test("askable: not a mise row a local refresh found at another version, with no check of it yet", () => {
+  same([m.askable(Object.assign({}, pinnedNoRoute, { installed: "1.1", unchecked: true })),
+    m.askable(Object.assign({}, pinnedNoRoute, { installed: "1.1" }))], [false, true])
 })
 
 test("hasAction and primaryAction: Update, Ask agent or Switch", () => {
