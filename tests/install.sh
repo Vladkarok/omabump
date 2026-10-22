@@ -24,7 +24,10 @@
 #             is what a run whose terminal was closed gets (or one whose
 #             password timed out)
 #   curl      serves files from a local directory
-#   makepkg   reads the test recipe's PKGBUILD and "builds" a plain tar
+#   makepkg   reads the test recipe's PKGBUILD and "builds" a plain tar;
+#             with $STUB_MAKEPKG_INSTALLS ("<name> <version>") set, that is
+#             what pacman has installed once the build is done, as when
+#             omarchy update installs it meanwhile
 #   mise      answers for one tool, testtool 1.0.0 on a safe backend, with
 #             $STUB_MISE_OUTDATED and $STUB_MISE_BUMP as its outdated tables
 #   omarchy-plugin-validate, omarchy-shell, omarchy   record, and change nothing
@@ -155,7 +158,8 @@ case " $* " in
       for v in "${conflicts[@]}"; do echo "conflict = $v"; done
       for v in "${provides[@]}"; do echo "provides = $v"; done; } >"$d/.PKGINFO"
     [[ -z $install ]] || { cp "$install" "$d/.INSTALL"; files+=(.INSTALL); }
-    bsdtar -cf "$file" -C "$d" "${files[@]}" ;;
+    bsdtar -cf "$file" -C "$d" "${files[@]}"
+    [[ -z ${STUB_MAKEPKG_INSTALLS:-} ]] || printf '%s\n' "$STUB_MAKEPKG_INSTALLS" >"$STUB_DB/installed" ;;
   *) echo "makepkg stub: unexpected $*" >&2; exit 99 ;;
 esac
 EOF
@@ -224,12 +228,15 @@ no_call() { if grep -qF -- "$2" "$ilog/calls"; then fail "$1" "'$2' in: $(<"$ilo
 ileft=$it/cache/omabump/staged-left
 istatus=$it/state/omarchy/plugins/io.github.vladkarok.omabump/status.json
 fresh() { : >"$ilog/calls"; rm -rf "$istaging" "$ileft" "$idb/db.lck" "$istatus"; printf '%s\n' "$@" >"$idb/installed"; }
-# shown <pkg> <latest> <installed>: status.json from a check that saw <pkg>
-# at <installed> and showed <latest>, as the panel does until the next one.
+# shown <pkg> <latest> <installed> [<update>]: status.json from a check that
+# saw <pkg> at <installed> and showed <latest>, as the panel does until the
+# next one, offering an update when the two differ unless <update> says
+# otherwise (true or false).
 shown() {
   mkdir -p "${istatus%/*}"
-  jq -n --arg pkg "$1" --arg latest "$2" --arg installed "$3" '{schemaVersion: 1, apps: [{pkg: $pkg,
-    installed: $installed, latest: $latest, updateAvailable: ($latest != $installed), installable: true}]}' >"$istatus"
+  jq -n --arg pkg "$1" --arg latest "$2" --arg installed "$3" --arg update "${4:-}" '{schemaVersion: 1, apps: [{pkg: $pkg,
+    installed: $installed, latest: $latest, installable: true,
+    updateAvailable: (if $update == "" then $latest != $installed else $update == "true" end)}]}' >"$istatus"
 }
 
 # A package file as the pacman stub reads it: a tar with these .PKGINFO
@@ -451,6 +458,20 @@ says "install --prepare (vendor), the version the panel showed installed: says w
 says "install --prepare (vendor), the version the panel showed installed: and that it would refresh the panel" \
   "/omabump-check --no-notify --wait (the panel's refresh)"
 no_call "install --prepare (vendor), the version the panel showed installed: without refreshing it" 'omabump-check'
+# The feed lists no checksum for the package now: nothing is downloaded,
+# so that cannot fail the Update either.
+cp "$iserved/latest.yml" "$it/latest.yml"
+printf 'version: 2.0.0\nfiles:\n  - url: https://example.invalid/%s\n' "$vpkg" >"$iserved/latest.yml"
+fresh 'testapp 2.0.0-1'
+shown testapp 2.0.0 1.0.0-1
+inst testapp
+same "install (vendor), the version the panel showed installed, no checksum published: a success" 0 "$irc"
+says "install (vendor), the version the panel showed installed, no checksum published: says so" \
+  'Test App 2.0.0-1 is already installed; nothing to do.'
+calls "install (vendor), the version the panel showed installed, no checksum published: refreshes the panel" \
+  'omabump-check --no-notify --wait'
+no_call "install (vendor), the version the panel showed installed, no checksum published: downloads nothing" "$vpkg"
+mv "$it/latest.yml" "$iserved/latest.yml"
 
 # Past the version the panel showed, by a newer release or a pkgrel: done
 # too, and never a downgrade to the feed's.
@@ -639,6 +660,13 @@ fresh
 shown mise:testtool 0.9.5 0.9.0
 inst mise:testtool
 same "install (mise), moved past the version the panel showed: a success" 0 "$irc"
+# A check whose mise fetch failed keeps the last latest next to the version
+# installed then, and offers no update: the panel promised nothing.
+fresh
+shown mise:testtool 0.9.5 1.0.0 false
+inst mise:testtool
+same "install (mise), a row that offered no update: a success" 0 "$irc"
+says "install (mise), a row that offered no update: says so" 'Test Tool 1.0.0 is already installed; nothing to do.'
 # The check saw 1.0.0 and mise offered 1.1.0, which mise up no longer
 # reaches: Update cannot install it.
 fresh
@@ -800,6 +828,10 @@ same "install --prepare (omarchy), the version the panel showed installed: succe
 says "install --prepare (omarchy), the version the panel showed installed: says what a run would say" \
   'Would say: Test Pkg 2.0.0-1 is already installed; nothing to do.'
 no_call "install --prepare (omarchy), the version the panel showed installed: without refreshing the panel" 'omabump-check'
+refuse "install --prepare (omarchy), the version the panel showed installed: and stops there, as the run would" \
+  grep -qF -e 'Package file:' -e 'Would run: sudo pacman -U' <<<"$iout"
+same "install --prepare (omarchy), the version the panel showed installed: the clone is back at the pinned recipe" \
+  'pkgver=1.0.0' "$(grep '^pkgver=' "$pk/pkgbuilds/testpkg/PKGBUILD")"
 
 # Installed past the recipe: done, and guard_version still never builds the
 # older recipe.
@@ -827,6 +859,52 @@ inst --prepare testpkg
 same "install --prepare (omarchy), the recipe behind the panel: succeeds" 0 "$irc"
 says "install --prepare (omarchy), the recipe behind the panel: says it would refuse" \
   "Would refuse: omarchy-pkgs' recipe reaches 2.0.0-1, not the 2.1.0 the vendor's feed shows; Update cannot install it yet."
+refuse "install --prepare (omarchy), the recipe behind the panel: and stops there, as the run would" \
+  grep -qF -e 'Package file:' -e 'Would run: sudo pacman -U' <<<"$iout"
+
+# An epoch installed keeps the recipe, which reaches the version the panel
+# showed, from being newer: Update says that, not that the recipe is behind.
+fresh 'testpkg 1:1.0.0-1'
+shown testpkg 2.0.0 1:1.0.0-1
+inst testpkg
+same "install (omarchy), an epoch installed: a failure" 1 "$irc"
+says "install (omarchy), an epoch installed: names the epoch's version" \
+  'omabump: 2.0.0-1 is not newer than the installed testpkg 1:1.0.0-1; nothing to do'
+refuse "install (omarchy), an epoch installed: not as a recipe behind the panel" grep -qF 'not the 2.0.0' <<<"$iout"
+no_call "install (omarchy), an epoch installed: builds nothing" ' -sfC'
+inst --prepare testpkg
+says "install --prepare (omarchy), an epoch installed: says it would refuse" \
+  'Would refuse: 2.0.0-1 is not newer than the installed testpkg 1:1.0.0-1; nothing to do'
+
+# omarchy update installed the version while makepkg built it: the build
+# has nothing left to install, and goes with its files.
+fresh 'testpkg 1.0.0-1'
+shown testpkg 2.0.0 1.0.0-1
+STUB_MAKEPKG_INSTALLS='testpkg 2.0.0-1' inst testpkg
+same "install (omarchy), the version installed during the build: a success" 0 "$irc"
+calls "install (omarchy), the version installed during the build: after the build" ' -sfC'
+says "install (omarchy), the version installed during the build: says so" 'Test Pkg 2.0.0-1 is already installed; nothing to do.'
+no_call "install (omarchy), the version installed during the build: stages nothing" 'sudo '
+calls "install (omarchy), the version installed during the build: refreshes the panel" 'omabump-check --no-notify --wait'
+no_call "install (omarchy), the version installed during the build: not under the clone's lock" 'omabump-check: the clone is locked'
+check "install (omarchy), the version installed during the build: the package file goes" test ! -e "$it/cache/omabump/packages/$opkg"
+check "install (omarchy), the version installed during the build: and the build tree" test ! -e "$it/cache/omabump/build/testpkg"
+same "install (omarchy), the version installed during the build: no word of files that stay" '' \
+  "$(grep -F 'the build and download files stay' <<<"$iout")"
+same "install (omarchy), the version installed during the build: the clone is back at the pinned recipe" \
+  'pkgver=1.0.0' "$(grep '^pkgver=' "$pk/pkgbuilds/testpkg/PKGBUILD")"
+# Short of the version the panel showed, the run still stops before pacman,
+# and keeps the build for a look.
+fresh 'testpkg 1.0.0-1'
+shown testpkg 2.1.0 1.0.0-1
+STUB_MAKEPKG_INSTALLS='testpkg 2.0.0-1' inst testpkg
+same "install (omarchy), installed during the build, short of the panel: a failure" 1 "$irc"
+says "install (omarchy), installed during the build, short of the panel: says why" \
+  'omabump: 2.0.0-1 is not newer than the installed testpkg 2.0.0-1; not installing'
+says "install (omarchy), installed during the build, short of the panel: the build files stay" \
+  "omabump: the build and download files stay in $it/cache/omabump/{build,packages,sources}"
+no_call "install (omarchy), installed during the build, short of the panel: no panel refresh" 'omabump-check'
+rm -rf "$it/cache/omabump/packages/$opkg" "$it/cache/omabump/build/testpkg"
 
 # --switch at the same version builds and installs, whatever the panel showed.
 fresh 'testpkg-bin 2.0.0-1'
@@ -836,6 +914,13 @@ STUB_PACMAN_U=ok inst --switch testpkg
 same "install --switch (omarchy): at the same version, a success" 0 "$irc"
 calls "install --switch (omarchy): at the same version, after the build" ' -sfC'
 same "install --switch (omarchy): at the same version, pacman replaced the old package" 'testpkg 2.0.0-1' "$(<"$idb/installed")"
+# Never to an older one; --prepare says so and stops there, as the run would.
+fresh 'testpkg-bin 2.1.0-1'
+inst --prepare --switch testpkg
+same "install --prepare --switch (omarchy), an older recipe: succeeds" 0 "$irc"
+says "install --prepare --switch (omarchy), an older recipe: says it would refuse" \
+  'Would refuse: 2.0.0-1 is older than the installed testpkg-bin 2.1.0-1; nothing to do'
+refuse "install --prepare --switch (omarchy), an older recipe: and stops there" grep -qF 'Package file:' <<<"$iout"
 rm -f "$idb/qi/testpkg-bin"
 
 # --- Omabump's own update: the fast-forward and its rollback ---------------------------
