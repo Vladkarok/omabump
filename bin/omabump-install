@@ -23,6 +23,10 @@
 # before it removes the old package, and the scripts the new package runs
 # are printed first. On the omarchy path the conflict pacman needs is read
 # from the recipe before the build, and from the built package again after.
+# An Update whose route has nothing newer than what is installed succeeds
+# when the app has already reached the version the panel showed (something
+# else updated it since the last check, or while makepkg built) and fails
+# when the route is behind that version (nothing_newer).
 #
 # --prepare fetches, syncs and prepares the recipe (this runs omarchy-pkgs'
 # sync tool and the recipe's hook, and makepkg reads the PKGBUILD), and stops
@@ -30,6 +34,8 @@
 # package and stops before pacman -U. Nothing is installed and sudo is never
 # called; the staging and install commands are printed instead. On the self
 # row it fetches the release tag, prints the plan and stops before asking.
+# Where a run would end without installing (a version refused, nothing left
+# to install), it prints what that run would decide and ends there too.
 set -euo pipefail
 # BASH_SOURCE, not $0: the tests source this file (see the end).
 here=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
@@ -258,6 +264,79 @@ guard_version() {
   return 1
 }
 
+# Ends a run that cannot install: says why, $1, or with --prepare what a
+# run would refuse, and stops there as that run would.
+refuse() {
+  (( prepare )) && { echo "Would refuse: $1"; exit 0; }
+  die "$1"
+}
+
+# The field $1 of this app's row in the last check's status.json, which the
+# panel shows until the next check, on one line; true or false for a flag.
+# Nothing when no check ran, the file is not one the check wrote, or the
+# row or field is missing.
+panel_row() {
+  jq -r --arg pkg "$pkg" --arg f "$1" \
+    '[.apps[]? | objects | select(.pkg == $pkg)][0][$f] | select(type == "string" or type == "boolean") | tostring' \
+    "$status_file" 2>/dev/null | head -n1 | term_safe || true
+}
+
+# True when the version installed now, $1 (the full version on pacman
+# rows), has reached the one the panel shows for this app, the row's latest
+# from the last check, or the panel shows none (no check ran, or its row
+# has no latest). Sets shown to that latest. Pacman rows compare with
+# vercmp, the upstream part against the feed's version as the check does.
+# mise rows compare as strings, mise deciding what is newer, and are only
+# asked once mise finds nothing newer than $1: they have reached it at the
+# same version, at one that moved since the check (to that release or a
+# newer one, which strings cannot tell apart), or when the row offered no
+# update (a check whose mise fetch failed keeps the last latest next to the
+# version installed then).
+shown=""
+panel_reached() {
+  shown=$(panel_row latest)
+  [[ -n $shown ]] || return 0
+  if string_versions "$source"; then
+    [[ $1 == "$shown" || $1 != "$(panel_row installed)" || $(panel_row updateAvailable) != true ]]
+  elif newer "$shown" "$(upstream_part "$1")"; then
+    return 1
+  fi
+}
+
+# Ends an Update that has nothing left to install, the version installed
+# now, $1, having reached what the panel showed: says so, refreshes the
+# panel so the row clears, and exits 0. With --prepare it says what that
+# run would say and do.
+already_installed() {
+  local msg="$label $1 is already installed; nothing to do."
+  if (( prepare )); then
+    echo "Would say: $msg"
+    echo "Would run: $here/omabump-check --no-notify --wait (the panel's refresh)"
+    exit 0
+  fi
+  echo "$msg"
+  # The check reads the omarchy-pkgs clone: under this run's lock it would
+  # find the clone busy and give every omarchy row the last result.
+  if (( restore_clone )); then pkgs_restore "$pkg"; restore_clone=0; fi
+  pkgs_drop_lock
+  refresh_panel
+  exit 0
+}
+
+# The route reaches nothing newer than the version installed now, $1 (the
+# full version on pacman rows), yet Update was pressed: the panel showed a
+# newer one, the row's latest from the last check. Apps update outside
+# Omabump too, often minutes after a check (Omarchy's wrappers update mise
+# CLIs on launch, omarchy update runs mise up and pacman), and the panel
+# shows that check until the next one. When the version installed has
+# reached the one the panel showed (panel_reached), nothing is left to do
+# (already_installed). Otherwise the route is behind the panel, and Update
+# fails with "$2, not the <latest> $3". Either way the run ends here.
+nothing_newer() {
+  panel_reached "$1" && already_installed "$1"
+  refuse "$2, not the $shown $3; Update cannot install it yet."
+}
+
 # pacman -Qi wraps long fields to COLUMNS when it is set, which would hide
 # names on continuation lines from qi_names.
 pacman_qi() { env -u COLUMNS pacman "$@"; }
@@ -370,16 +449,25 @@ show_switch() {
 }
 
 # Refuses unless the recipe in $1 builds a package named $2 that is newer than
-# what is installed right now. Sets target_version.
+# what is installed right now; an Update that finds the recipe's version
+# installed already ends in nothing_newer. Sets target_version.
 check_target() {
-  local dir=$1 want=$2 name msg
+  local dir=$1 want=$2 name msg now
   read -r name target_version < <(recipe_version <"$dir/PKGBUILD") || die "cannot read the recipe version"
   [[ $name == "$want" ]] || die "recipe builds '$name', expected '$want'"
   echo "Recipe builds $name $target_version"
-  if ! msg=$(guard_version "$target_version"); then
-    (( prepare )) && { echo "Would refuse: $msg"; return 0; }
-    die "$msg; nothing to do"
+  msg=$(guard_version "$target_version") && return 0
+  if (( ! switch )); then
+    now=$(installed_package "$installed_name") || now=" $installed"
+    now=${now#* }
+    # nothing_newer, unless the recipe reaches the version the panel showed
+    # and the app has not: then an epoch installed, or a pkgrel above the
+    # recipe's, is what stops Update, and guard_version's message names it.
+    if panel_reached "$now" || newer "$shown" "$(upstream_part "$target_version")"; then
+      nothing_newer "$now" "omarchy-pkgs' recipe reaches $target_version" "the vendor's feed shows"
+    fi
   fi
+  refuse "$msg; nothing to do"
 }
 
 # pacman -U reads the package from a root-owned copy: the verified file in
@@ -464,7 +552,7 @@ unstage() {
 
 # Builds the recipe in the current directory, checks the result and installs it.
 build_and_install() {
-  local want=$1 list files f line msg sum match=""
+  local want=$1 list files f line msg sum now match=""
   list=$(mkpkg --packagelist) || die "makepkg --packagelist failed"
   mapfile -t files <<<"$list"
   for f in "${files[@]}"; do
@@ -493,7 +581,22 @@ build_and_install() {
   sum=$(sha256sum -- "$match" | cut -d' ' -f1) || die "cannot read $match"
   line=$(pacman -Qp -- "$match") || die "cannot read $match"
   [[ $line == "$want $target_version" ]] || die "built package is '$line', expected '$want $target_version'"
-  msg=$(guard_version "$target_version") || die "$msg; not installing"
+  if ! msg=$(guard_version "$target_version"); then
+    # Something else installed this version or a newer one while makepkg
+    # built, which can take many minutes (omarchy update, from the [omarchy]
+    # repo). Once that reached the version the panel showed, the build has
+    # nothing left to install and goes with its files, as after an install.
+    now=$(installed_package "$installed_name") || now=" $installed"
+    if (( ! switch )) && panel_reached "${now#* }"; then
+      rm -f -- "${files[@]}"
+      clean_build_tree
+      clean_sources
+      started=0
+      cd /
+      already_installed "${now#* }"
+    fi
+    die "$msg; not installing"
+  fi
   show_switch "$match"
   stage_and_install "$match" "$want $target_version" sha256 "$sum"
   clean_after_install "${files[@]}"
@@ -517,7 +620,8 @@ clean_after_install() {
   echo "Removed the installed package file from $PKGDEST."
 }
 
-# After pacman -U succeeded: the sources this recipe downloaded go too. They
+# After pacman -U succeeded, or something else installed the version built
+# (build_and_install): the sources this recipe downloaded go too. They
 # are the installed version's, so only a failed install (whose sources stay,
 # for the retry) could use them again. Of other files, only those downloaded
 # over a week ago go: a retry that late fetches again. Omarchy installs hold
@@ -616,28 +720,25 @@ drop_orphan_link() {
 # name and version, and pacman -U installs the local file under
 # LocalFileSigLevel. A package without a published digest is not installed.
 install_vendor_pkg() {
-  local latest url file line name ver now_line msg have sum algo want got feed_file
+  local latest url file line name ver now_line msg sum algo want got feed_file
   feed_file=$(mktemp "$cache_dir/.feed.XXXXXX")
   latest=$(feed_save=$feed_file feed_version "$app") || { rm -f "$feed_file"; die "the feed has no version"; }
   echo "Feed: $latest"
+  # An Update the feed has nothing newer for downloads nothing, so it ends
+  # here: the package's URL and its checksum (a second request, for some
+  # vendors) cannot fail it.
+  if (( ! switch )) && [[ -n $installed ]] && ! newer "$latest" "$(upstream_part "$installed")"; then
+    rm -f "$feed_file"
+    nothing_newer "$installed" "the vendor's feed gives $latest now" "it gave at the last check"
+  fi
   url=$(vendor_pkg_url "$app" "$latest") || { rm -f "$feed_file"; die "the vendor publishes no https $pkg package for $(uname -m)"; }
   echo "Vendor package: $url"
   sum=$(vendor_checksum "$app" "$url" "$latest" "$feed_file") || { rm -f "$feed_file"; die "no published checksum for ${url##*/}; not downloading"; }
   rm -f "$feed_file"
   read -r algo want <<<"$sum"
   echo "Published $algo: $want"
-  msg=""
-  if [[ -n $installed ]]; then
-    have=$(upstream_part "$installed")
-    if (( switch )); then
-      if newer "$have" "$latest"; then msg="$latest is older than the installed $installed_name $installed"; fi
-    elif ! newer "$latest" "$have"; then
-      msg="$latest is not newer than the installed $installed_name $installed"
-    fi
-  fi
-  if [[ -n $msg ]]; then
-    (( prepare )) && { echo "Would refuse: $msg"; return 0; }
-    die "$msg; nothing to do"
+  if (( switch )) && [[ -n $installed ]] && newer "$(upstream_part "$installed")" "$latest"; then
+    refuse "$latest is older than the installed $installed_name $installed; nothing to do"
   fi
   file=$PKGDEST/${url##*/}
   started=1
@@ -707,8 +808,7 @@ install_mise() {
       [[ $request == latest ]] && die "$label is held back at $installed by your mise settings ($now exists); mise up would not move it. See mise settings."
       die "$label is held at $installed by its mise request '$request' ($now exists); mise up would not move it. Change the request with mise use."
     fi
-    echo "$label $installed is the newest mise up can install."
-    exit 0
+    nothing_newer "$installed" "mise up keeps $label at $installed" "mise showed at the last check"
   fi
   echo "mise up -- $tool would install $target"
   if (( prepare )); then
