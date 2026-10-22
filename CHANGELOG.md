@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.6 (unreleased)
+
+- The panel rereads installed versions between checks, with no network: when it opens (or it runs the full check, when one is due) and every 5 minutes (`bin/omabump-check --local`). An app updated outside Omabump, by `omarchy update` or an Omarchy wrapper updating a mise CLI on launch, no longer keeps offering an Update that is already installed. A version the refresh cannot judge alone shows "Not checked yet" and starts one full check. status.json gains `inventoryAt`; a check that meets a local refresh waits for it.
+- Update no longer ends in a red "Failed" when the version the panel offered is already installed: it says so, refreshes the panel and succeeds. When the route cannot reach the version the panel showed, it fails naming both versions. On vendor rows, a missing checksum no longer fails an Update with nothing to download. `--prepare` prints the decision and stops where a real run would.
+- T3 Code: Omarchy's migration 1792345511 replaced the t3code-bin package with T3 Code's self-updating app, so its row went with the package.
+
 ## 0.1.5 (2026-10-20)
 
 - Update is off for voxtype-bin until omarchy-pkgs#937 is merged and pinned. Its recipe's root install script hands the active backend from `pre_upgrade` to `post_upgrade` through `/tmp/.voxtype-backend-upgrade`, and another local user can plant that file to have their own executable installed as `/usr/bin/voxtype` (reported in the marketplace review, omacom/omarchy-plugin-marketplace#10910). The row still shows its versions and notifies; Update and Ask agent are gone, and the row says why.
