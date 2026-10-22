@@ -268,7 +268,7 @@ Panel {
   // Installed under another package name at a version the canonical package
   // matches: replace it in a terminal, where pacman asks first.
   function switchApp(app) {
-    if (!app || app.switchable !== true || !root.bar) return
+    if (!Model.switchable(app) || !root.bar) return
     var inner = Util.shellQuote(checker.installScript) + " --switch " + Util.shellQuote(app.pkg)
     root.bar.run("omarchy-launch-floating-terminal-with-presentation " + Util.shellQuote(inner))
     root.close()
@@ -880,9 +880,9 @@ Panel {
     property var app: null
     property int rowIndex: 0
     readonly property bool hasUpdate: !!app && app.updateAvailable === true
-    readonly property bool updatable: hasUpdate && app.installable === true
+    readonly property bool updatable: Model.updatable(app)
     readonly property bool askable: Model.askable(app)
-    readonly property bool switchable: !!app && app.switchable === true && !updatable
+    readonly property bool switchable: Model.switchable(app) && !updatable
     readonly property bool showAction: hasCursor && (updatable || askable || switchable)
     readonly property bool muted: Model.isMuted(checker.mutedApps, app)
     readonly property bool quiet: Model.isQuiet(checker.mutedApps, checker.skippedVersions, app)

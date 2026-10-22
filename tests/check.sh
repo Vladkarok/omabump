@@ -666,7 +666,8 @@ JSON
 loc_status() {
   jq -c '.apps |= map({label: "", installedName: "", installed: "", latest: "", versionFrom: "feed", updateAvailable: false,
     installable: true, error: "", note: "", stale: false, switchable: false, recipe: "", recipeCommit: "", request: "",
-    muted: false, skipped: false, unchecked: false, held: false, omarchyUpdate: false, blocked: false, icon: "", iconLight: ""} + .)' \
+    muted: false, skipped: false, unchecked: false, held: false, omarchyUpdate: false, blocked: false, selfUpdating: false,
+    icon: "", iconLight: ""} + .)' \
     >"$run_dir/fixture.json" <<'JSON'
 {"schemaVersion": 1, "checkedAt": "2026-01-01T00:10:00+00:00", "checking": false, "startedAt": "2026-01-01T00:09:00+00:00",
  "inventoryAt": "2026-01-01T00:09:00+00:00", "runError": "", "omarchyPkgs": {"commit": "", "following": false, "error": "", "note": ""},
@@ -883,3 +884,167 @@ same "while a check runs, inventoryAt stays the last one's" '2026-01-01T00:09:00
 same "--local and the checks around it leave no scratch files" '' "$(leftovers)"
 rm -f "$run_dir/config/omarchy/omabump/apps.json" "$run_state/status.json" "$run_dir/fixture.json" "$run_dir/pkgs" \
   "$run_dir/mise-ls.json" "$run_dir/held" "$run_dir/go"
+
+# --- an app installed as its self-updating AppImage -----------------------------------------
+
+# T3 Code as the shipped table has it, its feed a command feed of the
+# user's (ai_feed: 0.1.1 unless given), its AppImage where Omarchy puts it
+# (ai_put: the version its desktop entry names, none for ""). The AppImage
+# is a script that leaves a mark if anything runs it. The fake 7z first on
+# PATH "extracts" the entry from the file next to it, <AppImage>.desktop,
+# when asked as appimage_version asks, and notes each call in 7z.log; the
+# fake stat (statbin, put first by a test) answers $OMABUMP_TEST_STAT; no7z
+# has every command on PATH but 7z, for a machine without 7zip.
+ai_file=$run_dir/home/.local/share/t3code/T3-Code.AppImage
+mkdir -p "${ai_file%/*}" "$run_dir/7zbin" "$run_dir/statbin" "$run_dir/no7z"
+cat >"$run_dir/7zbin/7z" <<'EOF'
+#!/bin/sh
+echo "7z $*" >>"$OMABUMP_TEST_7Z"
+[ "$1 $2 $3 $4 $5 $7" = "e -so -r- -x!*/* -- *.desktop" ] || exit 7
+cat "$6.desktop" 2>/dev/null || exit 2
+EOF
+printf '#!/bin/sh\necho "$OMABUMP_TEST_STAT"\n' >"$run_dir/statbin/stat"
+chmod +x "$run_dir/7zbin/7z" "$run_dir/statbin/stat"
+IFS=: read -ra ai_dirs <<<"$PATH"
+for d in "${ai_dirs[@]}"; do
+  [[ -d $d ]] || continue
+  find "$d" -maxdepth 1 \( -type f -o -type l \) ! -name 7z ! -name 7za ! -name 7zz ! -name 7zr \
+    -exec ln -s -t "$run_dir/no7z" -- {} + 2>/dev/null
+done
+ai_feed() {
+  jq -cn --arg v "${1:-0.1.1}" '[{pkg: "t3code-bin", feed: {type: "command", command: "echo \($v)"}}]' \
+    >"$run_dir/config/omarchy/omabump/apps.json"
+}
+ai_put() {
+  rm -rf "$ai_file"
+  printf '#!/bin/sh\n: >"%s/appimage-ran"\n' "$run_dir" >"$ai_file"
+  chmod +x "$ai_file"
+  if [[ -n $1 ]]; then printf '[Desktop Entry]\nName=T3 Code\nX-AppImage-Version=%s\n' "$1"
+  else printf '[Desktop Entry]\nName=T3 Code\n'; fi >"$ai_file.desktop"
+}
+# A check (or with --local a local refresh) with what loc_pkgs installed;
+# PATH is $ai_bins when set. $? is its exit.
+ai_run() {
+  : >"$run_dir/7z.log"
+  : >"$run_dir/net.log"
+  env "${run_env[@]}" PATH="${ai_bins:-$run_dir/7zbin:$run_dir/bin:$PATH}" OMABUMP_TEST_PKGS="$run_dir/pkgs" \
+    OMABUMP_TEST_7Z="$run_dir/7z.log" timeout -k 5 120 "$root/bin/omabump-check" --no-notify "$@" >/dev/null 2>"$run_dir/ai.err"
+}
+ai_row() { run_status ".apps[] | select(.pkg == \"t3code-bin\") | $1"; }
+ai_fields='"\(.installedName)|\(.installed)|\(.selfUpdating)|\(.installable)|\(.switchable)|\(.updateAvailable)|\(.unchecked)|\(.latest)|\(.versionFrom)|\(.error)|\(.note)"'
+ai_note="Updates itself: open T3 Code to update"
+
+run_settings ', "showMise": "false"'
+rm -f "$run_state/status.json" "$run_state/notified.json"
+loc_pkgs ''
+ai_feed
+ai_put 0.1.0
+ai_run; rc=$?
+same "AppImage: no package, the AppImage's row: its version, no route, the feed's update" \
+  "0|~/.local/share/t3code/T3-Code.AppImage|0.1.0|true|false|false|true|false|0.1.1|feed||$ai_note" "$rc|$(ai_row "$ai_fields")"
+same "AppImage: no omarchy-pkgs read for it, 7z asked once" '|1' "$(grep '^git' "$run_dir/net.log")|$(wc -l <"$run_dir/7z.log")"
+same "AppImage: every row says selfUpdating" 0 "$(run_status '[.apps[] | select(.selfUpdating | type != "boolean")] | length')"
+ai_put 0.1.1
+ai_run
+same "AppImage: at the feed's version, current" "false|false|$ai_note" "$(ai_row '"\(.updateAvailable)|\(.unchecked)|\(.note)"')"
+ai_feed 0.2.0
+ai_put 0.1.1-nightly.20261019.1
+ai_run
+same "AppImage: a nightly is compared with no stable release: no update, unchecked, the note says why" \
+  "0.1.1-nightly.20261019.1|false|true|0.2.0|Pre-release build, not compared with the feed's stable releases; $ai_note" \
+  "$(ai_row '"\(.installed)|\(.updateAvailable)|\(.unchecked)|\(.latest)|\(.note)"')"
+ai_feed
+ai_put ''
+ai_run
+# shellcheck disable=SC2088 # the path as apps.json writes it
+same "AppImage: no version in it: unknown, unchecked, the note says so" \
+  "~/.local/share/t3code/T3-Code.AppImage||false|true|Version unknown: 7z could not read it from the AppImage; $ai_note" \
+  "$(ai_row '"\(.installedName)|\(.installed)|\(.updateAvailable)|\(.unchecked)|\(.note)"')"
+ai_put 0.1.0
+ai_bins=$run_dir/bin:$run_dir/no7z ai_run; rc=$?
+same "AppImage: without 7z the row still shows, its version unknown, the note says how to get it" \
+  "0|true||false|true|Version unknown: install 7zip to read it (sudo pacman -S --needed 7zip); $ai_note" \
+  "$rc|$(ai_row '"\(.selfUpdating)|\(.installed)|\(.updateAvailable)|\(.unchecked)|\(.note)"')"
+loc_pkgs 't3code-bin 0.1.0-1'
+ai_run
+same "AppImage: the package wins when pacman has it, and 7z is not asked" 't3code-bin|0.1.0-1|false|' \
+  "$(ai_row '"\(.installedName)|\(.installed)|\(.selfUpdating)"')|$(cat "$run_dir/7z.log")"
+loc_pkgs ''
+
+# Files Omabump does not read: the row is gone, as with no AppImage at all.
+ai_put 0.1.0
+mv "$ai_file" "$run_dir/elsewhere.AppImage"
+cp "$ai_file.desktop" "$run_dir/elsewhere.AppImage.desktop"
+ln -s "$run_dir/elsewhere.AppImage" "$ai_file"
+ai_run
+same "AppImage: a symlink is not read: no row, 7z not asked" '|' "$(ai_row .pkg)|$(cat "$run_dir/7z.log")"
+rm -f "$ai_file"
+mkdir "$ai_file"
+ai_run
+same "AppImage: nor a directory" '' "$(ai_row .pkg)"
+ai_put 0.1.0
+OMABUMP_TEST_STAT="regular file/$(( $(id -u) + 1 ))/1000" ai_bins=$run_dir/statbin:$run_dir/7zbin:$run_dir/bin:$PATH ai_run
+same "AppImage: nor a file of another user" '' "$(ai_row .pkg)"
+OMABUMP_TEST_STAT="regular file/$(id -u)/3000000000" ai_bins=$run_dir/statbin:$run_dir/7zbin:$run_dir/bin:$PATH ai_run
+same "AppImage: nor one over 2 GiB" '' "$(ai_row .pkg)"
+OMABUMP_TEST_STAT="regular file/$(id -u)/1000" ai_bins=$run_dir/statbin:$run_dir/7zbin:$run_dir/bin:$PATH ai_run
+same "AppImage: a file of yours within the bound is" t3code-bin "$(ai_row .pkg)"
+jq -cn '[{pkg: "t3code-bin", appImage: "~/../t3code/T3-Code.AppImage", feed: {type: "command", command: "echo 0.1.1"}}]' \
+  >"$run_dir/config/omarchy/omabump/apps.json"
+ai_run
+same "AppImage: an appImage path the rules refuse drops the entry, and says so" '|1' \
+  "$(ai_row .pkg)|$(grep -c '^ignoring app "t3code-bin"' "$run_dir/ai.err")"
+ai_feed
+
+# --local: the AppImage's own updater moves it between checks.
+ai_put 0.1.0
+ai_run
+ai_put 0.1.1
+ai_run --local; rc=$?
+same "--local: the AppImage updated itself to the newest known: no update, no check needed, no network" \
+  "0|0.1.1|false|false|$ai_note|" "$rc|$(ai_row '"\(.installed)|\(.updateAvailable)|\(.unchecked)|\(.note)"')|$(cat "$run_dir/net.log")"
+ai_put 0.1.0
+ai_run --local; rc=$?
+same "--local: back below the newest known: the update again" "0|0.1.0|true" "$rc|$(ai_row '"\(.installed)|\(.updateAvailable)"')"
+ai_put 0.1.2
+ai_run --local; rc=$?
+same "--local: past the newest known: a check asked for, no update meanwhile" "$local_full|0.1.2|false" \
+  "$rc|$(ai_row '"\(.installed)|\(.updateAvailable)"')"
+ai_put 0.1.0
+ai_run
+ai_put 0.1.1-nightly.20261019.1
+ai_run --local; rc=$?
+same "--local: a nightly now: unchecked, no update, the note says why" \
+  "0|false|true|Pre-release build, not compared with the feed's stable releases; $ai_note" \
+  "$rc|$(ai_row '"\(.updateAvailable)|\(.unchecked)|\(.note)"')"
+rm -f "$ai_file"
+ai_run --local; rc=$?
+same "--local: the AppImage removed: its row goes" '0|' "$rc|$(ai_row .pkg)"
+ai_put 0.1.0
+ai_run --local; rc=$?
+same "--local: an AppImage since the last check: an unchecked row, and a check asked for" \
+  "$local_full|~/.local/share/t3code/T3-Code.AppImage|0.1.0|true|false|true|Not checked yet" \
+  "$rc|$(ai_row '"\(.installedName)|\(.installed)|\(.selfUpdating)|\(.updateAvailable)|\(.unchecked)|\(.note)"')"
+ai_run
+loc_pkgs 't3code-bin 0.1.1-1'
+ai_run --local; rc=$?
+same "--local: the package installed over the AppImage: a check asked for, no route meanwhile" \
+  "$local_full|t3code-bin|0.1.1-1|false|false|false|true|Not checked yet" \
+  "$rc|$(ai_row '"\(.installedName)|\(.installed)|\(.selfUpdating)|\(.installable)|\(.updateAvailable)|\(.unchecked)|\(.note)"')"
+ai_run
+loc_pkgs ''
+ai_run --local; rc=$?
+same "--local: the package removed, the AppImage left: a check asked for" \
+  "$local_full|~/.local/share/t3code/T3-Code.AppImage|0.1.0|true|false" \
+  "$rc|$(ai_row '"\(.installedName)|\(.installed)|\(.selfUpdating)|\(.installable)"')"
+# Every run here passes --no-notify, so the announcement is read from the
+# script: once per version, as for any row (announce_action), and saying
+# the app updates itself.
+check "AppImage: its notification says the app updates itself" \
+  grep -q '^    \[\[ $self_updating == false \]\] || body="Installed: $installed. $label updates itself: open it to update."$' \
+  "$root/bin/omabump-check"
+check "AppImage: nothing ever ran it" test ! -e "$run_dir/appimage-ran"
+same "AppImage: the runs leave no scratch files" '' "$(leftovers)"
+rm -rf "$run_dir/home/.local/share/t3code" "$run_dir/elsewhere.AppImage" "$run_dir/elsewhere.AppImage.desktop" "$run_dir/no7z" \
+  "$run_dir/7zbin" "$run_dir/statbin" "$run_dir/7z.log" "$run_dir/ai.err" "$run_dir/pkgs"
+rm -f "$run_dir/config/omarchy/omabump/apps.json" "$run_state/status.json"

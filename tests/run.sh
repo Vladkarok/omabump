@@ -171,7 +171,132 @@ same "recipe_fetch: a recipeFetch outside refs/ is refused" "recipeFetch '--uplo
   "$(recipe_fetch 0123456789abcdef0123456789abcdef01234567 '{"recipeFetch": "--upload-pack=x"}' 2>&1 >/dev/null | grep recipeFetch)"
 echo '{"pkg": "x"}' >"$user_apps"
 same "apps_table: a user file that is not an array is ignored" 'a b c' "$(apps_table 2>/dev/null | jq -r 'map(.pkg) | join(" ")')"
+cat >"$user_apps" <<'EOF'
+[
+  {"pkg": "ai-ok", "source": "omarchy", "appImage": "~/.local/share/x/X-1_2+3.AppImage"},
+  {"pkg": "ai-none", "source": "indicator", "appImage": null},
+  {"pkg": "ai-up", "source": "omarchy", "appImage": "~/../x/X.AppImage"},
+  {"pkg": "ai-abs", "source": "omarchy", "appImage": "/home/u/X.AppImage"},
+  {"pkg": "ai-user", "source": "omarchy", "appImage": "~root/X.AppImage"},
+  {"pkg": "ai-blank", "source": "omarchy", "appImage": "~/a b/X.AppImage"},
+  {"pkg": "ai-dot", "source": "omarchy", "appImage": "~/./X.AppImage"},
+  {"pkg": "ai-num", "source": "vendor-pkg", "appImage": 5},
+  {"pkg": "mise:ai", "source": "mise", "tool": "ai", "appImage": "~/X.AppImage"}
+]
+EOF
+same "apps_table: an appImage is a ~/ path Omabump accepts, and never on a mise row" 'a b c ai-ok ai-none' \
+  "$(apps_table 2>/dev/null | jq -r 'map(.pkg) | join(" ")')"
+same "apps_table: each entry with another appImage is named on stderr, and says why" 7 \
+  "$(apps_table 2>&1 >/dev/null | grep -c '^ignoring app .*an appImage that is not a ~/ path Omabump accepts')"
 rm -f "$user_apps"
+# appimage_path_ok and apps_table's appimage_ok take the same paths.
+# shellcheck disable=SC2088 # paths as apps.json writes them, ~ and all
+ai_paths=('~/x' '~/.local/share/t3code/T3-Code.AppImage' '~/a/b+c_d-e.f' '~/.x' '~' '~/' '~/a/' '~//a' '~/.' '~/..'
+  '~/a/./b' '~/a/.' '~/a..b' '/x' 'x' '~root/x' '~/a b' '~/é' $'~/a\n' "~/$(printf 'a%.0s' {1..198})"
+  "~/$(printf 'a%.0s' {1..199})")
+same "appimage_path_ok and apps_table agree on every path" \
+  "$(for p in "${ai_paths[@]}"; do if appimage_path_ok "$p"; then echo true; else echo false; fi; done)" \
+  "$(jq -rn "$jq_name_rules"' $ARGS.positional[] | appimage_ok' --args "${ai_paths[@]}")"
+same "appimage_path_ok: the paths it takes" 'true true true true false false false false false false false false false false false false false false false true false' \
+  "$(for p in "${ai_paths[@]}"; do if appimage_path_ok "$p"; then echo true; else echo false; fi; done | paste -sd' ')"
+
+# --- apps that update themselves --------------------------------------------------
+
+# An app whose appImage is ~/apps/X.AppImage under $ai_home. The AppImage is
+# a script that leaves a mark if anything runs it.
+ai_home=$scratch/ai-home ai_bin=$scratch/ai-bin
+mkdir -p "$ai_home/apps" "$ai_bin"
+ai_app='{"pkg": "x", "source": "omarchy", "appImage": "~/apps/X.AppImage"}'
+printf '#!/bin/sh\n: >"%s/ai-ran"\n' "$scratch" >"$ai_home/apps/X.AppImage"
+chmod +x "$ai_home/apps/X.AppImage"
+same "appimage_file: a regular file of yours, under HOME" "$ai_home/apps/X.AppImage" "$(HOME=$ai_home appimage_file "$ai_app")"
+refuse "appimage_file: an app without appImage" appimage_file '{"pkg": "x", "source": "omarchy"}'
+same "appimage_file: a path the rules refuse" '' "$(HOME=$ai_home appimage_file '{"appImage": "~/apps/../apps/X.AppImage"}')"
+mv "$ai_home/apps/X.AppImage" "$ai_home/apps/real"
+ln -s real "$ai_home/apps/X.AppImage"
+same "appimage_file: a symlink is not read, even to a file of yours" '' "$(HOME=$ai_home appimage_file "$ai_app")"
+rm "$ai_home/apps/X.AppImage"
+mkdir "$ai_home/apps/X.AppImage"
+same "appimage_file: nor a directory" '' "$(HOME=$ai_home appimage_file "$ai_app")"
+rmdir "$ai_home/apps/X.AppImage"
+same "appimage_file: nor a file that is not there" '' "$(HOME=$ai_home appimage_file "$ai_app")"
+mv "$ai_home/apps/real" "$ai_home/apps/X.AppImage"
+# Another owner and a size past the bound, as stat would describe them.
+same "appimage_file: a file of another user is not read" '' \
+  "$(stat() { echo "regular file/$(( UID + 1 ))/1000"; }; HOME=$ai_home appimage_file "$ai_app")"
+same "appimage_file: nor one larger than appimage_max_bytes" '' \
+  "$(stat() { echo "regular file/$UID/$(( appimage_max_bytes + 1 ))"; }; HOME=$ai_home appimage_file "$ai_app")"
+same "appimage_file: at the bound it is" "$ai_home/apps/X.AppImage" \
+  "$(stat() { echo "regular file/$UID/$appimage_max_bytes"; }; HOME=$ai_home appimage_file "$ai_app")"
+
+# A fake 7z that "extracts" the desktop entry from the file next to the
+# AppImage, <AppImage>.desktop, when asked as appimage_version asks.
+cat >"$ai_bin/7z" <<'EOF'
+#!/bin/sh
+[ "$1 $2 $3 $4 $5 $7" = "e -so -r- -x!*/* -- *.desktop" ] || exit 7
+cat "$6.desktop" 2>/dev/null || exit 2
+EOF
+chmod +x "$ai_bin/7z"
+# ai_version <desktop entry text>: what appimage_version reads from it.
+ai_version() { printf '%s' "$1" >"$ai_home/apps/X.AppImage.desktop"; (PATH=$ai_bin:$PATH appimage_version "$ai_home/apps/X.AppImage"); }
+same "appimage_version: X-AppImage-Version of the desktop entry" 0.1.0 \
+  "$(ai_version $'[Desktop Entry]\nName=T3 Code\nX-AppImage-Version=0.1.0\nComment=x\n')"
+same "appimage_version: blanks around =, a CRLF line, a pre-release" 0.1.1-nightly.20261019.1 \
+  "$(ai_version $'[Desktop Entry]\r\nX-AppImage-Version = 0.1.1-nightly.20261019.1 \r\n')"
+same "appimage_version: only the [Desktop Entry] group counts" 2.0 \
+  "$(ai_version $'[Desktop Action x]\nX-AppImage-Version=9.9\n[Desktop Entry]\nX-AppImage-Version[de]=8.8\nX-AppImage-Version=2.0\n')"
+for entry in $'[Desktop Entry]\nName=T3 Code\n' $'X-AppImage-Version=1.0\n' $'[Desktop Entry]\nX-AppImage-Version=1.0\nX-AppImage-Version=1.1\n' \
+  $'[Desktop Entry]\nX-AppImage-Version=1.0\n[Desktop Entry]\nX-AppImage-Version=1.0\n' $'[Desktop Entry]\nX-AppImage-Version=1 0\n' \
+  $'[Desktop Entry]\nX-AppImage-Version=../1\n' $'[Desktop Entry]\nX-AppImage-Version=\n' ''; do
+  same "appimage_version: no version from $(jq -Rsc . <<<"$entry")" '' "$(ai_version "$entry")"
+done
+same "appimage_version: an entry of 64 KiB is read" 1.0 \
+  "$(ai_version "$(printf '[Desktop Entry]\nX-AppImage-Version=1.0\n%065400d\n' 0)")"
+same "appimage_version: a larger one is no version" '' \
+  "$(ai_version "$(printf '[Desktop Entry]\nX-AppImage-Version=1.0\n%065600d\n' 0)")"
+ai_version $'[Desktop Entry]\nX-AppImage-Version=0.1.0\n' >/dev/null
+same "appimage_version: without 7z, no version" '' "$(PATH=$scratch/no-such-dir appimage_version "$ai_home/apps/X.AppImage")"
+# shellcheck disable=SC2088 # the path as apps.json writes it
+same "appimage_installed: the appImage as apps.json writes it, and the version" '~/apps/X.AppImage 0.1.0' \
+  "$(PATH=$ai_bin:$PATH HOME=$ai_home appimage_installed "$ai_app")"
+# shellcheck disable=SC2088 # the path as apps.json writes it
+check "self_updating_name: the path installed_app gives" self_updating_name '~/apps/X.AppImage'
+refuse "self_updating_name: never a package or mise name" self_updating_name x-bin
+same "installed_app: an app installed as its AppImage" 'omarchy ~/apps/X.AppImage 0.1.0' \
+  "$(pacman() { return 1; }; PATH=$ai_bin:$PATH HOME=$ai_home installed_app "$ai_app")"
+same "installed_app: its package wins" 'omarchy x 1.0-1' \
+  "$(pacman() { [[ $3 == x ]] && echo 'x 1.0-1'; }; PATH=$ai_bin:$PATH HOME=$ai_home installed_app "$ai_app")"
+same "installed_app: no package and no AppImage, not installed" 'not installed' \
+  "$(pacman() { return 1; }; HOME=$scratch/no-such-home installed_app "$ai_app" || echo 'not installed')"
+ai_version $'[Desktop Entry]\n' >/dev/null
+# shellcheck disable=SC2088 # the path as apps.json writes it
+same "appimage_installed: a version it cannot read is empty" '~/apps/X.AppImage |' \
+  "$(PATH=$ai_bin:$PATH HOME=$ai_home appimage_installed "$ai_app" | sed 's/$/|/')"
+
+# The real 7z, when it is here, on a zip named like an AppImage: only the
+# .desktop file at the top is read, not one further down, nor what a
+# directory named *.desktop holds; two at the top are no version.
+if command -v 7z >/dev/null; then
+  ai_zip() {
+    python3 -I - "$ai_home/apps/X.AppImage" "$@" <<'EOF'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "w") as z:
+    for spec in sys.argv[2:]:
+        name, _, version = spec.partition("=")
+        z.writestr(name, "[Desktop Entry]\nX-AppImage-Version=%s\n" % version if version else "x\n")
+EOF
+    appimage_version "$ai_home/apps/X.AppImage"
+  }
+  same "appimage_version (real 7z): the top-level entry, not a nested one or a directory's" 1.0 \
+    "$(ai_zip usr/share/applications/a.desktop=9.9 top.desktop=1.0 dir.desktop/inner=8.8)"
+  same "appimage_version (real 7z): two top-level entries are no version" '' "$(ai_zip a.desktop=1.0 b.desktop=1.0)"
+  same "appimage_version (real 7z): a file that is no archive is no version" '' \
+    "$(printf 'not an archive\n' >"$ai_home/apps/X.AppImage"; appimage_version "$ai_home/apps/X.AppImage")"
+else
+  pass "appimage_version (real 7z) (skipped: 7z is not installed)"
+fi
+check "appimage_version: nothing ran the AppImage" test ! -e "$scratch/ai-ran"
+rm -rf "$ai_home" "$ai_bin"
 
 # --- discovered agents in the app table -----------------------------------------
 

@@ -110,17 +110,29 @@ pkg_name_ok() { [[ $1 =~ ^[a-z0-9@_+][a-z0-9@._+-]*$ ]]; }
 app_id_ok() { pkg_name_ok "$1" || { [[ $1 == mise:* ]] && pkg_name_ok "${1#mise:}"; } || [[ $1 == "$self_pkg" ]]; }
 tool_name_ok() { [[ $1 =~ ^[A-Za-z0-9@_+:][A-Za-z0-9@._+:/-]*$ && $1 != *..* ]]; }
 ref_ok() { [[ $1 =~ ^refs/[A-Za-z0-9._/-]+$ && $1 != *..* ]]; }
+# An app's "appImage" (see installed_app): a file under your home, written
+# ~/<path>, at most 200 characters of letters, digits and ._+- with no
+# "." or ".." component (and no ".." at all, as in the names above). It
+# reaches status.json as written, so it has no blank either.
+appimage_path_ok() {
+  local re='^~(/[A-Za-z0-9._+-]+)+$'
+  [[ ${#1} -le 200 && $1 =~ $re && $1 != *..* && $1 != */. && $1 != */./* ]]
+}
 # The same rules as jq definitions, for apps_table. \z, not $: in jq's
 # regexes $ also matches before a final newline, which bash's =~ refuses.
+# A mise row is mise's tool, never a file: it takes no appImage.
 jq_name_rules='
   def pkg_ok: type == "string" and test("^[a-z0-9@_+][a-z0-9@._+-]*\\z");
   def id_ok: pkg_ok or (type == "string" and startswith("mise:") and (.[5:] | pkg_ok));
   def tool_ok: type == "string" and test("^[A-Za-z0-9@_+:][A-Za-z0-9@._+:/-]*\\z") and (contains("..") | not);
+  def appimage_ok: type == "string" and length <= 200 and test("^~(/[A-Za-z0-9._+-]+)+\\z")
+    and (contains("..") | not) and (test("/\\.(/|\\z)") | not);
   def entry_ok: (.pkg | id_ok) and ((.pkg | pkg_ok) or .source == "mise")
     and (.source | IN("omarchy", "vendor-pkg", "mise", "indicator"))
     and ((.installed // []) | type == "array" and all(.[]; pkg_ok))
     and ([.tool // empty] | flatten | all(.[]; tool_ok))
-    and ((.updateBlocked // "") | type == "string" and length <= 200);'
+    and ((.updateBlocked // "") | type == "string" and length <= 200)
+    and (.appImage == null or (.source != "mise" and (.appImage | appimage_ok)));'
 
 # A version as mise or a feed prints it, for a skipped version: what
 # version_ok allows plus "-" (mise versions such as 1.0.0-beta.1). Model.js
@@ -320,7 +332,8 @@ discover_agents() {
 # additions after, new discovered rows last. An entry whose feed the user's
 # file set carries "_userFeed": true (never taken from either file), which
 # feed_version requires for a command feed. An entry whose pkg, installed
-# names or tool names break the rules above is dropped with a line on stderr.
+# names, tool names or appImage break the rules above is dropped with a line
+# on stderr.
 #
 # A command is off when the user disabled the entry "mise:<command>" or an
 # entry whose "command" it is: every row with that command is hidden and a
@@ -368,7 +381,7 @@ apps_table() {
   rm -f "$disc"
   (( rc == 0 )) || return 1
   jq -r "$jq_name_rules"' .[] | select(entry_ok | not)
-    | "ignoring app \(.pkg | tojson): a pkg, installed or tool name with characters Omabump does not accept, or a source other than omarchy, vendor-pkg, mise or indicator"' <<<"$merged" >&2
+    | "ignoring app \(.pkg | tojson): a pkg, installed or tool name with characters Omabump does not accept, an appImage that is not a ~/ path Omabump accepts, or a source other than omarchy, vendor-pkg, mise or indicator"' <<<"$merged" >&2
   jq -c "$jq_name_rules"' map(select(entry_ok))' <<<"$merged"
 }
 
@@ -733,8 +746,81 @@ mise_active() {
     . as $ls | $app | active($ls) | select(. != null) | "\(.key) \(.version)"' <<<"$mise_ls_json"
 }
 
+# --- apps that update themselves ------------------------------------------------
+#
+# An app may be installed as its vendor's self-updating AppImage instead of
+# a package: Omarchy's migration 1792345511 replaced the t3code-bin package
+# with T3 Code's own AppImage, ~/.local/share/t3code/T3-Code.AppImage, and
+# its Install menu calls T3 Code installed once that file is there. The
+# app's "appImage" in apps.json names the file (appimage_path_ok). The app's
+# own updater replaces it, so Omabump only reads its version: the row has
+# no Update (bin/omabump-check, appimage_row) and the installer refuses one.
+
+# The largest AppImage read: an Electron app such as T3 Code is 150 to 300 MB.
+appimage_max_bytes=$(( 2 * 1024 * 1024 * 1024 ))
+
+# The full path of the file the app $1's appImage names, when it is one
+# Omabump reads: a regular file of yours, not a symlink, of at most
+# appimage_max_bytes. Fails otherwise.
+appimage_file() {
+  local rel file facts type uid size
+  rel=$(jq -r '.appImage | strings' <<<"$1")
+  appimage_path_ok "$rel" || return 1
+  file=$HOME/${rel#"~/"}
+  # stat without -L describes a symlink itself, not what it points to.
+  facts=$(stat -c '%F/%u/%s' -- "$file" 2>/dev/null) || return 1
+  IFS=/ read -r type uid size <<<"$facts"
+  [[ $type == "regular file" && $uid == "$UID" && $size =~ ^[0-9]{1,12}$ ]] || return 1
+  (( size <= appimage_max_bytes )) || return 1
+  echo "$file"
+}
+
+# The version the AppImage $1 says it is: X-AppImage-Version in the
+# [Desktop Entry] group of the one .desktop file at its top, where every
+# AppImage has its desktop entry. 7z (the 7zip package) extracts that file
+# to stdout without running anything: the top-level *.desktop entries
+# alone (-r-, and -x!*/* leaves out what a directory of that name holds),
+# within 20 s; one over 64 KiB is no desktop entry. The AppImage itself is
+# never run: --appimage-extract would mount it and run its own code. The
+# version is the vendor's as it is, a pre-release too
+# (0.1.1-nightly.20261019.1): skip_version_ok's rule, version_ok's plus
+# "-". Fails without 7z, or when there is not exactly one such entry with
+# one such version.
+appimage_version() {
+  local out v
+  command -v 7z >/dev/null || return 1
+  out=$(run_killable timeout -k 5 20 7z e -so -r- '-x!*/*' -- "$1" '*.desktop' </dev/null 2>/dev/null | head -c 65537) || return 1
+  # Bytes, not characters: the length in the C locale.
+  (( $(LC_ALL=C; echo "${#out}") <= 65536 )) || return 1
+  v=$(awk '
+    { sub(/\r$/, "") }
+    /^\[/ { group = $0; sub(/[ \t]+$/, "", group); if (group == "[Desktop Entry]") entries++; next }
+    group == "[Desktop Entry]" && /^X-AppImage-Version[ \t]*=/ { sub(/^[^=]*=[ \t]*/, ""); sub(/[ \t]+$/, ""); v = $0; found++ }
+    END { if (entries != 1 || found != 1) exit 1; print v }' <<<"$out") || return 1
+  skip_version_ok "$v" || return 1
+  echo "$v"
+}
+
+# Prints "<appImage as apps.json writes it> <version>" for an app installed
+# as its self-updating AppImage, the version empty when it cannot be read
+# (no 7z, or none in the file), or fails when the app has no such file.
+appimage_installed() {
+  local file version
+  file=$(appimage_file "$1") || return 1
+  version=$(appimage_version "$file") || version=""
+  echo "$(jq -r .appImage <<<"$1") $version"
+}
+
+# True for an installed name installed_app gives an AppImage: its path as
+# apps.json writes it, ~/<path>, which no package or mise tool name can be.
+# shellcheck disable=SC2088 # the text "~/" as apps.json has it, not your home
+self_updating_name() { [[ $1 == "~/"* ]]; }
+
 # Prints "<source> <installed name> <version>" for an app, or fails when it is
-# not installed.
+# not installed. The pacman package wins over the app's AppImage: Omarchy's
+# migration removes the package once the AppImage is in place, so both at
+# once is an install half done, or the package put back, and the package is
+# what Update knows.
 installed_app() {
   local app=$1 source line names
   source=$(jq -r '.source // ""' <<<"$app")
@@ -746,7 +832,7 @@ installed_app() {
     line="omabump $line"
   else
     mapfile -t names < <(jq -r '(.installed // [.pkg])[]' <<<"$app")
-    line=$(installed_package "${names[@]}") || return 1
+    line=$(installed_package "${names[@]}") || line=$(appimage_installed "$app") || return 1
   fi
   echo "$source $line"
 }

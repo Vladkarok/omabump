@@ -260,7 +260,8 @@ cat >"$ihome/.config/omarchy/omabump/apps.json" <<'EOF'
   {"pkg": "testpkg", "label": "Test Pkg", "source": "omarchy", "installed": ["testpkg", "testpkg-bin"]},
   {"pkg": "nocon", "label": "No Conflict", "source": "omarchy", "installed": ["nocon", "nocon-bin"]},
   {"pkg": "mise:testtool", "label": "Test Tool", "source": "mise", "tool": "testtool"},
-  {"pkg": "blockedapp", "label": "Blocked App", "source": "omarchy", "updateBlocked": "a known problem in its install script, see x#1"}
+  {"pkg": "blockedapp", "label": "Blocked App", "source": "omarchy", "updateBlocked": "a known problem in its install script, see x#1"},
+  {"pkg": "selfapp", "label": "Self App", "source": "omarchy", "appImage": "~/.local/share/selfapp/Self.AppImage"}
 ]
 EOF
 
@@ -272,6 +273,37 @@ same "install, updateBlocked: refuses" 1 "$irc"
 says "install, updateBlocked: says why" 'omabump: Update of Blocked App is off in Omabump: a known problem in its install script, see x#1'
 no_call "install, updateBlocked: nothing staged" 'sudo'
 no_call "install, updateBlocked: nothing built" 'makepkg'
+
+# --- an app installed as its self-updating AppImage ---------------------------------
+
+# Its package is not installed; the AppImage is a script that leaves a mark
+# if anything runs it. A staged copy an earlier Update recorded as left
+# stays: removing it would call sudo.
+mkdir -p "$ihome/.local/share/selfapp"
+printf '#!/bin/sh\n: >"%s/selfapp-ran"\n' "$it" >"$ihome/.local/share/selfapp/Self.AppImage"
+chmod +x "$ihome/.local/share/selfapp/Self.AppImage"
+for args in selfapp '--prepare selfapp' '--switch selfapp'; do
+  fresh
+  mkdir -p "$istaging" "$ileft"
+  : >"$istaging/selfapp-old.pkg.tar"
+  echo "$istaging/selfapp-old.pkg.tar" >"$ileft/selfapp"
+  # shellcheck disable=SC2086 # the arguments, split on purpose
+  inst $args
+  same "install $args, a self-updating app: refuses as other refusals do" 1 "$irc"
+  says "install $args, a self-updating app: says it updates itself, and which file it is" \
+    'omabump: Self App updates itself: open Self App to update it (it is installed as ~/.local/share/selfapp/Self.AppImage, which Omabump does not replace)'
+  no_call "install $args, a self-updating app: never calls sudo" 'sudo'
+  no_call "install $args, a self-updating app: nothing built" 'makepkg'
+  check "install $args, a self-updating app: the staged copy left stays" test -e "$istaging/selfapp-old.pkg.tar"
+done
+check "install, a self-updating app: nothing ran the AppImage" test ! -e "$it/selfapp-ran"
+# With its package installed, the package is what Update works on: the
+# installer's setup goes past the refusal (the route itself is not run here).
+fresh 'selfapp 1.0-1'
+# shellcheck disable=SC2016 # expanded by the child bash
+inst_src 'echo "$installed_name $installed"' selfapp
+same "install, an app with an appImage whose package is installed: the package, no refusal" '0|selfapp 1.0-1' "$irc|$iout"
+rm -rf "$ihome/.local/share/selfapp"
 
 # --- the vendor route ------------------------------------------------------------
 

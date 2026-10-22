@@ -35,6 +35,7 @@
       "type": "github-release",
       "repo": "pingdotgg/t3code"
     },
+    "appImage": "~/.local/share/t3code/T3-Code.AppImage",
     "icon": "assets/t3code.svg",
     "iconLight": "assets/t3code-light.svg"
   },

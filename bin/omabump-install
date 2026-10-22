@@ -15,6 +15,9 @@
 #   self        Omabump itself: its clone fast-forwarded to the release tag,
 #               after the log is shown and you answer y.
 #
+# An app installed as its self-updating AppImage (apps.json "appImage")
+# instead of its package is refused: the app updates itself.
+#
 #   omabump-install [--prepare] [--switch] <pkg>
 #
 # --switch replaces an app installed under another package name
@@ -68,6 +71,15 @@ app_id_ok "$pkg" || die "'$pkg' is not a package name Omabump accepts"
 # A discovered row's label comes from a menu file: shown in the terminal only
 # after term_safe, on one line.
 label=$(jq -r '.label // .pkg' <<<"$app" | term_safe | tr '\t\n' '  ' | sed 's/ *$//')
+
+# An app installed as its self-updating AppImage (apps.json appImage, its
+# package not installed) is updated by the app itself, which replaces the
+# file: nothing here may stage, build or call sudo for it, a staged copy an
+# earlier Update left included, so this comes before the app's lock.
+if jq -e '.appImage | strings' >/dev/null 2>&1 <<<"$app" \
+  && read -r _ installed_name _ < <(installed_app "$app") && self_updating_name "$installed_name"; then
+  die "$label updates itself: open $label to update it (it is installed as $installed_name, which Omabump does not replace)"
+fi
 
 # pacman -U reads the package from a root-owned copy in staging_dir
 # (stage_and_install), a running pacman holds pacman_lock, and bin_dir is
