@@ -345,18 +345,37 @@ refuse "run_killable: and the command it ran is stopped" kill -0 "${slept:-0}"
 
 # --- whole runs of omabump-check ----------------------------------------------------------
 
-# Fake pacman (only claude-desktop and foo-old installed), curl (every fetch
+# Fake pacman (only claude-desktop and foo-old installed, or with
+# $OMABUMP_TEST_PKGS set the "<name> <version>" lines of that file; with
+# $OMABUMP_TEST_Q_HOOK set, each -Q runs that shell command first),
+# pacman-conf (the database in $run_dir/pacman-db), curl (every fetch
 # fails), sudo (only looked for, never run), git (every call fails) and mise
 # (logs its calls, knows no tool; with $OMABUMP_TEST_HANG set, `mise ls
 # --json` hangs and notes its pid there, with $OMABUMP_TEST_LS_FAIL set it
-# fails). HOME, the XDG directories and
-# Omarchy's menu all point into $run_dir, and every run passes --no-notify.
+# fails, with $OMABUMP_TEST_LS_HOOK set it runs that shell command first,
+# with $OMABUMP_TEST_MISE_LS set it prints that file). curl and git
+# note each call in net.log, but the git config reads omabump-common makes
+# when it is sourced. HOME, the XDG directories and Omarchy's menu all point
+# into $run_dir, and every run passes --no-notify.
 run_dir=$scratch/check-run
-mkdir -p "$run_dir/bin" "$run_dir/home/.config/omarchy"
-printf '#!/bin/sh\n[ "$1" = -Q ] || exit 1\ncase $3 in\n  claude-desktop|foo-old) echo "$3 1.0-1" ;;\n  *) exit 1 ;;\nesac\n' >"$run_dir/bin/pacman"
-printf '#!/bin/sh\nexit 7\n' >"$run_dir/bin/curl"
+mkdir -p "$run_dir/bin" "$run_dir/home/.config/omarchy" "$run_dir/pacman-db"
+cat >"$run_dir/bin/pacman" <<'EOF'
+#!/bin/sh
+[ "$1" = -Q ] || exit 1
+[ -z "${OMABUMP_TEST_Q_HOOK:-}" ] || sh -c "$OMABUMP_TEST_Q_HOOK"
+if [ -n "${OMABUMP_TEST_PKGS:-}" ]; then
+  awk -v n="$3" '$1 == n { print; found = 1 } END { exit !found }' "$OMABUMP_TEST_PKGS"
+  exit
+fi
+case $3 in
+  claude-desktop|foo-old) echo "$3 1.0-1" ;;
+  *) exit 1 ;;
+esac
+EOF
+printf '#!/bin/sh\necho "%s/pacman-db/"\n' "$run_dir" >"$run_dir/bin/pacman-conf"
+printf '#!/bin/sh\necho "curl $*" >>"$OMABUMP_TEST_NET"\nexit 7\n' >"$run_dir/bin/curl"
 printf '#!/bin/sh\nexit 1\n' >"$run_dir/bin/sudo"
-printf '#!/bin/sh\nexit 1\n' >"$run_dir/bin/git"
+printf '#!/bin/sh\n[ "$1" = config ] || echo "git $*" >>"$OMABUMP_TEST_NET"\nexit 1\n' >"$run_dir/bin/git"
 cat >"$run_dir/bin/mise" <<'EOF'
 #!/bin/sh
 echo "$*" >>"$OMABUMP_TEST_MISE"
@@ -368,6 +387,13 @@ if [ "$*" = "ls --json" ] && [ -n "${OMABUMP_TEST_LS_FAIL:-}" ]; then
   echo "mise: no inventory" >&2
   exit 1
 fi
+if [ "$*" = "ls --json" ] && [ -n "${OMABUMP_TEST_LS_HOOK:-}" ]; then
+  sh -c "$OMABUMP_TEST_LS_HOOK"
+fi
+if [ "$*" = "ls --json" ] && [ -n "${OMABUMP_TEST_MISE_LS:-}" ]; then
+  cat "$OMABUMP_TEST_MISE_LS"
+  exit
+fi
 echo '{}'
 EOF
 chmod +x "$run_dir/bin/"*
@@ -375,18 +401,22 @@ run_state=$run_dir/state/omarchy/plugins/io.github.vladkarok.omabump
 run_settings() { printf '{"plugins": [{"id": "io.github.vladkarok.omabump"%s}]}' "$1" >"$run_dir/home/.config/omarchy/shell.json"; }
 run_env=(HOME="$run_dir/home" XDG_CONFIG_HOME="$run_dir/config" XDG_STATE_HOME="$run_dir/state"
   XDG_CACHE_HOME="$run_dir/cache" OMARCHY_PATH="$run_dir/omarchy" PATH="$run_dir/bin:$PATH"
-  OMABUMP_TEST_MISE="$run_dir/mise.log")
+  OMABUMP_TEST_MISE="$run_dir/mise.log" OMABUMP_TEST_NET="$run_dir/net.log")
 # The check under `timeout -k 5 120`, as Main.qml runs it, in the background:
 # $! is the timeout's pid (env execs it).
 check_bg() {
   : >"$run_dir/mise.log"
+  : >"$run_dir/net.log"
   env "${run_env[@]}" timeout -k 5 120 "$root/bin/omabump-check" --no-notify "$@" >/dev/null 2>&1 &
 }
 check_run() { check_bg "$@"; wait "$!"; }
 run_status() { jq -r "$1" "$run_state/status.json" 2>&1; }
 # Scratch files a run left: dot files in the state and cache directories
-# but the two lock files.
-leftovers() { find "$run_dir/state" "$run_dir/cache" -name '.*' ! -name .check.lock ! -name omarchy-pkgs.lock -printf '%f\n' 2>/dev/null; }
+# but the lock files.
+leftovers() {
+  find "$run_dir/state" "$run_dir/cache" -name '.*' ! -name .check.lock ! -name .local.lock ! -name omarchy-pkgs.lock \
+    -printf '%f\n' 2>/dev/null
+}
 
 run_settings ', "showMise": "false"'
 check_run; rc=$?
@@ -613,3 +643,243 @@ same "a run removes day-old half downloads and sync-upstream dirs only" \
 check "and keeps its lock" test -e "$run_state/.check.lock"
 rm -rf "$run_cache/packages" "$run_cache/scratch"
 rm -rf "$run_cache"/.mise.New123 "$run_cache"/.feed.New123 "$run_cache"/.mise-select.New123 "$run_state"/.discovered.New123
+
+# --- a local refresh (--local) ------------------------------------------------------------
+
+# Apps of the user's apps.json on each route --local reads again: omarchy
+# rows (one with an update, one whose release omarchy-pkgs holds), a
+# vendor package that may be installed under another name, indicators (one
+# installed, one not yet) and mise tools, one with a second key. loc_status
+# writes the status.json a check left for them: the fields that matter
+# here over the rest of a row as a check writes it.
+run_settings ''
+cat >"$run_dir/config/omarchy/omabump/apps.json" <<'JSON'
+[{"pkg": "loc-a", "label": "Loc A", "source": "omarchy", "feed": {"type": "github-release", "repo": "o/a"}},
+ {"pkg": "loc-b", "label": "Loc B", "source": "vendor-pkg", "installed": ["loc-b", "loc-b-old"], "feed": {"type": "github-release", "repo": "o/b"}},
+ {"pkg": "loc-held", "label": "Loc Held", "source": "omarchy", "feed": {"type": "github-release", "repo": "o/h"}},
+ {"pkg": "loc-gone", "label": "Loc Gone", "source": "indicator", "feed": {"type": "github-release", "repo": "o/g"}},
+ {"pkg": "loc-new", "label": "Loc New", "source": "indicator", "icon": "assets/new.svg", "feed": {"type": "github-release", "repo": "o/n"}},
+ {"pkg": "mise:t", "label": "T", "source": "mise", "tool": "t"},
+ {"pkg": "mise:u", "label": "U", "source": "mise", "tool": "u"},
+ {"pkg": "mise:k", "label": "K", "source": "mise", "tool": ["k", "npm:k"]}]
+JSON
+loc_status() {
+  jq -c '.apps |= map({label: "", installedName: "", installed: "", latest: "", versionFrom: "feed", updateAvailable: false,
+    installable: true, error: "", note: "", stale: false, switchable: false, recipe: "", recipeCommit: "", request: "",
+    muted: false, skipped: false, unchecked: false, held: false, omarchyUpdate: false, blocked: false, icon: "", iconLight: ""} + .)' \
+    >"$run_dir/fixture.json" <<'JSON'
+{"schemaVersion": 1, "checkedAt": "2026-01-01T00:10:00+00:00", "checking": false, "startedAt": "2026-01-01T00:09:00+00:00",
+ "inventoryAt": "2026-01-01T00:09:00+00:00", "runError": "", "omarchyPkgs": {"commit": "", "following": false, "error": "", "note": ""},
+ "discoveryError": "", "miseError": "", "apps": [
+  {"pkg": "loc-a", "source": "omarchy", "installedName": "loc-a", "installed": "1.0-1", "latest": "1.2", "updateAvailable": true,
+   "skipped": true, "note": "Recipe from omarchy-pkgs 0123456789ab"},
+  {"pkg": "loc-b", "source": "vendor-pkg", "installedName": "loc-b", "installed": "2.0-1", "latest": "2.0"},
+  {"pkg": "loc-held", "source": "omarchy", "installedName": "loc-held", "installed": "1.0-1", "latest": "1.1", "updateAvailable": true,
+   "installable": false, "held": true,
+   "note": "omarchy-pkgs holds new releases for 24 h, Update from Jan 2 00:09; Recipe from omarchy-pkgs 0123456789ab"},
+  {"pkg": "loc-gone", "source": "indicator", "installedName": "loc-gone", "installed": "3.0-1", "latest": "3.0", "installable": false,
+   "note": "No supported install path"},
+  {"pkg": "mise:t", "source": "mise", "installedName": "t", "installed": "1.0", "latest": "1.1", "versionFrom": "mise", "updateAvailable": true},
+  {"pkg": "mise:u", "source": "mise", "installedName": "u", "installed": "2.0", "latest": "2.0", "versionFrom": "mise"},
+  {"pkg": "mise:k", "source": "mise", "installedName": "k", "installed": "1.0", "latest": "1.5", "versionFrom": "mise",
+   "installable": false, "request": "1.0", "note": "Pinned to 1.0, 1.5 exists"}]}
+JSON
+  cp "$run_dir/fixture.json" "$run_state/status.json"
+}
+# What is installed: pacman's packages as "<name> <version>", mise's active
+# tools as <key>=<version>. loc_same installs what loc_status says.
+loc_pkgs() { printf '%s\n' "$@" >"$run_dir/pkgs"; }
+loc_tools() { jq -n '[$ARGS.positional[] | split("=") | {(.[0]): [{version: .[1], active: true}]}] | add // {}' --args "$@" >"$run_dir/mise-ls.json"; }
+loc_same() { loc_pkgs 'loc-a 1.0-1' 'loc-b 2.0-1' 'loc-held 1.0-1' 'loc-gone 3.0-1'; loc_tools t=1.0 u=2.0 k=1.0; }
+# A local refresh as the widget runs it (with the options $@), then $? is
+# its exit; loc_row reads the jq filter $2 of the row $1, loc_was the row
+# loc_status wrote, and loc_md5 what is in status.json.
+local_run() { OMABUMP_TEST_PKGS=$run_dir/pkgs OMABUMP_TEST_MISE_LS=$run_dir/mise-ls.json check_run --local "$@"; }
+loc_row() { run_status ".apps[] | select(.pkg == \"$1\") | $2"; }
+loc_was() { jq -c --arg p "$1" '.apps[] | select(.pkg == $p)' "$run_dir/fixture.json"; }
+loc_md5() { md5sum <"$run_state/status.json"; }
+read -r local_full local_nostatus local_busy < <(sed -n \
+  's/^full_check_exit=\([0-9]*\) no_status_exit=\([0-9]*\) pacman_busy_exit=\([0-9]*\)$/\1 \2 \3/p' "$root/bin/omabump-check")
+
+loc_status
+loc_same
+echo '{"loc-a": "1.2"}' >"$run_state/notified.json"
+echo '{"loc-held": {"version": "1.1", "at": 1767225540}}' >"$run_state/seen.json"
+notified_md5=$(md5sum <"$run_state/notified.json") seen_md5=$(md5sum <"$run_state/seen.json")
+local_run; rc=$?
+same "--local: nothing moved, exit 0 and every row as it was" "0|$(jq -c .apps "$run_dir/fixture.json")" "$rc|$(run_status '.apps | tojson')"
+same "--local: checkedAt and startedAt stay the check's, inventoryAt is this run's" \
+  '2026-01-01T00:10:00+00:00|2026-01-01T00:09:00+00:00|false|true' \
+  "$(run_status '"\(.checkedAt)|\(.startedAt)|\(.inventoryAt == "2026-01-01T00:09:00+00:00")|\(.inventoryAt | test("^20[0-9-]+T[0-9:]+[+-][0-9:]+$"))"')"
+same "--local: no feed and no git call" '' "$(cat "$run_dir/net.log")"
+same "--local: mise is asked for its setting and its inventory, never outdated" 'settings get disable_backends|ls --json' \
+  "$(paste -sd'|' "$run_dir/mise.log")"
+
+loc_status
+loc_pkgs 'loc-a 1.2-1' 'loc-b 2.0-1' 'loc-held 1.1-1'
+local_run; rc=$?
+same "--local: installed at the newest known version: no update, no skip, and no check needed" \
+  '0|1.2-1|false|false|Recipe from omarchy-pkgs 0123456789ab' "$rc|$(loc_row loc-a '"\(.installed)|\(.updateAvailable)|\(.skipped)|\(.note)"')"
+same "--local: a held release once installed: no hold, Update back, the hold's clause gone" \
+  'false|false|true|Recipe from omarchy-pkgs 0123456789ab' "$(loc_row loc-held '"\(.updateAvailable)|\(.held)|\(.installable)|\(.note)"')"
+same "--local: an app no longer installed loses its row" '' "$(loc_row loc-gone .pkg)"
+same "--local: a row that did not move stays as it was" "$(loc_was loc-b)" "$(loc_row loc-b 'tojson')"
+same "--local: notified.json and seen.json are never written" "$notified_md5|$seen_md5" \
+  "$(md5sum <"$run_state/notified.json")|$(md5sum <"$run_state/seen.json")"
+rm -f "$run_state/notified.json" "$run_state/seen.json"
+
+loc_status
+loc_pkgs 'loc-a 1.3-1' 'loc-b 2.0-1' 'loc-held 1.0-1' 'loc-gone 3.0-1'
+local_run; rc=$?
+same "--local: installed past the newest known version asks for a check, no update meanwhile" "$local_full|1.3-1|false" \
+  "$rc|$(loc_row loc-a '"\(.installed)|\(.updateAvailable)"')"
+same "--local: and makes no notified.json or seen.json" '' \
+  "$(find "$run_state" -maxdepth 1 \( -name notified.json -o -name seen.json \) -printf '%f\n')"
+
+# A newer version of a held release, still below the held one: the hold
+# and its note stay, and so does the row's Update, still not installable.
+loc_status
+loc_pkgs 'loc-a 1.0-1' 'loc-b 2.0-1' 'loc-held 1.0.5-1' 'loc-gone 3.0-1'
+local_run; rc=$?
+same "--local: a held app moved, still below the held release: the hold stays, no check needed" \
+  "0|1.0.5-1|true|true|false|$(loc_was loc-held | jq -r .note)" \
+  "$rc|$(loc_row loc-held '"\(.installed)|\(.updateAvailable)|\(.held)|\(.installable)|\(.note)"')"
+
+# A row that names another source than the app table (the user moved the
+# app to another route): only a check can say what it is now.
+loc_status
+jq '.apps |= map(if .pkg == "loc-b" then .source = "indicator" else . end)' "$run_dir/fixture.json" >"$run_state/status.json"
+loc_pkgs 'loc-a 1.0-1' 'loc-b 2.1-1' 'loc-held 1.0-1' 'loc-gone 3.0-1'
+local_run; rc=$?
+same "--local: a row of another source than the table's stays as it was and asks for a check" "$local_full|indicator|2.0-1" \
+  "$rc|$(loc_row loc-b '"\(.source)|\(.installed)"')"
+loc_status
+loc_pkgs 'loc-a 1.0-1' 'loc-b-old 2.0-1' 'loc-held 1.0-1' 'loc-gone 3.0-1'
+local_run; rc=$?
+same "--local: installed under another name asks for a check, the switch shows meanwhile" "$local_full|loc-b-old|2.0-1|true|false" \
+  "$rc|$(loc_row loc-b '"\(.installedName)|\(.installed)|\(.switchable)|\(.updateAvailable)"')"
+
+loc_status
+loc_pkgs 'loc-a 1.0-1' 'loc-b 2.0-1' 'loc-held 1.0-1' 'loc-gone 3.0-1' 'loc-new 5.0-1'
+local_run; rc=$?
+same "--local: an app installed since the check: an unchecked row, and a check asked for" \
+  "$local_full|Loc New|indicator|loc-new|5.0-1||false|false|true|Not checked yet|assets/new.svg" \
+  "$rc|$(loc_row loc-new '"\(.label)|\(.source)|\(.installedName)|\(.installed)|\(.latest)|\(.updateAvailable)|\(.installable)|\(.unchecked)|\(.note)|\(.icon)"')"
+same "--local: the new row in table order" 'loc-a loc-b loc-held loc-gone loc-new mise:t mise:u mise:k' "$(run_status '[.apps[].pkg] | join(" ")')"
+same "--local: the new row has every field a check writes" "$(jq -c '.apps[0] | keys' "$run_dir/fixture.json")" "$(loc_row loc-new 'keys | tojson')"
+
+loc_status
+loc_pkgs 'loc-a 1.0-1' 'loc-b 2.0-1' 'loc-held 1.0-1' 'loc-gone 3.0-1'
+loc_tools t=1.1 u=2.1 npm:k=1.6
+local_run; rc=$?
+same "--local: a mise tool at its newest known version: no update, and a check asked for" "$local_full|1.1|false|false|1.1" \
+  "$rc|$(loc_row mise:t '"\(.installed)|\(.updateAvailable)|\(.unchecked)|\(.latest)"')"
+same "--local: a mise tool at another version: unchecked, no Update, the newest known kept" '2.1|false|true|false|2.0|Not checked yet' \
+  "$(loc_row mise:u '"\(.installed)|\(.updateAvailable)|\(.unchecked)|\(.installable)|\(.latest)|\(.note)"')"
+same "--local: a mise tool under another key: the newest known and the request go" 'npm:k|1.6|||true|' \
+  "$(loc_row mise:k '"\(.installedName)|\(.installed)|\(.latest)|\(.versionFrom)|\(.unchecked)|\(.request)"')"
+loc_status
+loc_tools u=2.0 k=1.0
+local_run; rc=$?
+same "--local: a mise tool no longer active loses its row" '0|' "$rc|$(loc_row mise:t .pkg)"
+loc_status
+loc_tools t=1.1 u=2.1 k=1.0
+OMABUMP_TEST_LS_FAIL=1 local_run; rc=$?
+same "--local: mise ls failed: the mise rows stay as they were, none read as uninstalled" \
+  "0|$(jq -c '[.apps[] | select(.source == "mise")]' "$run_dir/fixture.json")" "$rc|$(run_status '[.apps[] | select(.source == "mise")] | tojson')"
+loc_status
+loc_tools u=2.1 npm:k=1.6
+local_run --no-mise; rc=$?
+same "--local --no-mise: the mise rows stay as they were, and mise is never asked" \
+  "0|$(jq -c '[.apps[] | select(.source == "mise")]' "$run_dir/fixture.json")|" \
+  "$rc|$(run_status '[.apps[] | select(.source == "mise")] | tojson')|$(cat "$run_dir/mise.log")"
+
+# pacman's lock file while a transaction runs: pacman -Q could read its
+# database half way and miss a package being replaced. Nothing is read or
+# written then, not even the mise rows: a change of theirs would ask for a
+# check, which reads pacman too. Once the transaction is over, the next try
+# finds it all.
+loc_status
+loc_pkgs 'loc-a 1.2-1' 'loc-b 2.0-1' 'loc-held 1.0-1'
+loc_tools t=1.0 u=2.1 k=1.0
+: >"$run_dir/pacman-db/db.lck"
+status_md5=$(loc_md5)
+local_run; rc=$?
+same "--local: pacman mid-transaction: try again later, status.json as it was, mise not asked" \
+  "$local_busy|$status_md5|" "$rc|$(loc_md5)|$(cat "$run_dir/mise.log")"
+mv "$run_state/status.json" "$run_dir/status.keep"
+local_run; rc=$?
+same "--local: pacman mid-transaction and no status.json: try again later all the same, no check now" "$local_busy" "$rc"
+mv "$run_dir/status.keep" "$run_state/status.json"
+rm -f "$run_dir/pacman-db/db.lck"
+local_run; rc=$?
+same "--local: once it is over, the rows move and the mise change asks for its check" "$local_full|1.2-1|2.1|" \
+  "$rc|$(loc_row loc-a .installed)|$(loc_row mise:u .installed)|$(loc_row loc-gone .pkg)"
+# A transaction that starts during the run: while mise ls runs (after
+# discovery, before pacman's rows are read), or while they are read. It
+# takes loc-a out of pacman's database, as replacing a package does.
+for when in LS Q; do
+  loc_status
+  loc_same
+  status_md5=$(loc_md5)
+  export "OMABUMP_TEST_${when}_HOOK=: >'$run_dir/pacman-db/db.lck'; sed -i '/^loc-a /d' '$run_dir/pkgs'"
+  local_run; rc=$?
+  unset "OMABUMP_TEST_${when}_HOOK"
+  same "--local: pacman starts a transaction during the run ($when hook): try again later, status.json as it was" \
+    "$local_busy|$status_md5" "$rc|$(loc_md5)"
+  rm -f "$run_dir/pacman-db/db.lck"
+done
+
+rm -f "$run_state/status.json"
+local_run; rc=$?
+same "--local: no status.json: a check asked for, nothing written" "$local_nostatus|no file" \
+  "$rc|$([[ -e $run_state/status.json ]] && echo file || echo no file)"
+for bad in '{"apps": []}' '{"schemaVersion": 1, "checking": true, "apps": []}' '{"schemaVersion": 1, "apps": [{"pkg": 1}]}' 'not json'; do
+  printf '%s\n' "$bad" >"$run_state/status.json"
+  local_run; rc=$?
+  same "--local: from $bad: a check asked for, the file as it was" "$local_nostatus|$bad" "$rc|$(cat "$run_state/status.json")"
+done
+check_run --local --wait; rc=$?
+same "--local with --wait is a usage error" 2 "$rc"
+
+# Holds the lock files on the fds $@ (7 .local.lock, 8 .check.lock) in the
+# background until loc_free, ten seconds at most, so a test that breaks
+# cannot hang the suite. It lets go of the check's lock first, as a local
+# refresh does.
+loc_hold() {
+  rm -f "$run_dir/held" "$run_dir/go"
+  ( exec 7>"$run_state/.local.lock" 8>"$run_state/.check.lock"
+    for fd in "$@"; do flock "$fd"; done
+    echo held >"$run_dir/held"
+    appears "$run_dir/go"
+    exec 8>&- 7>&- ) &
+  holder=$!
+  appears "$run_dir/held"
+}
+loc_free() { echo go >"$run_dir/go"; wait "$holder"; }
+loc_status
+loc_hold 8
+local_run; rc=$?
+same "--local while a check runs: exits Model.lockBusyExit, mise never called" "${lock_busy_exit:-none}|" "$rc|$(cat "$run_dir/mise.log")"
+loc_free
+loc_hold 7
+local_run; rc=$?
+same "--local while another local refresh runs: the same" "${lock_busy_exit:-none}|" "$rc|$(cat "$run_dir/mise.log")"
+loc_free
+# A check that finds a local refresh holding the lock waits for it to end,
+# then runs: leaving the answer to it would drop the check.
+loc_hold 7 8
+check_bg
+pid=$!
+waited=no
+for _ in $(seq 100); do pgrep -f '^flock -w [0-9]* 6$' >/dev/null && { waited=yes; break; }; sleep 0.1; done
+same "a check while a local refresh runs waits for it" yes "$waited"
+loc_free
+wait "$pid"; rc=$?
+same "and then runs" '0|false' "$rc|$(run_status .checking)"
+same "a check writes inventoryAt, its start" true "$(run_status '.inventoryAt == .startedAt and .inventoryAt != ""')"
+loc_status
+same "while a check runs, inventoryAt stays the last one's" '2026-01-01T00:09:00+00:00' "$(status_mid_run .inventoryAt)"
+same "--local and the checks around it leave no scratch files" '' "$(leftovers)"
+rm -f "$run_dir/config/omarchy/omabump/apps.json" "$run_state/status.json" "$run_dir/fixture.json" "$run_dir/pkgs" \
+  "$run_dir/mise-ls.json" "$run_dir/held" "$run_dir/go"

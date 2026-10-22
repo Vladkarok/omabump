@@ -12,11 +12,12 @@ else
   export LC_ALL=C
 fi
 
-# The lock files sit on fds 7 (one update per app), 8 (the omarchy-pkgs
-# clone) and 9 (one check at a time). A child that inherited one would hold
-# the lock after this process ends, so git, mise, sync-upstream, makepkg,
-# sudo and command feeds run without them; the parent keeps its locks.
-run_unlocked() { "$@" 7>&- 8>&- 9>&-; }
+# The lock files sit on fds 6 (a local refresh, omabump-check --local), 7
+# (one update per app), 8 (the omarchy-pkgs clone) and 9 (one check at a
+# time). A child that inherited one would hold the lock after this process
+# ends, so git, mise, sync-upstream, makepkg, sudo and command feeds run
+# without them; the parent keeps its locks.
+run_unlocked() { "$@" 6>&- 7>&- 8>&- 9>&-; }
 
 # run_unlocked for a command under `timeout`, which puts itself and the
 # command in a process group of their own. Main.qml stops a check that runs
@@ -40,7 +41,7 @@ run_killable() (
   trap '[[ -z $pid ]] || kill -TERM -- "-$pid" "$pid" 2>/dev/null; exit 143' TERM
   trap 'sig=INT; [[ -z $pid ]] || kill -TERM -- "-$pid" "$pid" 2>/dev/null' INT
   trap 'sig=HUP; [[ -z $pid ]] || kill -TERM -- "-$pid" "$pid" 2>/dev/null' HUP
-  "$@" 7>&- 8>&- 9>&- &
+  "$@" 6>&- 7>&- 8>&- 9>&- &
   pid=$!
   while :; do
     wait "$pid" && rc=0 && break

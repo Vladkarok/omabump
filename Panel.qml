@@ -328,6 +328,9 @@ Panel {
     resetCursor()
     nowMs = Date.now()
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+    // What is installed may have moved since the last check (an omarchy
+    // update, a wrapper's mise up): Main.qml reads it again.
+    checker.panelOpened()
   }
   // The plugin loader hands the widget an empty settings object while it is
   // built; the bar later sets bar, then the entry's settings, with

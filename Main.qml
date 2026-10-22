@@ -4,9 +4,10 @@ import Quickshell.Io
 import "Model.js" as Model
 
 // The display side of the plugin. bin/omabump-check does all the work and
-// writes status.json; this file runs it on a timer and watches the result, so
-// a check started from a terminal (or by omabump-install) lands here too. The
-// rules it applies to the result live in Model.js.
+// writes status.json; this file runs it on a timer (and its local refresh
+// in between) and watches the result, so a check started from a terminal
+// (or by omabump-install) lands here too. The rules it applies to the
+// result live in Model.js.
 Item {
   id: root
   visible: false
@@ -133,6 +134,11 @@ Item {
   readonly property double staleMs: 10 * 60 * 1000
   property bool fileCheckingRaw: false
   property double fileStartedMs: 0
+  // status.json's inventoryAt: when the installed versions were last read,
+  // by a check or a local refresh (localRefresh); 0 when it does not say.
+  property double inventoryMs: 0
+  // A local refresh asked for while one ran: one more runs after it.
+  property bool localPending: false
   // status.json has been read, or found missing. The timer's first check
   // waits for it, or it could not tell that another one just ran.
   property bool statusRead: false
@@ -195,10 +201,11 @@ Item {
   // wait: wait for a check that holds the lock now (waitScript) instead of
   // leaving at once on it, as the timer's run does. own: a Refresh's
   // (refreshRunning), with or without the wait. The checker itself never
-  // waits (no --wait): one that finds the lock taken after waitScript's
-  // wait lost it to a check that started after the request (or to another
-  // bar's waitScript, whose check starts next), and leaves the answer to
-  // that one (Model.checkOutcome's "left").
+  // waits for a check (no --wait): one that finds the lock taken after
+  // waitScript's wait lost it to a check that started after the request
+  // (or to another bar's waitScript, whose check starts next), and leaves
+  // the answer to that one (Model.checkOutcome's "left"). A local refresh
+  // holding the lock is no check: the checker waits for it to end.
   function runCheck(wait, own) {
     checkQueued = false
     queuedForRefresh = false
@@ -229,6 +236,48 @@ Item {
     if (Model.checkDue(nowMs, checkedAt, fileStartedMs, refreshIntervalSec)) runCheck(false, false)
   }
 
+  // A local refresh (bin/omabump-check --local) reads the installed
+  // versions again, from pacman and mise, without the network, in a second
+  // or so. Apps are updated outside Omabump (Omarchy's wrappers run mise up
+  // on launch, omarchy update runs pacman), and until the next check a row
+  // would offer an Update that is already installed. One runs when the
+  // panel opens (panelOpened) and on each bar's localTimer. It holds the
+  // checker's lock, so no check runs beside it, and leaves at once when
+  // the lock is taken (Model.lockBusyExit). It never moves checkedAt or
+  // startedAt, so the timer's check stays due as it was, and it is none of
+  // this shell's checks: checkError, lastCheckEndMs and Refresh do not see
+  // it. A request while one runs gets one more after it.
+  function localRefresh() {
+    if (!settingsReady || !statusRead) return
+    if (localProcess.running) {
+      localPending = true
+      return
+    }
+    // A check reads the installed versions too.
+    if (checking) return
+    var command = ["timeout", "-k", "10", "120", checkScript, "--local"]
+    if (!showMise) command.push("--no-mise")
+    localProcess.command = command
+    localProcess.running = true
+  }
+
+  // localTimer's run, unless another bar's local refresh or a check read
+  // the versions recently (Model.localDue).
+  function localTick() {
+    nowMs = Date.now()
+    if (Model.localDue(nowMs, inventoryMs, Model.localIntervalSec)) localRefresh()
+  }
+
+  // The panel opened: it shows what is installed now, by the timer's check
+  // when one is due, else by a local refresh (Model.openedRun).
+  function panelOpened() {
+    if (!settingsReady || !statusRead) return
+    nowMs = Date.now()
+    var run = Model.openedRun(checking, Model.checkDue(nowMs, checkedAt, fileStartedMs, refreshIntervalSec))
+    if (run === "full") runCheck(false, false)
+    else if (run === "local") localRefresh()
+  }
+
   function parse(content) {
     try {
       var status = Model.parseStatus(content, showMise)
@@ -246,6 +295,7 @@ Item {
       checkedAt = status.checkedAt
       fileCheckingRaw = status.checking
       fileStartedMs = status.startedMs
+      inventoryMs = status.inventoryMs
       nowMs = Date.now()
       pkgsCommit = status.pkgsCommit
       pkgsFollowing = status.pkgsFollowing
@@ -319,6 +369,32 @@ Item {
     }
   }
 
+  Process {
+    id: localProcess
+    running: false
+    // What the refresh asks for next (Model.localOutcome): the check it
+    // asked for runs as the timer's would, with the lock deciding who runs
+    // it (Model.localWantsCheck). Only a failure is logged: a refresh that
+    // left on the lock, or found pacman mid-transaction, has its next tick.
+    onExited: function(exitCode) {
+      var outcome = Model.localOutcome(exitCode)
+      var err = localStderr.text.trim()
+      if (outcome === "failed")
+        console.warn("omabump", "local refresh failed (exit " + exitCode + ")" + (err !== "" ? ": " + err : ""))
+      statusFile.reload()
+      if (Model.localWantsCheck(outcome, checkProcess.running)) root.runCheck(false, false)
+      if (root.localPending) {
+        root.localPending = false
+        Qt.callLater(root.localRefresh)
+      }
+    }
+
+    stderr: StdioCollector {
+      id: localStderr
+      waitForEnd: true
+    }
+  }
+
   Timer {
     interval: 60000
     running: root.fileCheckingRaw
@@ -339,5 +415,13 @@ Item {
     repeat: true
     triggeredOnStart: true
     onTriggered: root.scheduledRefresh()
+  }
+
+  // Each bar's local refresh, between the checks (localTick).
+  Timer {
+    interval: Model.localIntervalSec * 1000
+    running: root.settingsReady && root.statusRead
+    repeat: true
+    onTriggered: root.localTick()
   }
 }

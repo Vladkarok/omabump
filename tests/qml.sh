@@ -10,7 +10,13 @@
 # shellcheck disable=SC2016 # the literal text of the comment
 same "Main.qml runs checks under the deadline bin/omabump-check names" \
   "$(grep -o 'under `timeout -k [0-9]* [0-9]*`' "$root/bin/omabump-check" | grep -o 'timeout[^`]*')" \
-  "$(grep -o '"timeout", "-k", "[0-9]*", "[0-9]*", checkScript' "$root/Main.qml" | sed 's/, checkScript//' | tr -d '",')"
+  "$(grep -o '"timeout", "-k", "[0-9]*", "[0-9]*", checkScript\]' "$root/Main.qml" | sed 's/, checkScript]//' | tr -d '",')"
+# A check that finds a local refresh holding the lock waits for it as long
+# as Main.qml lets one run: its deadline, then the KILL after it.
+same "a check waits for a local refresh as long as Main.qml lets one run" \
+  "$(sed -n 's/^  flock -w \([0-9]*\) 6 || true$/\1/p' "$root/bin/omabump-check")" \
+  "$(sed -n 's/^    var command = \["timeout", "-k", "\([0-9]*\)", "\([0-9]*\)", checkScript, "--local"\]$/\1 \2/p' "$root/Main.qml" \
+    | awk '{ print $1 + $2 }')"
 # Every wait for the lock comes before that deadline, never under it: a
 # wait the deadline cut short would read as a failed check (exit 124), not
 # as one that never ran (exit 75). So waitScript comes first, and the
@@ -27,7 +33,7 @@ qml_lock=$qml_state$(sed -n 's|^  readonly property string lockPath: stateDir + 
 same "Main.qml waits on the checker's lock" \
   "$state_dir/$(sed -n 's|^exec 9>"$state_dir/\([^"]*\)"$|\1|p' "$root/bin/omabump-check")" "$qml_lock"
 same "Main.qml waits as long as the checker's --wait" \
-  "$(grep -o 'flock -w [0-9]*' "$root/bin/omabump-check" | grep -o '[0-9]*$')" \
+  "$(sed -n 's/.*flock -w \([0-9]*\) 9; }.*/\1/p' "$root/bin/omabump-check")" \
   "$(sed -n 's/^  readonly property int lockWaitSec: \([0-9]*\)$/\1/p' "$root/Main.qml")"
 
 # waitScript, run as Main.qml runs it: lock, seconds, then the command.
@@ -72,13 +78,25 @@ same "waitScript: the command's exit status is the run's" "started|exit 3" \
 # A run that left on the lock ran nothing and failed nothing: only the other
 # outcomes set checkError and lastCheckEndMs (IPC refresh's throttle), and
 # its line on stderr stays out of the shell's log.
-on_exited=$(sed -n '/^    onExited: function(exitCode) {$/,/^    }$/p' "$root/Main.qml")
+on_exited=$(sed -n '/^    id: checkProcess$/,/^  }$/p' "$root/Main.qml" | sed -n '/^    onExited: function(exitCode) {$/,/^    }$/p')
 same "onExited sets checkError and lastCheckEndMs only for a run that did not leave on the lock" \
   'notRun root.checkError|ran root.checkError|ran root.lastCheckEndMs' \
   "$(awk '/^      if \(outcome === "notRun"\) \{$/ { b = "notRun" } /^      \} else if \(outcome !== "left"\) \{$/ { b = "ran" }
     /^      \}$/ { b = "" } /root\.(checkError|lastCheckEndMs) = / { print (b == "" ? "outside" : b), $1 }' <<<"$on_exited" | paste -sd'|')"
 check "onExited logs no stderr for a run that left on the lock" \
   grep -q '^      if (err !== "" && outcome !== "left") console.warn("omabump", err)$' <<<"$on_exited"
+
+# A local refresh (bin/omabump-check --local) is none of this shell's
+# checks: its exit goes through Model.localOutcome by the checker's own
+# numbers, and it sets neither checkError nor lastCheckEndMs.
+same "Model.js reads --local's exits by the numbers bin/omabump-check gives" \
+  "$(sed -n 's/^full_check_exit=\([0-9]*\) no_status_exit=\([0-9]*\) pacman_busy_exit=\([0-9]*\)$/\1 \2 \3/p' "$root/bin/omabump-check")" \
+  "$(sed -n 's/^var local\(Full\|NoStatus\|Retry\)Exit = \([0-9]*\)$/\2/p' "$root/Model.js" | paste -sd' ')"
+local_exited=$(sed -n '/^    id: localProcess$/,/^  }$/p' "$root/Main.qml")
+check "Main.qml reads a local refresh's exit through Model.localOutcome" grep -q 'Model.localOutcome(exitCode)' <<<"$local_exited"
+refuse "a local refresh sets neither checkError nor lastCheckEndMs" grep -qE 'checkError|lastCheckEndMs' <<<"$local_exited"
+check "Main.qml runs the local refresh as bin/omabump-check --local" grep -q 'checkScript, "--local"\]$' "$root/Main.qml"
+check "the panel has the installed versions read again when it opens" grep -q '^    checker.panelOpened()$' "$root/Panel.qml"
 # A change of Show mise tools behind this shell's own check queues a run
 # that is not a Refresh's, and a queued run waits for the lock only when
 # this shell's own check may not have held it to its end: on two monitors,

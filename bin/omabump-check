@@ -13,13 +13,19 @@
 #               configured request, and what lies outside it (a pin).
 #
 #   omabump-check [--no-notify] [--no-mise] [--wait]
+#   omabump-check --local [--no-mise]
 #
 # --wait runs after a check already in progress instead of leaving it to
 # that one: the installer's refresh needs a check that starts after its
 # install, since the running one may have read the old version.
 #
+# --local reads the installed versions again and nothing else, without the
+# network: see local_refresh below.
+#
 # Exit 75: no check ran. Without --wait another check held the lock, and
 # that one writes status.json; with --wait, it held the lock past the wait.
+# A check that finds a local refresh holding it waits for that one instead,
+# which takes seconds and is no check.
 #
 # Muted rows and skipped versions come from the widget's settings in
 # Omarchy's shell.json (load_quiet), whoever runs the check. So do the
@@ -38,30 +44,62 @@ set -euo pipefail
 # shellcheck source=omabump-common
 source "$(dirname "$(readlink -f "$0")")/omabump-common"
 
-usage="usage: omabump-check [--no-notify] [--no-mise] [--wait]"
-notify="" with_mise="" wait_lock=0
+usage="usage: omabump-check [--no-notify] [--no-mise] [--wait] | --local [--no-mise]"
+notify="" with_mise="" wait_lock=0 local_run=0
 while (( $# )); do
   case $1 in
     --no-notify) notify=0 ;;
     --no-mise) with_mise=0 ;;
     --wait) wait_lock=1 ;;
+    --local) local_run=1 ;;
     *) echo "$usage" >&2; exit 2 ;;
   esac
   shift
 done
+(( ! (local_run && wait_lock) )) || { echo "$usage" >&2; exit 2; }
+
+# What --local tells its caller besides 0 and 75 (Model.js reads the same
+# numbers, Model.localOutcome): a row changed in a way only a check can
+# read; there is no status.json of a check to start from; pacman is in the
+# middle of a transaction, so its rows wait for the next try. Numbers no
+# tool here exits with, so a command that fails under set -e reads as a
+# failed run, not as one of these.
+full_check_exit=80 no_status_exit=81 pacman_busy_exit=82
 
 mkdir -p "$state_dir"
 # The shell timer and a hand run can overlap; the second one has nothing to
 # add, unless it was asked to --wait. It exits 75, not 0, so a caller can
 # tell it from a check that ran. A check lasts at most ten minutes; a wait
 # that outlasts that exits 75 too, as the widget's own wait does.
+#
+# A local refresh holds the same lock, so neither runs during the other, and
+# .local.lock (fd 6) as well, taken first and let go last. A check that
+# finds the check lock taken while .local.lock is held waits for the local
+# refresh to end and tries once more: that refresh writes no check, so
+# leaving the answer to it would drop the check until the next tick. It
+# takes a second or so; the wait lasts as long as Main.qml lets one run,
+# its deadline and the KILL after it. The local refresh itself never waits:
+# behind a check or another local refresh it has nothing to add.
 exec 9>"$state_dir/.check.lock"
-if (( wait_lock )); then
+if (( local_run )); then
+  exec 6>"$state_dir/.local.lock"
+  if ! flock -n 6 || ! flock -n 9; then
+    echo "omabump-check: a check or another local refresh is running; no local refresh ran" >&2
+    exit 75
+  fi
+elif (( wait_lock )); then
   flock -n 9 || { echo "Waiting for the running check to end..." >&2; flock -w 660 9; } \
     || { echo "omabump-check: the running check held the lock for over 11 min; no check ran" >&2; exit 75; }
 elif ! flock -n 9; then
-  echo "omabump-check: another check is running and will write status.json; no check ran (--wait runs one after it)" >&2
-  exit 75
+  # The check lock is tried again with the local one held, so no new local
+  # refresh can take it in between.
+  exec 6>"$state_dir/.local.lock"
+  flock -w 130 6 || true
+  if ! flock -n 9; then
+    echo "omabump-check: another check is running and will write status.json; no check ran (--wait runs one after it)" >&2
+    exit 75
+  fi
+  exec 6>&-
 fi
 # Muted rows (the panel's mutedApps setting) and rows at a version the user
 # skipped (skippedVersions) never notify; status.json still says the truth
@@ -73,10 +111,11 @@ load_quiet
 [[ -n $notify ]] || if [[ $setting_notify == false ]]; then notify=0; else notify=1; fi
 [[ -n $with_mise ]] || if [[ $setting_show_mise == false ]]; then with_mise=0; else with_mise=1; fi
 
-# Only a check makes these, and only under the lock: any left over is from
-# a run that was killed outright. .check.?????? and .notified.?????? are an
-# older release's; the lock itself, .check.lock, matches none of them, and
-# deleting it would let a second check take a new lock beside this one.
+# Only a check or a local refresh makes these, and only under the lock: any
+# left over is from a run that was killed outright. .check.?????? and
+# .notified.?????? are an older release's; the locks themselves,
+# .check.lock and .local.lock, match none of them, and deleting one would
+# let a second run take a new lock beside this one.
 rm -rf -- "$state_dir"/.run.* "$state_dir"/.check.?????? "$state_dir"/.notified.?????? "$state_dir"/.status.* "$state_dir"/.state.*
 # An Update makes these while it runs, without this lock, and an older
 # release's check left them outside its run's dir. One more than a day old
@@ -90,6 +129,222 @@ find "$state_dir" "$cache_dir" -mindepth 1 -maxdepth 1 \( -name '.discovered.???
 # while a live run still reads it.
 find "$cache_dir/packages" -mindepth 1 -maxdepth 1 -type f -name '*.part' -mmin +1440 -exec rm -f -- {} + 2>/dev/null || true
 find "$cache_dir/scratch" -mindepth 1 -maxdepth 1 -name 'tmp.??????????' -mmin +1440 -exec rm -rf -- {} + 2>/dev/null || true
+
+# The order of status.json's rows: desktop apps first, mise tools after
+# them, each in table order, then Omabump itself.
+# shellcheck disable=SC2016 # jq variables, not the shell's
+jq_row_order='
+  def row_order($order): sort_by([.source == "self", .source == "mise", (.pkg as $p | $order | index($p) // 1e9)]);'
+
+# The clause the release-age hold (below) puts first in a row's note.
+hold_clause_re='^omarchy-pkgs holds new releases for [0-9]+ h, Update from [^;]*(; |$)'
+
+# Installed under another name (chatgpt-desktop, z-code-bin): Update
+# replaces it when a newer version exists, Switch does it at the same one,
+# so a row is switchable when it has no update and the installed version is
+# not past the newest. $1 source, $2 installed name, $3 pkg, $4 installable,
+# $5 update, $6 latest, $7 installed.
+row_switchable() {
+  [[ ($1 == omarchy || $1 == vendor-pkg) && $2 != "$3" && $4 == true && $5 != true && -n $6 ]] \
+    && ! newer "$(upstream_part "$7")" "$6"
+}
+
+# --- a local refresh (--local) -------------------------------------------------
+#
+# Apps are updated outside Omabump: Omarchy's wrappers update mise CLIs on
+# launch, and omarchy update runs pacman and mise up. Until the next check,
+# a row can then offer an Update that is already installed. This reads the
+# installed versions again, from pacman (installed_app) and mise's inventory
+# (mise ls), and nothing else: no feed, no omarchy-pkgs, no mise outdated,
+# nothing on the network. It starts from the last check's status.json and
+# keeps the rest of each row (the newest version, the route, notes, errors,
+# muted, skipped), and writes the file once, with checkedAt and startedAt as
+# that check left them: the widget counts the next check from those, and a
+# local refresh must never put it off. inventoryAt says when the installed
+# versions were last read, by a check or by this. It never notifies and
+# never reads or writes notified.json. It exits:
+#   0                  done
+#   full_check_exit    something only a check can read changed; the rows say
+#                      what is known until one runs (the widget starts it)
+#   no_status_exit     no status.json of a finished check to start from;
+#                      nothing written
+#   pacman_busy_exit   pacman was in the middle of a transaction
+#                      (pacman_busy) before, during or after the reads;
+#                      nothing written, for a later try
+# and 75 when a check or another local refresh held the lock (above).
+local_refresh() {
+  local previous need_full=0 changes=() at out app pkg source name installed prev row why
+  # pacman's transaction first: every other answer may ask for a check,
+  # which reads pacman with no such guard. So the mise rows wait too; the
+  # next try, once the transaction is over, finds them as this one would
+  # have.
+  ! pacman_busy || local_pacman_busy
+  previous=""
+  [[ -s $status_file ]] && previous=$(<"$status_file")
+  if ! jq -e 'type == "object" and .schemaVersion == 1 and .checking != true and (.apps | type == "array")
+      and all(.apps[]; type == "object" and (.pkg | type == "string"))' >/dev/null 2>&1 <<<"$previous"; then
+    echo "omabump-check: no status.json of a finished check to start from; a full check is needed" >&2
+    exit "$no_status_exit"
+  fi
+  tmp=$(mktemp -d "$state_dir/.run.XXXXXX")
+  run_tmp=$tmp
+  # The check's lock goes before the local one: a check that waits for this
+  # refresh to end then finds it free.
+  trap 'rm -rf "$tmp"; exec 9>&- 6>&-' EXIT
+  trap 'exit 143' TERM
+  trap 'exit 130' INT
+  trap 'exit 129' HUP
+  printf '%s\n' "$previous" >"$tmp/previous.json"
+  at=$(date -Iseconds)
+
+  load_table
+  order=$(jq -c 'map(.pkg)' <<<"$app_table")
+  # The inventory alone, under a shorter limit than a check's: mise ls names
+  # the active versions without asking any backend.
+  if (( with_mise )); then
+    mise_timeout=30
+    mise_load 0
+    [[ -z $mise_inventory_error ]] || echo "omabump-check: $mise_inventory_error; the mise rows stay as they were" >&2
+  fi
+
+  # Discovery and mise ls can take a while, and a transaction that started
+  # meanwhile would be read half way: pacman's lock is looked for again
+  # right before its rows are read, and once more after them.
+  ! pacman_busy || local_pacman_busy
+  while IFS= read -r app; do
+    pkg=$(jq -r '.pkg' <<<"$app")
+    source=$(jq -r '.source' <<<"$app")
+    # A mise tool mise could not list is never read as uninstalled.
+    if [[ $source == mise ]]; then
+      (( with_mise )) && [[ -z $mise_inventory_error ]] || continue
+    fi
+    prev=$(jq -c --arg pkg "$pkg" '[.apps[] | select(.pkg == $pkg)][0] // {}' <<<"$previous")
+    if ! read -r _ name installed < <(installed_app "$app"); then
+      # Gone, as a check drops a row that is no longer installed.
+      [[ $prev == '{}' ]] || changes+=("$(jq -cn --arg pkg "$pkg" '{pkg: $pkg, _drop: true}')")
+      continue
+    fi
+    name=$(clean_text "$name") installed=$(clean_text "$installed")
+    if local_row; then changes+=("$row"); fi
+    if [[ -n $why ]]; then
+      echo "omabump-check: $why; a full check is needed" >&2
+      need_full=1
+    fi
+  done < <(jq -c '.[]' <<<"$app_table")
+  ! pacman_busy || local_pacman_busy
+
+  out=$(mktemp "$tmp/.status.XXXXXX")
+  printf '%s\n' "${changes[@]}" | jq -s --slurpfile prevs "$tmp/previous.json" --argjson order "$order" \
+    --arg inventory "$at" "$jq_row_order"'
+    $prevs[0] as $prev
+    | reduce .[] as $c ($prev.apps;
+        if any(.[]; .pkg == $c.pkg) then map(if .pkg == $c.pkg then $c else . end) else . + [$c] end)
+    | $prev + {inventoryAt: $inventory, apps: (map(select(._drop != true)) | row_order($order))}' >"$out"
+  mv -f "$out" "$status_file"
+  (( ! need_full )) || exit "$full_check_exit"
+  exit 0
+}
+
+# pacman's lock file is there while a transaction runs, and pacman -Q may
+# read the database half way through one: a package being replaced reads as
+# uninstalled, its row would go, and the next run would bring it back as
+# new and ask for a check it does not need. pacman_lock is where it looks.
+pacman_lock=""
+pacman_busy() {
+  local db=""
+  if [[ -z $pacman_lock ]]; then
+    read -r db < <(pacman-conf DBPath 2>/dev/null </dev/null) || true
+    db=${db:-/var/lib/pacman/}
+    pacman_lock=${db%/}/db.lck
+  fi
+  [[ -e $pacman_lock ]]
+}
+
+# A local refresh that found pacman busy leaves with nothing written: what
+# it read so far goes with its run's dir.
+local_pacman_busy() {
+  echo "omabump-check: pacman is running ($pacman_lock); nothing changed, a later try reads the installed versions" >&2
+  exit "$pacman_busy_exit"
+}
+
+# The row of $app ($pkg, $source) now that it is installed as $name at
+# $installed, from its last row $prev, by the rules a check applies to the
+# versions it knows: sets row, and why when only a check can read the rest.
+# Fails, row unset, when the row stays as it is.
+local_row() {
+  local p_source p_name p_installed p_latest p_from p_installable p_held p_unchecked have update held=false
+  local installable unhold=false switchable=false label muted blocked=false
+  row="" why=""
+  if [[ $prev == '{}' ]]; then
+    # Installed since the last check: what it is, not yet what is newer.
+    label=$(jq -r '.label // .pkg' <<<"$app")
+    muted=$(jq --arg pkg "$pkg" 'index($pkg) != null' <<<"$muted_json")
+    [[ -z $(jq -r '.updateBlocked // ""' <<<"$app") ]] || blocked=true
+    row=$(jq -cn --arg pkg "$pkg" --arg label "$(clean_text "$label")" --arg source "$source" \
+      --arg installedName "$name" --arg installed "$installed" --argjson muted "$muted" --argjson blocked "$blocked" \
+      --arg icon "$(jq -r '.icon // ""' <<<"$app")" --arg iconLight "$(jq -r '.iconLight // ""' <<<"$app")" \
+      '{pkg: $pkg, label: $label, source: $source, installedName: $installedName,
+        installed: $installed, latest: "", versionFrom: "",
+        updateAvailable: false, installable: false, error: "", note: "Not checked yet",
+        stale: false, switchable: false, recipe: "", recipeCommit: "",
+        request: "", muted: $muted, skipped: false, unchecked: true, held: false, omarchyUpdate: false, blocked: $blocked,
+        icon: $icon, iconLight: $iconLight}')
+    why="$pkg $installed is installed since the last check"
+    return 0
+  fi
+  IFS=$'\x1f' read -r p_source p_name p_installed p_latest p_from p_installable p_held p_unchecked < <(jq -r '
+    [.source // "", .installedName // "", .installed // "", .latest // "", .versionFrom // "",
+     .installable == true, .held == true, .unchecked == true] | map(tostring) | join("\u001f")' <<<"$prev")
+  if [[ $p_source != "$source" ]]; then
+    why="$pkg has another source in the app table"
+    return 1
+  fi
+  [[ $name != "$p_name" || $installed != "$p_installed" ]] || return 1
+
+  if [[ $source == mise ]]; then
+    # mise's answer about a newer version holds only for the version it was
+    # asked about. At the newest one known, the row is current, and a check
+    # reads whether the request still holds it.
+    if [[ $name == "$p_name" && -n $p_latest && $installed == "$p_latest" ]]; then
+      row=$(jq -c --arg installed "$installed" '. + {installed: $installed, updateAvailable: false, skipped: false}' <<<"$prev")
+      why="$pkg reached $installed"
+    else
+      row=$(jq -c --arg name "$name" --arg installed "$installed" --argjson keyed "$([[ $name == "$p_name" ]] && echo false || echo true)" '
+        . + {installedName: $name, installed: $installed, updateAvailable: false, skipped: false,
+             installable: false, unchecked: true, note: "Not checked yet"}
+        | if $keyed then . + {latest: "", versionFrom: "", request: ""} else . end' <<<"$prev")
+      why="$pkg is $name $installed now"
+    fi
+    return 0
+  fi
+
+  # A feed knows only upstream's version, as in the check.
+  have=$installed
+  [[ $p_from != feed ]] || have=$(upstream_part "$installed")
+  update=false
+  if [[ -n $p_latest ]] && newer "$p_latest" "$have"; then update=true; fi
+  # A hold is on a release not installed yet; once it is, the row is the
+  # check's again: Update (the hold came only after it) and its note.
+  installable=$p_installable
+  if [[ $update == false && $p_held == true ]]; then installable=true unhold=true; fi
+  [[ $update == true ]] && held=$p_held
+  row_switchable "$source" "$name" "$pkg" "$installable" "$update" "$p_latest" "$installed" && switchable=true
+  row=$(jq -c --arg name "$name" --arg installed "$installed" --argjson update "$update" --argjson held "$held" \
+    --argjson installable "$installable" --argjson switchable "$switchable" --argjson unhold "$unhold" --arg re "$hold_clause_re" '
+    . + {installedName: $name, installed: $installed, updateAvailable: $update, held: $held,
+         installable: $installable, switchable: $switchable}
+    | if $update then . else .skipped = false end
+    | if $unhold then .note = (.note | strings // "" | sub($re; "")) else . end' <<<"$prev")
+  if [[ -n $p_latest ]] && newer "$have" "$p_latest"; then
+    why="$pkg $installed is past the last known $p_latest"
+  elif [[ $name != "$p_name" ]]; then
+    why="$pkg is installed as $name now"
+  elif [[ $p_unchecked == true ]]; then
+    why="$pkg $installed is not checked yet"
+  fi
+  return 0
+}
+(( ! local_run )) || local_refresh
 
 # Last run's results, used only when they have the shape this script writes.
 previous='{"apps":[]}'
@@ -191,26 +446,28 @@ order=$(jq -c 'map(.pkg)' <<<"$table")
 # "checking" as stale. Until the final write, rows not checked yet keep
 # their previous entry, flagged "checking": true while the run lasts, so the
 # panel shows progress row by row; the check time stays the old one.
+# inventoryAt, when the installed versions were last read, is the run's
+# start once it is done, and stays the last one's until then.
 # schemaVersion names the file's shape. Version 1: no switch clause in a
-# row's note, and "unchecked" on every row.
+# row's note, and "unchecked" on every row; inventoryAt came later, a field
+# a reader may find missing.
 write_status() {
   local final=$1 run_error=${2:-} out at
   at=$(jq -r '.checkedAt // ""' <<<"$previous")
   (( final == 1 )) && at=$(date -Iseconds)
   out=$(mktemp "$tmp/.status.XXXXXX")
-  # Desktop apps first, mise tools after them, each in table order, then
-  # Omabump itself.
   printf '%s\n' "${rows[@]}" | jq -s --slurpfile prevs "$tmp/previous.json" --argjson order "$order" \
     --argjson final "$final" --arg at "$at" --arg started "$started" \
     --arg commit "$pkgs_commit" --arg perr "$(clean_text "$pkgs_error")" --arg pnote "$(clean_text "$pkgs_note")" \
     --argjson following "$pkgs_follow" --arg derr "$discovery_note" --arg merr "$mise_note" \
-    --arg rerr "$(clean_text "$run_error")" '
+    --arg rerr "$(clean_text "$run_error")" "$jq_row_order"'
     $prevs[0] as $prev
     | (map(.pkg)) as $done
     | (if $final == 1 then .
        else . + [$prev.apps[] | select(.pkg as $p | $done | index($p) | not) | .checking = ($final == 0)] end)
-    | sort_by([.source == "self", .source == "mise", (.pkg as $p | $order | index($p) // 1e9)])
-    | {schemaVersion: 1, checkedAt: $at, checking: ($final == 0), startedAt: $started, runError: $rerr,
+    | row_order($order)
+    | {schemaVersion: 1, checkedAt: $at, checking: ($final == 0), startedAt: $started,
+       inventoryAt: (if $final == 1 then $started else ($prev.inventoryAt | strings) // "" end), runError: $rerr,
        omarchyPkgs: {commit: $commit, following: ($following == 1), error: $perr, note: $pnote},
        discoveryError: $derr, miseError: $merr, apps: .}' >"$out"
   mv -f "$out" "$status_file"
@@ -347,7 +604,9 @@ while IFS= read -r app; do
 
   # The recipe holds a release for its min_release_age (openclaw and
   # voxtype-bin: 24 h), and Update could not reach it before then. Until the
-  # window has passed the row has no Update and does not notify.
+  # window has passed the row has no Update and does not notify. Once the
+  # release is installed, a local refresh takes the clause off again
+  # (hold_clause_re).
   if [[ $update == true && $installable == true ]] && (( hold > 0 )); then
     hold_until=$(( $(seen_since "$pkg" "$latest" "$now") + hold ))
     if (( now < hold_until )); then
@@ -356,15 +615,10 @@ while IFS= read -r app; do
     fi
   fi
 
-  # Installed under another name (chatgpt-desktop, z-code-bin): Update
-  # replaces it when a newer version exists, Switch does it at the same one.
-  # The panel words this from installedName, updateAvailable and
+  # The panel words a switch from installedName, updateAvailable and
   # switchable, so the note holds only the rest.
   switchable=false
-  if [[ ($source == omarchy || $source == vendor-pkg) && $installed_name != "$pkg" && $installable == true
-        && $update != true && -n $latest ]] && ! newer "$(upstream_part "$installed")" "$latest"; then
-    switchable=true
-  fi
+  row_switchable "$source" "$installed_name" "$pkg" "$installable" "$update" "$latest" "$installed" && switchable=true
 
   muted=$(jq --arg pkg "$pkg" 'index($pkg) != null' <<<"$muted_json")
   skipped=false
