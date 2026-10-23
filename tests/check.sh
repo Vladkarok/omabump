@@ -356,7 +356,8 @@ refuse "run_killable: and the command it ran is stopped" kill -0 "${slept:-0}"
 # with $OMABUMP_TEST_MISE_LS set it prints that file). curl and git
 # note each call in net.log, but the git config reads omabump-common makes
 # when it is sourced. HOME, the XDG directories and Omarchy's menu all point
-# into $run_dir, and every run passes --no-notify.
+# into $run_dir, and every run passes --no-notify but ai_notify's, which
+# puts a fake notify-send first on PATH.
 run_dir=$scratch/check-run
 mkdir -p "$run_dir/bin" "$run_dir/home/.config/omarchy" "$run_dir/pacman-db"
 cat >"$run_dir/bin/pacman" <<'EOF'
@@ -894,9 +895,11 @@ rm -f "$run_dir/config/omarchy/omabump/apps.json" "$run_state/status.json" "$run
 # PATH "extracts" the entry from the file next to it, <AppImage>.desktop,
 # when asked as appimage_version asks, and notes each call in 7z.log; the
 # fake stat (statbin, put first by a test) answers $OMABUMP_TEST_STAT; no7z
-# has every command on PATH but 7z, for a machine without 7zip.
+# has every command on PATH but 7z, for a machine without 7zip. The fake
+# notify-send (notifybin, first on PATH for ai_notify) notes each
+# notification's title and body in notify.log, so none reaches the desktop.
 ai_file=$run_dir/home/.local/share/t3code/T3-Code.AppImage
-mkdir -p "${ai_file%/*}" "$run_dir/7zbin" "$run_dir/statbin" "$run_dir/no7z"
+mkdir -p "${ai_file%/*}" "$run_dir/7zbin" "$run_dir/statbin" "$run_dir/no7z" "$run_dir/notifybin"
 cat >"$run_dir/7zbin/7z" <<'EOF'
 #!/bin/sh
 echo "7z $*" >>"$OMABUMP_TEST_7Z"
@@ -904,7 +907,12 @@ echo "7z $*" >>"$OMABUMP_TEST_7Z"
 cat "$6.desktop" 2>/dev/null || exit 2
 EOF
 printf '#!/bin/sh\necho "$OMABUMP_TEST_STAT"\n' >"$run_dir/statbin/stat"
-chmod +x "$run_dir/7zbin/7z" "$run_dir/statbin/stat"
+cat >"$run_dir/notifybin/notify-send" <<'EOF'
+#!/bin/sh
+[ "$1 $2" = "-a Omabump" ] || exit 7
+printf '%s|%s\n' "$3" "$4" >>"$OMABUMP_TEST_NOTIFY"
+EOF
+chmod +x "$run_dir/7zbin/7z" "$run_dir/statbin/stat" "$run_dir/notifybin/notify-send"
 IFS=: read -ra ai_dirs <<<"$PATH"
 for d in "${ai_dirs[@]}"; do
   [[ -d $d ]] || continue
@@ -930,6 +938,14 @@ ai_run() {
   env "${run_env[@]}" PATH="${ai_bins:-$run_dir/7zbin:$run_dir/bin:$PATH}" OMABUMP_TEST_PKGS="$run_dir/pkgs" \
     OMABUMP_TEST_7Z="$run_dir/7z.log" timeout -k 5 120 "$root/bin/omabump-check" --no-notify "$@" >/dev/null 2>"$run_dir/ai.err"
 }
+# A check as ai_run's that notifies: no --no-notify, and the fake
+# notify-send first on PATH.
+ai_notify() {
+  : >"$run_dir/notify.log"
+  env "${run_env[@]}" PATH="$run_dir/notifybin:$run_dir/7zbin:$run_dir/bin:$PATH" OMABUMP_TEST_PKGS="$run_dir/pkgs" \
+    OMABUMP_TEST_7Z="$run_dir/7z.log" OMABUMP_TEST_NOTIFY="$run_dir/notify.log" \
+    timeout -k 5 120 "$root/bin/omabump-check" >/dev/null 2>"$run_dir/ai.err"
+}
 ai_row() { run_status ".apps[] | select(.pkg == \"t3code-bin\") | $1"; }
 ai_fields='"\(.installedName)|\(.installed)|\(.selfUpdating)|\(.installable)|\(.switchable)|\(.updateAvailable)|\(.unchecked)|\(.latest)|\(.versionFrom)|\(.error)|\(.note)"'
 ai_note="Updates itself: open T3 Code to update"
@@ -954,6 +970,15 @@ same "AppImage: a nightly is compared with no stable release: no update, uncheck
   "0.1.1-nightly.20261019.1|false|true|0.2.0|Pre-release build, not compared with the feed's stable releases; $ai_note" \
   "$(ai_row '"\(.installed)|\(.updateAvailable)|\(.unchecked)|\(.latest)|\(.note)"')"
 ai_feed
+ai_put v0.1.1
+ai_run
+same "AppImage: a v before the version goes, as the feed drops it from the tag: current at the feed's" \
+  "0.1.1|false|false|$ai_note" "$(ai_row '"\(.installed)|\(.updateAvailable)|\(.unchecked)|\(.note)"')"
+ai_put continuous
+ai_run
+same "AppImage: a version with a letter first is compared with nothing: no update, unchecked, the note says why" \
+  "continuous|false|true|Not a release number, not compared with the feed's; $ai_note" \
+  "$(ai_row '"\(.installed)|\(.updateAvailable)|\(.unchecked)|\(.note)"')"
 ai_put ''
 ai_run
 # shellcheck disable=SC2088 # the path as apps.json writes it
@@ -1025,7 +1050,22 @@ ai_run --local; rc=$?
 same "--local: an AppImage since the last check: an unchecked row, and a check asked for" \
   "$local_full|~/.local/share/t3code/T3-Code.AppImage|0.1.0|true|false|true|Not checked yet" \
   "$rc|$(ai_row '"\(.installedName)|\(.installed)|\(.selfUpdating)|\(.updateAvailable)|\(.unchecked)|\(.note)"')"
+# The check it asked for never came (stopped early, say), and the app then
+# updated itself: no check has read its newest version, so the row is no
+# more current than before.
+ai_put 0.1.1
+ai_run --local; rc=$?
+same "--local: a row no check has read, at another version: still unchecked, and a check asked for" \
+  "$local_full|0.1.1||false|true|Not checked yet" \
+  "$rc|$(ai_row '"\(.installed)|\(.latest)|\(.updateAvailable)|\(.unchecked)|\(.note)"')"
+ai_put ''
+ai_run --local; rc=$?
+same "--local: and with its version unknown now, the same" "$local_full||true|Not checked yet" \
+  "$rc|$(ai_row '"\(.installed)|\(.unchecked)|\(.note)"')"
+ai_put 0.1.0
 ai_run
+same "--local: once a check has read it, the row is the check's" "0.1.0|0.1.1|true|false|$ai_note" \
+  "$(ai_row '"\(.installed)|\(.latest)|\(.updateAvailable)|\(.unchecked)|\(.note)"')"
 loc_pkgs 't3code-bin 0.1.1-1'
 ai_run --local; rc=$?
 same "--local: the package installed over the AppImage: a check asked for, no route meanwhile" \
@@ -1037,14 +1077,54 @@ ai_run --local; rc=$?
 same "--local: the package removed, the AppImage left: a check asked for" \
   "$local_full|~/.local/share/t3code/T3-Code.AppImage|0.1.0|true|false" \
   "$rc|$(ai_row '"\(.installedName)|\(.installed)|\(.selfUpdating)|\(.installable)"')"
-# Every run here passes --no-notify, so the announcement is read from the
-# script: once per version, as for any row (announce_action), and saying
-# the app updates itself.
-check "AppImage: its notification says the app updates itself" \
-  grep -q '^    \[\[ $self_updating == false \]\] || body="Installed: $installed. $label updates itself: open it to update."$' \
-  "$root/bin/omabump-check"
+# What only one form has goes with it: updateBlocked marks the package row
+# alone, and a recipe is the package's.
+jq -cn '[{pkg: "t3code-bin", updateBlocked: "a known problem", feed: {type: "command", command: "echo 0.1.1"}}]' \
+  >"$run_dir/config/omarchy/omabump/apps.json"
+ai_run
+same "AppImage: updateBlocked does not mark a self-updating row" "false|$ai_note" "$(ai_row '"\(.blocked)|\(.note)"')"
+loc_pkgs 't3code-bin 0.1.1-1'
+ai_run
+same "AppImage: it marks the package's" true "$(ai_row .blocked)"
+jq '.apps |= map(if .pkg == "t3code-bin" then .recipe = "t3code-bin 0.1.1-1" | .recipeCommit = "0123456" else . end)' \
+  "$run_state/status.json" >"$run_dir/edited.json" && mv "$run_dir/edited.json" "$run_state/status.json"
+loc_pkgs ''
+ai_run --local; rc=$?
+same "--local: to the AppImage: no updateBlocked mark, no recipe" "$local_full|true|false||" \
+  "$rc|$(ai_row '"\(.selfUpdating)|\(.blocked)|\(.recipe)|\(.recipeCommit)"')"
+loc_pkgs 't3code-bin 0.1.1-1'
+ai_run --local; rc=$?
+same "--local: back to the package: the updateBlocked mark again" "$local_full|false|true" \
+  "$rc|$(ai_row '"\(.selfUpdating)|\(.blocked)"')"
+loc_pkgs ''
+ai_feed
+ai_run
+
+# Notifications: once per version, as for any row (announce_action), and
+# saying the app updates itself.
+rm -f "$run_state/notified.json"
+ai_put 0.1.0
+ai_notify
+same "AppImage: an update notifies, saying the app updates itself" \
+  "T3 Code 0.1.1 available|Installed: 0.1.0. T3 Code updates itself: open it to update.|0.1.1" \
+  "$(cat "$run_dir/notify.log")|$(jq -r '."t3code-bin"' "$run_state/notified.json")"
+ai_notify
+same "AppImage: not twice for one version" '' "$(cat "$run_dir/notify.log")"
+ai_feed 0.1.2
+ai_notify
+same "AppImage: again for a newer one" "T3 Code 0.1.2 available|Installed: 0.1.0. T3 Code updates itself: open it to update." \
+  "$(cat "$run_dir/notify.log")"
+ai_feed 0.1.3
+ai_put 0.1.2-nightly.20261019.1
+ai_notify
+same "AppImage: a pre-release claims no update, so none is announced" "|false" "$(cat "$run_dir/notify.log")|$(ai_row .updateAvailable)"
+ai_put ''
+ai_notify
+same "AppImage: nor with its version unknown" "|false" "$(cat "$run_dir/notify.log")|$(ai_row .updateAvailable)"
+ai_feed
 check "AppImage: nothing ever ran it" test ! -e "$run_dir/appimage-ran"
 same "AppImage: the runs leave no scratch files" '' "$(leftovers)"
 rm -rf "$run_dir/home/.local/share/t3code" "$run_dir/elsewhere.AppImage" "$run_dir/elsewhere.AppImage.desktop" "$run_dir/no7z" \
-  "$run_dir/7zbin" "$run_dir/statbin" "$run_dir/7z.log" "$run_dir/ai.err" "$run_dir/pkgs"
+  "$run_dir/7zbin" "$run_dir/statbin" "$run_dir/notifybin" "$run_dir/7z.log" "$run_dir/notify.log" "$run_dir/ai.err" "$run_dir/pkgs" \
+  "$run_state/notified.json"
 rm -f "$run_dir/config/omarchy/omabump/apps.json" "$run_state/status.json"

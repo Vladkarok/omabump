@@ -113,14 +113,16 @@ ref_ok() { [[ $1 =~ ^refs/[A-Za-z0-9._/-]+$ && $1 != *..* ]]; }
 # An app's "appImage" (see installed_app): a file under your home, written
 # ~/<path>, at most 200 characters of letters, digits and ._+- with no
 # "." or ".." component (and no ".." at all, as in the names above). It
-# reaches status.json as written, so it has no blank either.
+# reaches status.json as written, so it has no blank either. In apps.json,
+# null or "" is none: a user's file turns a shipped appImage off with "",
+# as it does updateBlocked.
 appimage_path_ok() {
   local re='^~(/[A-Za-z0-9._+-]+)+$'
   [[ ${#1} -le 200 && $1 =~ $re && $1 != *..* && $1 != */. && $1 != */./* ]]
 }
 # The same rules as jq definitions, for apps_table. \z, not $: in jq's
 # regexes $ also matches before a final newline, which bash's =~ refuses.
-# A mise row is mise's tool, never a file: it takes no appImage.
+# A mise row is mise's tool, never a file, so its appImage can only be none.
 jq_name_rules='
   def pkg_ok: type == "string" and test("^[a-z0-9@_+][a-z0-9@._+-]*\\z");
   def id_ok: pkg_ok or (type == "string" and startswith("mise:") and (.[5:] | pkg_ok));
@@ -132,7 +134,7 @@ jq_name_rules='
     and ((.installed // []) | type == "array" and all(.[]; pkg_ok))
     and ([.tool // empty] | flatten | all(.[]; tool_ok))
     and ((.updateBlocked // "") | type == "string" and length <= 200)
-    and (.appImage == null or (.source != "mise" and (.appImage | appimage_ok)));'
+    and ((.appImage // "") == "" or (.source != "mise" and (.appImage | appimage_ok)));'
 
 # A version as mise or a feed prints it, for a skipped version: what
 # version_ok allows plus "-" (mise versions such as 1.0.0-beta.1). Model.js
@@ -782,10 +784,12 @@ appimage_file() {
 # alone (-r-, and -x!*/* leaves out what a directory of that name holds),
 # within 20 s; one over 64 KiB is no desktop entry. The AppImage itself is
 # never run: --appimage-extract would mount it and run its own code. The
-# version is the vendor's as it is, a pre-release too
-# (0.1.1-nightly.20261019.1): skip_version_ok's rule, version_ok's plus
-# "-". Fails without 7z, or when there is not exactly one such entry with
-# one such version.
+# version is the vendor's, less one leading v before a digit (v0.1.1, as a
+# git tag names it): the github-release feed drops it from the tag too, and
+# vercmp would rank any v-version below every numeric one. A pre-release
+# stays as it is (0.1.1-nightly.20261019.1): skip_version_ok's rule,
+# version_ok's plus "-". Fails without 7z, or when there is not exactly one
+# such entry with one such version.
 appimage_version() {
   local out v
   command -v 7z >/dev/null || return 1
@@ -797,6 +801,7 @@ appimage_version() {
     /^\[/ { group = $0; sub(/[ \t]+$/, "", group); if (group == "[Desktop Entry]") entries++; next }
     group == "[Desktop Entry]" && /^X-AppImage-Version[ \t]*=/ { sub(/^[^=]*=[ \t]*/, ""); sub(/[ \t]+$/, ""); v = $0; found++ }
     END { if (entries != 1 || found != 1) exit 1; print v }' <<<"$out") || return 1
+  if [[ $v == [vV][0-9]* ]]; then v=${v:1}; fi
   skip_version_ok "$v" || return 1
   echo "$v"
 }

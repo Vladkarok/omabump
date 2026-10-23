@@ -278,7 +278,9 @@ no_call "install, updateBlocked: nothing built" 'makepkg'
 
 # Its package is not installed; the AppImage is a script that leaves a mark
 # if anything runs it. A staged copy an earlier Update recorded as left
-# stays: removing it would call sudo.
+# stays: removing it would call sudo. No Update of the app comes to remove
+# it later, so the refusal names it, with the command that does; a line of
+# the record that is no staged copy is not named.
 mkdir -p "$ihome/.local/share/selfapp"
 printf '#!/bin/sh\n: >"%s/selfapp-ran"\n' "$it" >"$ihome/.local/share/selfapp/Self.AppImage"
 chmod +x "$ihome/.local/share/selfapp/Self.AppImage"
@@ -286,7 +288,8 @@ for args in selfapp '--prepare selfapp' '--switch selfapp'; do
   fresh
   mkdir -p "$istaging" "$ileft"
   : >"$istaging/selfapp-old.pkg.tar"
-  echo "$istaging/selfapp-old.pkg.tar" >"$ileft/selfapp"
+  printf '%s\n' "$istaging/selfapp-old.pkg.tar" "$it/elsewhere.pkg.tar" "$istaging/gone.pkg.tar" >"$ileft/selfapp"
+  : >"$it/elsewhere.pkg.tar"
   # shellcheck disable=SC2086 # the arguments, split on purpose
   inst $args
   same "install $args, a self-updating app: refuses as other refusals do" 1 "$irc"
@@ -295,7 +298,17 @@ for args in selfapp '--prepare selfapp' '--switch selfapp'; do
   no_call "install $args, a self-updating app: never calls sudo" 'sudo'
   no_call "install $args, a self-updating app: nothing built" 'makepkg'
   check "install $args, a self-updating app: the staged copy left stays" test -e "$istaging/selfapp-old.pkg.tar"
+  says "install $args, a self-updating app: names the staged copy left, and how to remove it" \
+    "omabump: a stopped Update of the selfapp package left its staged copy in $istaging/selfapp-old.pkg.tar, and no Update of Self App will remove it now; remove it with: sudo rm -f -- $istaging/selfapp-old.pkg.tar"
+  same "install $args, a self-updating app: names nothing else of the record" 1 "$(grep -c 'left its staged copy' <<<"$iout")"
+  same "install $args, a self-updating app: the record stays as it was" 3 "$(wc -l <"$ileft/selfapp")"
 done
+rm -f "$it/elsewhere.pkg.tar"
+fresh
+inst selfapp
+same "install, a self-updating app with no staged copy left: the refusal alone" \
+  '1|omabump: Self App updates itself: open Self App to update it (it is installed as ~/.local/share/selfapp/Self.AppImage, which Omabump does not replace)' \
+  "$irc|$iout"
 check "install, a self-updating app: nothing ran the AppImage" test ! -e "$it/selfapp-ran"
 # With its package installed, the package is what Update works on: the
 # installer's setup goes past the refusal (the route itself is not run here).

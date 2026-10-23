@@ -72,15 +72,6 @@ app_id_ok "$pkg" || die "'$pkg' is not a package name Omabump accepts"
 # after term_safe, on one line.
 label=$(jq -r '.label // .pkg' <<<"$app" | term_safe | tr '\t\n' '  ' | sed 's/ *$//')
 
-# An app installed as its self-updating AppImage (apps.json appImage, its
-# package not installed) is updated by the app itself, which replaces the
-# file: nothing here may stage, build or call sudo for it, a staged copy an
-# earlier Update left included, so this comes before the app's lock.
-if jq -e '.appImage | strings' >/dev/null 2>&1 <<<"$app" \
-  && read -r _ installed_name _ < <(installed_app "$app") && self_updating_name "$installed_name"; then
-  die "$label updates itself: open $label to update it (it is installed as $installed_name, which Omabump does not replace)"
-fi
-
 # pacman -U reads the package from a root-owned copy in staging_dir
 # (stage_and_install), a running pacman holds pacman_lock, and bin_dir is
 # where drop_orphan_link looks. Run as a command, nothing changes either,
@@ -93,22 +84,33 @@ staging_dir=${staging_dir:-/var/cache/omabump} pacman_lock=${pacman_lock:-/var/l
 # other apps may run at the same time.
 staged_left=$cache_dir/staged-left/$pkg
 
-# Removes the staged copies earlier runs of this app recorded in
-# $staged_left (on_exit: stopped while sudo or pacman ran, or with the
-# terminal closed), now that a terminal is there for sudo to ask on. The
-# app's lock keeps its other runs away, but not a pacman one of them left
-# running (pacman runs without that lock): while pacman's lock file is
-# there, a pacman may be reading a copy, so the copies stay recorded. The
-# record is a file of yours, so only a plain file name in $staging_dir
-# reaches sudo rm; other lines, and copies already gone, are dropped. A
-# copy that cannot go is named and stays recorded.
-clear_staged_left() {
-  local p lines=() keep=()
+# The staged copies earlier runs of this app recorded in $staged_left
+# (on_exit: stopped while sudo or pacman ran, or with the terminal closed)
+# that are still there, one per line. The record is a file of yours, so
+# only a plain file name in $staging_dir counts; other lines do not.
+staged_left_copies() {
+  local p lines=()
   [[ -f $staged_left ]] || return 0
   mapfile -t lines <"$staged_left"
   for p in "${lines[@]}"; do
     [[ ${p%/*} == "$staging_dir" && ${p##*/} == [!.]* ]] || continue
     [[ -e $p || -L $p ]] || continue
+    printf '%s\n' "$p"
+  done
+}
+
+# Removes those copies, now that a terminal is there for sudo to ask on.
+# The app's lock keeps its other runs away, but not a pacman one of them
+# left running (pacman runs without that lock): while pacman's lock file is
+# there, a pacman may be reading a copy, so the copies stay recorded. Only
+# what staged_left_copies names reaches sudo rm; other lines, and copies
+# already gone, are dropped. A copy that cannot go is named and stays
+# recorded.
+clear_staged_left() {
+  local p lines=() keep=()
+  [[ -f $staged_left ]] || return 0
+  mapfile -t lines < <(staged_left_copies)
+  for p in "${lines[@]}"; do
     if [[ -e $pacman_lock ]]; then
       echo "omabump: pacman's lock file $pacman_lock is there, so a pacman may be reading the staged copy a stopped run left; it stays in $p. Once pacman has ended, remove it with: sudo rm -f -- $p (the next Update of $label removes it too)" >&2
       keep+=("$p")
@@ -133,6 +135,22 @@ clear_staged_left() {
 mkdir -p "$cache_dir/locks"
 exec 7>"$cache_dir/locks/$pkg.lock"
 flock -n 7 || die "another update of $label is already running"
+
+# An app installed as its self-updating AppImage (apps.json appImage, its
+# package not installed) is updated by the app itself, which replaces the
+# file: nothing here may stage, build or call sudo for it, so this comes
+# before the staged copies go. A copy an earlier Update of its package
+# left would then stay for good, with no next Update to remove it: each is
+# named, with the command that removes it.
+if jq -e '(.appImage // "") != ""' >/dev/null 2>&1 <<<"$app" \
+  && read -r _ installed_name _ < <(installed_app "$app") && self_updating_name "$installed_name"; then
+  mapfile -t left_copies < <(staged_left_copies)
+  for copy in "${left_copies[@]}"; do
+    echo "omabump: a stopped Update of the $pkg package left its staged copy in $copy, and no Update of $label will remove it now; remove it with: sudo rm -f -- $copy" >&2
+  done
+  die "$label updates itself: open $label to update it (it is installed as $installed_name, which Omabump does not replace)"
+fi
+
 # The copies stopped runs left go first, whatever the run does next (a
 # refusal, no newer version yet, a failed download).
 clear_staged_left

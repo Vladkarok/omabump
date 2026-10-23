@@ -173,8 +173,12 @@ echo '{"pkg": "x"}' >"$user_apps"
 same "apps_table: a user file that is not an array is ignored" 'a b c' "$(apps_table 2>/dev/null | jq -r 'map(.pkg) | join(" ")')"
 cat >"$user_apps" <<'EOF'
 [
+  {"pkg": "a", "appImage": ""},
   {"pkg": "ai-ok", "source": "omarchy", "appImage": "~/.local/share/x/X-1_2+3.AppImage"},
   {"pkg": "ai-none", "source": "indicator", "appImage": null},
+  {"pkg": "ai-empty", "source": "omarchy", "appImage": ""},
+  {"pkg": "ai-false", "source": "omarchy", "appImage": false},
+  {"pkg": "mise:ai-empty", "source": "mise", "tool": "ai-empty", "appImage": ""},
   {"pkg": "ai-up", "source": "omarchy", "appImage": "~/../x/X.AppImage"},
   {"pkg": "ai-abs", "source": "omarchy", "appImage": "/home/u/X.AppImage"},
   {"pkg": "ai-user", "source": "omarchy", "appImage": "~root/X.AppImage"},
@@ -184,8 +188,10 @@ cat >"$user_apps" <<'EOF'
   {"pkg": "mise:ai", "source": "mise", "tool": "ai", "appImage": "~/X.AppImage"}
 ]
 EOF
-same "apps_table: an appImage is a ~/ path Omabump accepts, and never on a mise row" 'a b c ai-ok ai-none' \
-  "$(apps_table 2>/dev/null | jq -r 'map(.pkg) | join(" ")')"
+same "apps_table: an appImage is a ~/ path Omabump accepts, and never on a mise row" \
+  'a b c ai-ok ai-none ai-empty ai-false mise:ai-empty' "$(apps_table 2>/dev/null | jq -r 'map(.pkg) | join(" ")')"
+same "apps_table: \"\" (or false) is none, as with updateBlocked: a user's file turns a shipped appImage off with it" \
+  '"a":""' "$(apps_table 2>/dev/null | jq -r '.[] | select(.pkg == "a") | "\(.pkg | tojson):\(.appImage | tojson)"')"
 same "apps_table: each entry with another appImage is named on stderr, and says why" 7 \
   "$(apps_table 2>&1 >/dev/null | grep -c '^ignoring app .*an appImage that is not a ~/ path Omabump accepts')"
 rm -f "$user_apps"
@@ -211,6 +217,8 @@ printf '#!/bin/sh\n: >"%s/ai-ran"\n' "$scratch" >"$ai_home/apps/X.AppImage"
 chmod +x "$ai_home/apps/X.AppImage"
 same "appimage_file: a regular file of yours, under HOME" "$ai_home/apps/X.AppImage" "$(HOME=$ai_home appimage_file "$ai_app")"
 refuse "appimage_file: an app without appImage" appimage_file '{"pkg": "x", "source": "omarchy"}'
+refuse "appimage_file: nor with appImage \"\"" appimage_file '{"pkg": "x", "source": "omarchy", "appImage": ""}'
+refuse "appimage_file: nor with appImage false" appimage_file '{"pkg": "x", "source": "omarchy", "appImage": false}'
 same "appimage_file: a path the rules refuse" '' "$(HOME=$ai_home appimage_file '{"appImage": "~/apps/../apps/X.AppImage"}')"
 mv "$ai_home/apps/X.AppImage" "$ai_home/apps/real"
 ln -s real "$ai_home/apps/X.AppImage"
@@ -243,6 +251,10 @@ same "appimage_version: X-AppImage-Version of the desktop entry" 0.1.0 \
   "$(ai_version $'[Desktop Entry]\nName=T3 Code\nX-AppImage-Version=0.1.0\nComment=x\n')"
 same "appimage_version: blanks around =, a CRLF line, a pre-release" 0.1.1-nightly.20261019.1 \
   "$(ai_version $'[Desktop Entry]\r\nX-AppImage-Version = 0.1.1-nightly.20261019.1 \r\n')"
+same "appimage_version: a leading v before a digit goes, as the github-release feed drops it" '0.1.1|1.0|1.2.0-beta.1' \
+  "$(ai_version $'[Desktop Entry]\nX-AppImage-Version=v0.1.1\n')|$(ai_version $'[Desktop Entry]\nX-AppImage-Version=V1.0\n')|$(ai_version $'[Desktop Entry]\nX-AppImage-Version=v1.2.0-beta.1\n')"
+same "appimage_version: no v goes before a letter" 'vv0.1|vnext|continuous' \
+  "$(ai_version $'[Desktop Entry]\nX-AppImage-Version=vv0.1\n')|$(ai_version $'[Desktop Entry]\nX-AppImage-Version=vnext\n')|$(ai_version $'[Desktop Entry]\nX-AppImage-Version=continuous\n')"
 same "appimage_version: only the [Desktop Entry] group counts" 2.0 \
   "$(ai_version $'[Desktop Action x]\nX-AppImage-Version=9.9\n[Desktop Entry]\nX-AppImage-Version[de]=8.8\nX-AppImage-Version=2.0\n')"
 for entry in $'[Desktop Entry]\nName=T3 Code\n' $'X-AppImage-Version=1.0\n' $'[Desktop Entry]\nX-AppImage-Version=1.0\nX-AppImage-Version=1.1\n' \
@@ -268,6 +280,8 @@ same "installed_app: its package wins" 'omarchy x 1.0-1' \
   "$(pacman() { [[ $3 == x ]] && echo 'x 1.0-1'; }; PATH=$ai_bin:$PATH HOME=$ai_home installed_app "$ai_app")"
 same "installed_app: no package and no AppImage, not installed" 'not installed' \
   "$(pacman() { return 1; }; HOME=$scratch/no-such-home installed_app "$ai_app" || echo 'not installed')"
+same "installed_app: an appImage of \"\" names no file" 'not installed' \
+  "$(pacman() { return 1; }; PATH=$ai_bin:$PATH HOME=$ai_home installed_app '{"pkg": "x", "source": "omarchy", "appImage": ""}' || echo 'not installed')"
 ai_version $'[Desktop Entry]\n' >/dev/null
 # shellcheck disable=SC2088 # the path as apps.json writes it
 same "appimage_installed: a version it cannot read is empty" '~/apps/X.AppImage |' \

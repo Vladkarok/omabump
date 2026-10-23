@@ -157,13 +157,16 @@ row_switchable() {
 # names it by its path): its own updater replaces the file, so the row has
 # no route, and its note says to open the app. $1 label, $2 the AppImage's
 # version (empty when unknown), $3 the newest known. Sets update, unchecked
-# and note. A release version (version_ok: no "-") compares with the
-# feed's by vercmp as it is, since an AppImage has no pkgrel. A pre-release
-# (0.1.1-nightly.20261019.1) is compared with nothing: a feed's version
-# never has a "-", so it is a release of another channel, and vercmp would
-# take the suffix for a pkgrel and call 0.1.1-nightly.x the same as 0.1.1.
-# Such a row, or one whose version is unknown, never claims an update and
-# never reads as current (unchecked), and its note says why first.
+# and note. A release version (version_ok: no "-", and a digit first)
+# compares with the feed's by vercmp as it is, since an AppImage has no
+# pkgrel. A pre-release (0.1.1-nightly.20261019.1) is compared with
+# nothing: a feed's version never has a "-", so it is a release of another
+# channel, and vercmp would take the suffix for a pkgrel and call
+# 0.1.1-nightly.x the same as 0.1.1. Nor is a version with a letter first
+# (continuous, as some CI builds name theirs): vercmp ranks it below every
+# numeric one, an update forever. Such a row, or one whose version is
+# unknown, never claims an update and never reads as current (unchecked),
+# and its note says why first.
 appimage_row() {
   local label=$1 have=$2 latest=$3 why=""
   update=false unchecked=false
@@ -171,6 +174,8 @@ appimage_row() {
     unchecked=true
     if command -v 7z >/dev/null; then why="Version unknown: 7z could not read it from the AppImage"
     else why="Version unknown: install 7zip to read it (sudo pacman -S --needed 7zip)"; fi
+  elif [[ $have != [0-9]* ]]; then
+    unchecked=true why="Not a release number, not compared with the feed's"
   elif ! version_ok "$have"; then
     unchecked=true why="Pre-release build, not compared with the feed's stable releases"
   elif [[ -n $latest ]] && newer "$latest" "$have"; then
@@ -304,7 +309,7 @@ local_pacman_busy() {
 # versions it knows: sets row, and why when only a check can read the rest.
 # Fails, row unset, when the row stays as it is.
 local_row() {
-  local p_source p_name p_installed p_latest p_from p_installable p_held p_unchecked p_self have update held=false
+  local p_source p_name p_installed p_latest p_from p_installable p_held p_unchecked p_self p_unread have update held=false
   local installable unhold=false switchable=false label muted blocked=false self=false unchecked note
   row="" why=""
   self_updating_name "$name" && self=true
@@ -326,9 +331,14 @@ local_row() {
     why="$pkg${installed:+ $installed} is installed since the last check"
     return 0
   fi
-  IFS=$'\x1f' read -r p_source p_name p_installed p_latest p_from p_installable p_held p_unchecked p_self < <(jq -r '
+  # p_unread: a row a local refresh wrote and no check has read since (new,
+  # or moved between package and AppImage). For a self-updating app,
+  # unchecked alone does not say so: its unknown or pre-release version is
+  # unchecked too.
+  IFS=$'\x1f' read -r p_source p_name p_installed p_latest p_from p_installable p_held p_unchecked p_self p_unread < <(jq -r '
     [.source // "", .installedName // "", .installed // "", .latest // "", .versionFrom // "",
-     .installable == true, .held == true, .unchecked == true, .selfUpdating == true] | map(tostring) | join("\u001f")' <<<"$prev")
+     .installable == true, .held == true, .unchecked == true, .selfUpdating == true,
+     (.unchecked == true and .note == "Not checked yet")] | map(tostring) | join("\u001f")' <<<"$prev")
   if [[ $p_source != "$source" ]]; then
     why="$pkg has another source in the app table"
     return 1
@@ -337,16 +347,29 @@ local_row() {
 
   # From the package to the self-updating AppImage or back: the route, the
   # note and what counts as newer all change, and only a check reads them.
+  # The newest version stays (the feed is the entry's, whatever is
+  # installed); what only the other form had goes, as a new row has it: the
+  # recipe, omarchy update's AUR route, and updateBlocked's mark, which an
+  # app that updates itself never carries.
   if [[ $self != "$p_self" ]]; then
-    row=$(jq -c --arg name "$name" --arg installed "$installed" --argjson self "$self" '
+    [[ $self == true || -z $(jq -r '.updateBlocked // ""' <<<"$app") ]] || blocked=true
+    row=$(jq -c --arg name "$name" --arg installed "$installed" --argjson self "$self" --argjson blocked "$blocked" '
       . + {installedName: $name, installed: $installed, selfUpdating: $self, updateAvailable: false, installable: false,
-           switchable: false, held: false, skipped: false, unchecked: true, note: "Not checked yet"}' <<<"$prev")
+           switchable: false, held: false, skipped: false, unchecked: true, note: "Not checked yet",
+           recipe: "", recipeCommit: "", omarchyUpdate: false, blocked: $blocked}' <<<"$prev")
     why="$pkg is installed as $name now"
     return 0
   fi
-  # A self-updating app's version against the newest known, by the rules a
-  # check applies (appimage_row): its own updater moved it.
   if [[ $self == true ]]; then
+    # No check has read the row yet: it stays unread at its new version, as
+    # a package row does, and the check asked for reads the rest.
+    if [[ $p_unread == true ]]; then
+      row=$(jq -c --arg name "$name" --arg installed "$installed" '. + {installedName: $name, installed: $installed}' <<<"$prev")
+      why="$pkg${installed:+ $installed} is not checked yet"
+      return 0
+    fi
+    # Its version against the newest known, by the rules a check applies
+    # (appimage_row): its own updater moved it.
     appimage_row "$(jq -r '.label // .pkg' <<<"$app")" "$installed" "$p_latest"
     row=$(jq -c --arg name "$name" --arg installed "$installed" --argjson update "$update" --argjson unchecked "$unchecked" \
       --arg note "$(clean_text "$note")" '
