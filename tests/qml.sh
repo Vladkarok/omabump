@@ -235,6 +235,34 @@ else
   rm -f "$shell_json"
   load_quiet
 fi
+# --- the cursor under the pointer, in Qt ---------------------------------------
+
+# PointerGate.qml under Panel.qml's rows in miniature (tests/tst_pointer.qml),
+# offscreen through qmltestrunner (qt6-declarative), one line per test.
+# Qt 6's: /usr/bin/qmltestrunner is Qt 5's, when qt5-declarative is here.
+qml_runner=$(command -v /usr/lib/qt6/bin/qmltestrunner || command -v qmltestrunner6 || true)
+if [[ -z $qml_runner ]]; then
+  if [[ ${GITHUB_ACTIONS:-} == true ]]; then
+    fail "QML tests run on CI" "qmltestrunner is not installed"
+  else
+    echo "SKIP - QML tests: qmltestrunner is not installed (qt6-declarative)"
+  fi
+else
+  mkdir -p "$scratch/qt-runtime"
+  chmod 700 "$scratch/qt-runtime"
+  qml_out=$(env QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software QML_DISABLE_DISK_CACHE=1 \
+    XDG_RUNTIME_DIR="$scratch/qt-runtime" timeout 120 "$qml_runner" -input "$root/tests/tst_pointer.qml" </dev/null 2>&1)
+  qml_rc=$?
+  while IFS= read -r line; do
+    name=${line#*::*::}
+    case $line in
+      "PASS   : "*) [[ $name == initTestCase* || $name == cleanupTestCase* ]] || pass "QML: ${name%%()*}" ;;
+      "FAIL!  : "*) fail "QML: ${name%%()*}" "${name#*() }" ;;
+    esac
+  done <<<"$qml_out"
+  grep -q '^Totals: ' <<<"$qml_out" || fail "QML: tests/tst_pointer.qml ran to the end" "exit $qml_rc: $(head -c 400 <<<"$qml_out")"
+fi
+
 check "bin/omabump-check writes schemaVersion 1, the shape Model.parseStatus reads" \
   grep -q '{schemaVersion: 1,' "$root/bin/omabump-check"
 check "Model.js reads status.json's schemaVersion" grep -q 'schemaVersion' "$root/Model.js"

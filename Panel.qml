@@ -59,12 +59,6 @@ Panel {
   // (Model.cursorIndex): the cursor follows that app when the list changes.
   property string cursorPkg: ""
   property bool cursorMoved: false
-  // Where the pointer last was over the rows, in the panel's coordinates,
-  // or none (x < 0). Rows rebuilt under a still pointer (each check
-  // rewrites them) report a hover too, and only a pointer that moved
-  // moves the cursor; Omarchy's PointerMoveGate does the same in newer
-  // shells.
-  property point pointerAt: Qt.point(-1, -1)
   // What the last Ask agent or Copy prompt did, by pkg, shown as the row's
   // second line until the panel closes.
   property var actionNotes: ({})
@@ -154,21 +148,11 @@ Panel {
     moveCursor(dy)
   }
 
-  // True when the pointer has moved since the last hover over a row; the
-  // first one after a reset only notes where it is.
-  function pointerMoved(item, mouse) {
-    var p = item.mapToItem(root, mouse.x, mouse.y)
-    var moved = pointerAt.x >= 0 && (Math.abs(p.x - pointerAt.x) > 1 || Math.abs(p.y - pointerAt.y) > 1)
-    if (moved || pointerAt.x < 0) pointerAt = p
-    return moved
-  }
-
   function moveCursor(dy) {
     if (settingsOpen) settingIndex = Model.clamp(settingIndex + dy, 0, settingRows.length + (quietText !== "" ? 1 : 0))
     else if (orderedApps.length > 0) {
       rowIndex = Model.clamp(rowIndex + dy, 0, orderedApps.length - 1)
       cursorMoved = true
-      pointerAt = Qt.point(-1, -1)
     }
     ensureCursorVisible()
   }
@@ -232,7 +216,7 @@ Panel {
   function resetCursor() {
     rowIndex = Model.firstActionIndex(orderedApps, checker.mutedApps, checker.skippedVersions)
     cursorMoved = false
-    pointerAt = Qt.point(-1, -1)
+    pointerGate.reset()
     cursorActive = orderedApps.length > 0
     Qt.callLater(ensureCursorVisible)
   }
@@ -373,6 +357,11 @@ Panel {
     if (rowIndex !== was && opened && !settingsOpen) Qt.callLater(ensureCursorVisible)
   }
   onRowIndexChanged: noteCursorPkg()
+
+  // A hover moves the cursor only when the pointer moved.
+  PointerGate {
+    id: pointerGate
+  }
   // Clear, or a settings change from elsewhere, can leave the quiet line
   // empty, and then it hides: the settings cursor must not stay on it.
   onQuietTextChanged: if (quietText === "") settingIndex = Model.clamp(settingIndex, 0, settingRows.length)
@@ -462,6 +451,13 @@ Panel {
       }
       onCloseRequested: root.settingsOpen ? root.showSettings(false, false) : root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
+      // Where the pointer is over the card, header and footer included,
+      // for pointerGate; a row's own hover comes first.
+      HoverHandler {
+        onPointChanged: if (hovered) pointerGate.note(keyCatcher, point.position.x, point.position.y)
+        onHoveredChanged: if (!hovered) pointerGate.leave()
+      }
+
       // Skip is Shift+K, and CapsLock j and k move the cursor
       // (Model.keyAction).
       onTextKey: function(t, modifiers) {
@@ -943,7 +939,7 @@ Panel {
       hoverEnabled: true
       acceptedButtons: Qt.NoButton
       onPositionChanged: function(mouse) {
-        if (!root.pointerMoved(rowMouse, mouse)) return
+        if (!pointerGate.moved(rowMouse, mouse.x, mouse.y)) return
         root.cursorActive = true
         root.rowIndex = appRow.rowIndex
         root.cursorMoved = true

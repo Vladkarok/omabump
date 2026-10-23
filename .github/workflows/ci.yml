@@ -23,13 +23,14 @@ jobs:
         run: docker run --rm -v "$PWD":/mnt koalaman/shellcheck:v0.11.0 bin/omabump-common bin/omabump-check bin/omabump-install bin/omabump-prompt tests/run.sh tests/qml.sh tests/check.sh tests/install.sh tests/pin-watch.sh .github/scripts/pin-watch
 
   test:
-    # The suite compares versions with vercmp, which comes with pacman.
+    # The suite compares versions with vercmp, which comes with pacman, and
+    # runs the panel's pointer test with qt6-declarative's qmltestrunner.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     container: archlinux:latest
     steps:
       - name: Dependencies
-        run: pacman -Syu --noconfirm --needed git jq python libarchive nodejs 7zip
+        run: pacman -Syu --noconfirm --needed git jq python libarchive nodejs 7zip qt6-declarative
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: tests/run.sh
         run: tests/run.sh
