@@ -585,6 +585,18 @@ function firstActionIndex(rows, muted, skipped) {
   return 0
 }
 
+// The cursor's row once the list changes (a check or a local refresh wrote
+// it, say the one the panel starts on open): the app pkg while it is listed
+// and the cursor was moved there by hand (moved), else the first row with
+// something to do, as on a fresh list. So Enter never lands on another app
+// than the one highlighted, nor on a row that lost its action meanwhile.
+function cursorIndex(rows, pkg, moved, muted, skipped) {
+  if (moved)
+    for (var i = 0; i < rows.length; i++)
+      if (rows[i].pkg === pkg) return i
+  return firstActionIndex(rows, muted, skipped)
+}
+
 // A row installed under another package name (chatgpt-desktop, z-code-bin)
 // that the plugin installs: Update replaces it when a newer version
 // exists, Switch does it at the same one. The checker writes the fields

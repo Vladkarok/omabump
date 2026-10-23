@@ -55,6 +55,16 @@ Panel {
 
   property int rowIndex: 0
   property bool cursorActive: false
+  // The app under the cursor, and whether a key or the mouse put it there
+  // (Model.cursorIndex): the cursor follows that app when the list changes.
+  property string cursorPkg: ""
+  property bool cursorMoved: false
+  // Where the pointer last was over the rows, in the panel's coordinates,
+  // or none (x < 0). Rows rebuilt under a still pointer (each check
+  // rewrites them) report a hover too, and only a pointer that moved
+  // moves the cursor; Omarchy's PointerMoveGate does the same in newer
+  // shells.
+  property point pointerAt: Qt.point(-1, -1)
   // What the last Ask agent or Copy prompt did, by pkg, shown as the row's
   // second line until the panel closes.
   property var actionNotes: ({})
@@ -144,9 +154,22 @@ Panel {
     moveCursor(dy)
   }
 
+  // True when the pointer has moved since the last hover over a row; the
+  // first one after a reset only notes where it is.
+  function pointerMoved(item, mouse) {
+    var p = item.mapToItem(root, mouse.x, mouse.y)
+    var moved = pointerAt.x >= 0 && (Math.abs(p.x - pointerAt.x) > 1 || Math.abs(p.y - pointerAt.y) > 1)
+    if (moved || pointerAt.x < 0) pointerAt = p
+    return moved
+  }
+
   function moveCursor(dy) {
     if (settingsOpen) settingIndex = Model.clamp(settingIndex + dy, 0, settingRows.length + (quietText !== "" ? 1 : 0))
-    else if (orderedApps.length > 0) rowIndex = Model.clamp(rowIndex + dy, 0, orderedApps.length - 1)
+    else if (orderedApps.length > 0) {
+      rowIndex = Model.clamp(rowIndex + dy, 0, orderedApps.length - 1)
+      cursorMoved = true
+      pointerAt = Qt.point(-1, -1)
+    }
     ensureCursorVisible()
   }
 
@@ -200,9 +223,16 @@ Panel {
     else resetCursor()
   }
 
+  function noteCursorPkg() {
+    var app = selectedApp()
+    cursorPkg = app ? app.pkg : ""
+  }
+
   // A fresh list puts the cursor on the first row with something to do.
   function resetCursor() {
     rowIndex = Model.firstActionIndex(orderedApps, checker.mutedApps, checker.skippedVersions)
+    cursorMoved = false
+    pointerAt = Qt.point(-1, -1)
     cursorActive = orderedApps.length > 0
     Qt.callLater(ensureCursorVisible)
   }
@@ -336,7 +366,13 @@ Panel {
   // built; the bar later sets bar, then the entry's settings, with
   // Qt.callLater. The first settings to arrive with a bar are the real ones.
   onSettingsChanged: if (root.bar) checker.settingsReady = true
-  onOrderedAppsChanged: rowIndex = Model.clamp(rowIndex, 0, Math.max(0, orderedApps.length - 1))
+  onOrderedAppsChanged: {
+    var was = rowIndex
+    rowIndex = Model.cursorIndex(orderedApps, cursorPkg, cursorMoved, checker.mutedApps, checker.skippedVersions)
+    noteCursorPkg()
+    if (rowIndex !== was && opened && !settingsOpen) Qt.callLater(ensureCursorVisible)
+  }
+  onRowIndexChanged: noteCursorPkg()
   // Clear, or a settings change from elsewhere, can leave the quiet line
   // empty, and then it hides: the settings cursor must not stay on it.
   onQuietTextChanged: if (quietText === "") settingIndex = Model.clamp(settingIndex, 0, settingRows.length)
@@ -419,7 +455,10 @@ Panel {
       onActivateRequested: {
         if (!root.cursorActive) return
         if (root.settingsOpen) root.activateSetting()
-        else root.primaryAction(root.selectedApp())
+        else {
+          root.cursorMoved = true
+          root.primaryAction(root.selectedApp())
+        }
       }
       onCloseRequested: root.settingsOpen ? root.showSettings(false, false) : root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
@@ -427,6 +466,9 @@ Panel {
       // (Model.keyAction).
       onTextKey: function(t, modifiers) {
         var action = Model.keyAction(t, modifiers, root.settingsOpen, root.cursorActive)
+        // A row's own action keeps the cursor on that row, though muting or
+        // skipping it takes its action away (Model.cursorIndex).
+        if (["copy", "switch", "mute", "skip"].indexOf(action) >= 0) root.cursorMoved = true
         if (action === "down" || action === "up") root.cursorKey(action === "down" ? 1 : -1)
         else if (action === "settings") root.showSettings(!root.settingsOpen, true)
         else if (action === "back") root.showSettings(false, false)
@@ -900,9 +942,11 @@ Panel {
       anchors.fill: parent
       hoverEnabled: true
       acceptedButtons: Qt.NoButton
-      onContainsMouseChanged: if (containsMouse) {
+      onPositionChanged: function(mouse) {
+        if (!root.pointerMoved(rowMouse, mouse)) return
         root.cursorActive = true
         root.rowIndex = appRow.rowIndex
+        root.cursorMoved = true
       }
     }
 

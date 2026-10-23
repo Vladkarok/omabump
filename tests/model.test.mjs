@@ -496,6 +496,12 @@ test("firstActionIndex: the first row with something to do that is not quiet", (
     m.firstActionIndex([row({})], [], {}), m.firstActionIndex([], [], {})], [1, 2, 0, 0])
 })
 
+test("cursorIndex: the app moved to by hand while listed, else the first row with something to do", () => {
+  const plain = row({ pkg: "a" }), moved = [update, plain, indicator]
+  same([m.cursorIndex(moved, "a", true, [], {}), m.cursorIndex([plain, indicator], "claude-desktop", true, [], {}),
+    m.cursorIndex([plain, update], "a", false, [], {}), m.cursorIndex([], "a", true, [], {})], [1, 1, 1, 0])
+})
+
 const renamed = row({ pkg: "chatgpt", installedName: "chatgpt-desktop", installed: "1.0.0-1", latest: "1.1.0", updateAvailable: true, note: "Recipe at abc" })
 const sameVersion = row({ pkg: "z-code", source: "vendor-pkg", installedName: "z-code-bin", installed: "2.0-1", latest: "2.0", switchable: true })
 
