@@ -24,6 +24,12 @@ same "a check waits for a local refresh as long as Main.qml lets one run" \
 check "Main.qml waits for the lock before the deadline starts" \
   grep -q 'command = \["bash", "-c", waitScript, "omabump-wait", lockPath, String(lockWaitSec)\].concat(command)$' "$root/Main.qml"
 refuse "Main.qml never passes the checker --wait" grep -q -- '"--wait"' "$root/Main.qml"
+check "Main.qml passes --retry for the retry of a failed check" grep -q 'if (retry) command.push("--retry")$' "$root/Main.qml"
+same "the timer and opening the panel start what Model.dueRun answers" 2 "$(grep -c '= dueCheck()$' "$root/Main.qml")"
+check "Main.qml asks Model.barDueRun with its own start and retry" \
+  grep -q 'return Model.barDueRun(nowMs, checkedAt, fileStartedMs, runAskedMs, refreshIntervalSec, lastCheckFailed,$' "$root/Main.qml"
+check "and notes the retry it starts" grep -q 'if (run === "retry") retryAskedMs = Model.lastRunMs(checkedAt, fileStartedMs)$' "$root/Main.qml"
+check "Main.qml asks every Model.pollSec whether a check is due" grep -q '^    interval: Model.pollSec \* 1000$' "$root/Main.qml"
 
 # A Refresh waits for a running check on the checker's lock, as long as the
 # checker's own --wait would.

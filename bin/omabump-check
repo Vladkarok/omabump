@@ -16,12 +16,15 @@
 # rather than its package: the feed in apps.json, against the version the
 # AppImage names, read with 7z; the app updates itself, so no route.
 #
-#   omabump-check [--no-notify] [--no-mise] [--wait]
+#   omabump-check [--no-notify] [--no-mise] [--wait] [--retry]
 #   omabump-check --local [--no-mise]
 #
 # --wait runs after a check already in progress instead of leaving it to
 # that one: the installer's refresh needs a check that starts after its
 # install, since the running one may have read the old version.
+#
+# --retry marks the run as the widget's one retry of a check that failed
+# (status.json's retry, Model.dueRun): a retry that fails is not retried.
 #
 # --local reads the installed versions again and nothing else, without the
 # network: see local_refresh below.
@@ -48,19 +51,20 @@ set -euo pipefail
 # shellcheck source=omabump-common
 source "$(dirname "$(readlink -f "$0")")/omabump-common"
 
-usage="usage: omabump-check [--no-notify] [--no-mise] [--wait] | --local [--no-mise]"
-notify="" with_mise="" wait_lock=0 local_run=0
+usage="usage: omabump-check [--no-notify] [--no-mise] [--wait] [--retry] | --local [--no-mise]"
+notify="" with_mise="" wait_lock=0 local_run=0 retry=0
 while (( $# )); do
   case $1 in
     --no-notify) notify=0 ;;
     --no-mise) with_mise=0 ;;
     --wait) wait_lock=1 ;;
     --local) local_run=1 ;;
+    --retry) retry=1 ;;
     *) echo "$usage" >&2; exit 2 ;;
   esac
   shift
 done
-(( ! (local_run && wait_lock) )) || { echo "$usage" >&2; exit 2; }
+(( ! (local_run && (wait_lock || retry)) )) || { echo "$usage" >&2; exit 2; }
 
 # What --local tells its caller besides 0 and 75 (Model.js reads the same
 # numbers, Model.localOutcome): a row changed in a way only a check can
@@ -539,8 +543,9 @@ order=$(jq -c 'map(.pkg)' <<<"$table")
 # inventoryAt, when the installed versions were last read, is the run's
 # start once it is done, and stays the last one's until then.
 # schemaVersion names the file's shape. Version 1: no switch clause in a
-# row's note, and "unchecked" on every row; inventoryAt and a row's
-# selfUpdating came later, fields a reader may find missing.
+# row's note, and "unchecked" on every row; inventoryAt, retry and a row's
+# selfUpdating came later, fields a reader may find missing. retry: this
+# run was the widget's retry of a check that failed (--retry).
 write_status() {
   local final=$1 run_error=${2:-} out at
   at=$(jq -r '.checkedAt // ""' <<<"$previous")
@@ -550,7 +555,7 @@ write_status() {
     --argjson final "$final" --arg at "$at" --arg started "$started" \
     --arg commit "$pkgs_commit" --arg perr "$(clean_text "$pkgs_error")" --arg pnote "$(clean_text "$pkgs_note")" \
     --argjson following "$pkgs_follow" --arg derr "$discovery_note" --arg merr "$mise_note" \
-    --arg rerr "$(clean_text "$run_error")" "$jq_row_order"'
+    --arg rerr "$(clean_text "$run_error")" --argjson retry "$retry" "$jq_row_order"'
     $prevs[0] as $prev
     | (map(.pkg)) as $done
     | (if $final == 1 then .
@@ -558,6 +563,7 @@ write_status() {
     | row_order($order)
     | {schemaVersion: 1, checkedAt: $at, checking: ($final == 0), startedAt: $started,
        inventoryAt: (if $final == 1 then $started else ($prev.inventoryAt | strings) // "" end), runError: $rerr,
+       retry: ($retry == 1),
        omarchyPkgs: {commit: $commit, following: ($following == 1), error: $perr, note: $pnote},
        discoveryError: $derr, miseError: $merr, apps: .}' >"$out"
   mv -f "$out" "$status_file"

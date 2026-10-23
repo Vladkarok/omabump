@@ -137,6 +137,12 @@ Item {
   // status.json's inventoryAt: when the installed versions were last read,
   // by a check or a local refresh (localRefresh); 0 when it does not say.
   property double inventoryMs: 0
+  // status.json's retry: the last check was the retry of one that failed.
+  property bool fileRetry: false
+  // When the last run status.json shows had started (Model.lastRunMs) as
+  // this bar started its retry: until a run writes the file again, that
+  // failure has had its retry, even when the retry wrote nothing.
+  property double retryAskedMs: NaN
   // A local refresh asked for while one ran: one more runs after it.
   property bool localPending: false
   // status.json has been read, or found missing. The timer's first check
@@ -158,6 +164,9 @@ Item {
   readonly property int errorCount: Model.errorCount(apps, mutedApps)
   readonly property int mutedErrorCount: Model.mutedErrorCount(apps, mutedApps)
   readonly property int uncheckedCount: Model.uncheckedCount(apps)
+  // What the summary calls "Check failed", or a run killed with no word
+  // (its "checking" mark gone stale), which earns one retry (Model.dueRun).
+  readonly property bool lastCheckFailed: checkFailed || errorCount > 0 || fileCheckingRaw && !fileChecking
   readonly property int staleCount: Model.staleCount(apps, mutedApps)
   // What the hero, the bar tooltip and IPC status summarise (Model.heroMeta,
   // Model.tooltipText).
@@ -206,7 +215,9 @@ Item {
   // (or to another bar's waitScript, whose check starts next), and leaves
   // the answer to that one (Model.checkOutcome's "left"). A local refresh
   // holding the lock is no check: the checker waits for it to end.
-  function runCheck(wait, own) {
+  // retry: the one retry of a check that failed (Model.dueRun), which
+  // status.json then says.
+  function runCheck(wait, own, retry) {
     checkQueued = false
     queuedForRefresh = false
     runForRefresh = own
@@ -220,20 +231,35 @@ Item {
     var command = ["timeout", "-k", "10", "600", checkScript]
     if (!notify) command.push("--no-notify")
     if (!showMise) command.push("--no-mise")
+    if (retry) command.push("--retry")
     if (wait)
       command = ["bash", "-c", waitScript, "omabump-wait", lockPath, String(lockWaitSec)].concat(command)
     checkProcess.command = command
     checkProcess.running = true
   }
 
-  // The timer's check. This one stays out while a check runs (its own, or
-  // one status.json shows) or a finished one is recent (Model.checkDue).
-  // Refresh (click, r, IPC) always checks.
+  // The check the timer or opening the panel may start (Model.barDueRun):
+  // "check", "retry" or "".
+  function dueCheck() {
+    return Model.barDueRun(nowMs, checkedAt, fileStartedMs, runAskedMs, refreshIntervalSec, lastCheckFailed,
+      fileRetry, retryAskedMs)
+  }
+
+  // Starts the check dueCheck answered, noting a retry.
+  function startDue(run) {
+    if (run === "retry") retryAskedMs = Model.lastRunMs(checkedAt, fileStartedMs)
+    runCheck(false, false, run === "retry")
+  }
+
+  // The timer's check, or the retry of one that failed. This one stays out
+  // while a check runs (its own, or one status.json shows) or the last one
+  // started recently (dueCheck). Refresh (click, r, IPC) always checks.
   function scheduledRefresh() {
     timerTicked = true
     nowMs = Date.now()
     if (checkProcess.running || fileChecking) return
-    if (Model.checkDue(nowMs, checkedAt, fileStartedMs, refreshIntervalSec)) runCheck(false, false)
+    var run = dueCheck()
+    if (run !== "") startDue(run)
   }
 
   // A local refresh (bin/omabump-check --local) reads the installed
@@ -273,8 +299,9 @@ Item {
   function panelOpened() {
     if (!settingsReady || !statusRead) return
     nowMs = Date.now()
-    var run = Model.openedRun(checking, Model.checkDue(nowMs, checkedAt, fileStartedMs, refreshIntervalSec))
-    if (run === "full") runCheck(false, false)
+    var due = dueCheck()
+    var run = Model.openedRun(checking, due !== "")
+    if (run === "full") startDue(due)
     else if (run === "local") localRefresh()
   }
 
@@ -296,6 +323,7 @@ Item {
       fileCheckingRaw = status.checking
       fileStartedMs = status.startedMs
       inventoryMs = status.inventoryMs
+      fileRetry = status.retry
       nowMs = Date.now()
       pkgsCommit = status.pkgsCommit
       pkgsFollowing = status.pkgsFollowing
@@ -409,8 +437,10 @@ Item {
     onTriggered: root.settingsReady = true
   }
 
+  // Asks every minute whether a check, or a failed one's retry, is due:
+  // they count from status.json's times, which every bar shares.
   Timer {
-    interval: root.refreshIntervalSec * 1000
+    interval: Model.pollSec * 1000
     running: root.settingsReady && root.statusRead
     repeat: true
     triggeredOnStart: true

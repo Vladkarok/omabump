@@ -870,6 +870,8 @@ for bad in '{"apps": []}' '{"schemaVersion": 1, "checking": true, "apps": []}' '
 done
 check_run --local --wait; rc=$?
 same "--local with --wait is a usage error" 2 "$rc"
+check_run --local --retry; rc=$?
+same "--local with --retry is a usage error" 2 "$rc"
 
 # Holds the lock files on the fds $@ (7 .local.lock, 8 .check.lock) in the
 # background until loc_free, ten seconds at most, so a test that breaks
@@ -907,6 +909,11 @@ loc_free
 wait "$pid"; rc=$?
 same "and then runs" '0|false' "$rc|$(run_status .checking)"
 same "a check writes inventoryAt, its start" true "$(run_status '.inventoryAt == .startedAt and .inventoryAt != ""')"
+same "a check that is no retry says so" false "$(run_status .retry)"
+check_run --retry
+same "the widget's retry of a failed check says it was one" true "$(run_status .retry)"
+OMABUMP_TEST_PKGS=$run_dir/pkgs OMABUMP_TEST_MISE_LS=$run_dir/mise-ls.json check_run --local
+same "and a local refresh after it keeps that" true "$(run_status .retry)"
 loc_status
 same "while a check runs, inventoryAt stays the last one's" '2026-01-01T00:09:00+00:00' "$(status_mid_run .inventoryAt)"
 same "--local and the checks around it leave no scratch files" '' "$(leftovers)"

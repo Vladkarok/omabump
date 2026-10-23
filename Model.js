@@ -394,24 +394,62 @@ function parseStatus(text, showMise) {
     pkgsNote: String(pkgs.note || ""),
     discoveryError: String(file.discoveryError || ""),
     miseError: showMise ? String(file.miseError || "") : "",
-    runError: String(file.runError || "")
+    runError: String(file.runError || ""),
+    // The check was the widget's retry of one that failed (dueRun).
+    retry: file.retry === true
   }
 }
 
-// Whether the timer's check is due. Every monitor's bar runs its own copy
-// of the widget and a shell reload starts them all, so a check that
-// started less than an interval (less 30 s of slack) ago is recent enough.
-// That start, not checkedAt (the end), is what counts: from the end, this
-// widget's own next tick would come up short by however long its last
-// check took and be skipped.
+// When the last check started, finished or not (a run that died half way
+// leaves startedAt past checkedAt); a file from before startedAt has only
+// checkedAt. NaN when the file says neither.
+function lastRunMs(checkedAt, startedMs) {
+  if (startedMs > 0) return startedMs
+  return checkedAt !== "" ? new Date(checkedAt).getTime() : NaN
+}
+
+// Whether a check is due, intervalSec after the last one started. Every
+// monitor's bar runs its own copy of the widget and a shell reload starts
+// them all, so a check that started less than an interval (less 30 s of
+// slack) ago is recent enough. That start, not checkedAt (the end), is
+// what counts: from the end, this widget's own next tick would come up
+// short by however long its last check took and be skipped. A run that
+// died half way counts from its start too: its retry follows it (dueRun),
+// and nothing piles up behind runs that keep dying.
 function checkDue(nowMs, checkedAt, startedMs, intervalSec) {
-  var checked = checkedAt !== "" ? new Date(checkedAt).getTime() : NaN
-  // A run that died half way leaves startedAt past checkedAt, and its rows
-  // are partly the run before's: then that run's end is all there is.
-  var last = startedMs > 0 && isFinite(checked) && startedMs <= checked ? startedMs : checked
+  var age = nowMs - lastRunMs(checkedAt, startedMs)
   // A time ahead of the clock (it was set back) proves nothing.
-  var age = nowMs - last
   return !(isFinite(age) && age >= 0 && age < (intervalSec - 30) * 1000)
+}
+
+// How often each bar asks whether a check is due (dueRun).
+var pollSec = 60
+
+// A check that failed (the summary says "Check failed": offline after a
+// resume, a feed's 504) is tried once more retrySec after it started,
+// instead of a whole interval later. Once: a retry that fails too waits
+// the interval, so an outage, or a rate limit that lasts the hour, is not
+// asked again every few minutes.
+var retrySec = 300
+
+// Which check the timer, or opening the panel, may start. After a check
+// that failed and was no retry (retried: status.json's retry, or this bar
+// asked for the retry of that very run), "retry" once retrySec have passed
+// since it started, even when the interval's check is due as well: that
+// run then says it is the retry, and the next failure waits. Else "check"
+// when the interval's check is due; else "".
+function dueRun(nowMs, checkedAt, startedMs, intervalSec, failed, retried) {
+  if (failed && !retried) return checkDue(nowMs, checkedAt, startedMs, Math.min(intervalSec, retrySec)) ? "retry" : ""
+  return checkDue(nowMs, checkedAt, startedMs, intervalSec) ? "check" : ""
+}
+
+// dueRun for one bar (Main.qml's dueCheck). Its own last start (askedMs)
+// counts too: a run that wrote nothing moved no time in status.json. So
+// does the retry it started (retryAskedMs, the lastRunMs status.json showed
+// then): until a run writes the file again, that failure has had its retry.
+function barDueRun(nowMs, checkedAt, startedMs, askedMs, intervalSec, failed, fileRetry, retryAskedMs) {
+  var retried = fileRetry || retryAskedMs === lastRunMs(checkedAt, startedMs)
+  return dueRun(nowMs, checkedAt, Math.max(startedMs, askedMs), intervalSec, failed, retried)
 }
 
 // --- this shell's checks ------------------------------------------------------------
@@ -532,7 +570,7 @@ function localDue(nowMs, inventoryMs, intervalSec) {
 
 // What opening the panel runs (Main.qml's panelOpened): nothing while a
 // check runs, which reads the installed versions too; the timer's check
-// when one is due (checkDue); else a local refresh.
+// when one is due (dueRun, its retry included); else a local refresh.
 function openedRun(checking, due) {
   if (checking) return ""
   return due ? "full" : "local"

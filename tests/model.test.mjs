@@ -305,8 +305,10 @@ test("parseStatus: the fields the widget reads", () => {
   same(status, {
     schemaVersion: 1, apps: [row({}), row({ pkg: "mise:x", source: "mise" })], checkedAt: "2026-10-07T10:00:00+00:00",
     checking: true, startedMs: Date.parse("2026-10-07T09:59:00+00:00"), inventoryMs: Date.parse("2026-10-07T10:04:00+00:00"),
-    pkgsCommit: "abc", pkgsFollowing: true, pkgsError: "e", pkgsNote: "n", discoveryError: "d", miseError: "m", runError: "r"
+    pkgsCommit: "abc", pkgsFollowing: true, pkgsError: "e", pkgsNote: "n", discoveryError: "d", miseError: "m", runError: "r",
+    retry: false
   })
+  same([m.parseStatus('{"retry": true}', true).retry, m.parseStatus('{"retry": "yes"}', true).retry], [true, false])
 })
 
 test("parseStatus: no inventoryAt (a file from before it), or one that is no time, is 0", () => {
@@ -330,11 +332,81 @@ test("checkDue: due with no check, not within the interval less 30 s", () => {
     m.checkDue(now, "2026-10-07T11:00:20Z", 0, 3600), m.checkDue(now, "2026-10-07T11:00:40Z", 0, 3600)], [true, false, true, false])
 })
 
-test("checkDue: counts from the start, unless the run died past its end; a future time proves nothing", () => {
+test("checkDue: counts from the last start, of a run that died half way too; a future time proves nothing", () => {
   const now = Date.parse("2026-10-07T12:00:00Z")
   same([m.checkDue(now, "2026-10-07T11:30:00Z", Date.parse("2026-10-07T10:55:00Z"), 3600),
     m.checkDue(now, "2026-10-07T11:30:00Z", Date.parse("2026-10-07T11:45:00Z"), 3600),
-    m.checkDue(now, "2026-10-07T13:00:00Z", 0, 3600)], [true, false, true])
+    m.checkDue(now, "2026-10-07T10:30:00Z", Date.parse("2026-10-07T11:45:00Z"), 3600),
+    m.checkDue(now, "2026-10-07T13:00:00Z", 0, 3600)], [true, false, false, true])
+})
+
+test("lastRunMs: the last start, finished or not, else the end of a file without starts", () => {
+  same([m.lastRunMs("2026-10-07T11:30:00Z", 5), m.lastRunMs("2026-10-07T11:30:00Z", 0), Number.isNaN(m.lastRunMs("", 0))],
+    [5, Date.parse("2026-10-07T11:30:00Z"), true])
+})
+
+test("dueRun: the check when due; after one that failed, once, its retry five minutes after it started", () => {
+  const now = Date.parse("2026-10-07T12:00:00Z")
+  same(model.retrySec, 300)
+  const at = (t) => [now, "2026-10-07T" + t + "Z", 0, 3600]
+  same([m.dueRun(...at("10:59:00"), false, false), m.dueRun(...at("11:55:00"), false, false),
+    m.dueRun(...at("11:55:00"), true, false), m.dueRun(...at("11:55:00"), true, true),
+    m.dueRun(...at("11:55:00"), false, true), m.dueRun(...at("11:56:00"), true, false),
+    m.dueRun(...at("10:59:00"), true, true)], ["check", "", "retry", "", "", "", "check"])
+  // An interval shorter than the retry's wait: the retry after an interval.
+  same([m.dueRun(now, "2026-10-07T11:58:00Z", 0, 120, true, false), m.dueRun(now, "2026-10-07T11:59:00Z", 0, 120, true, false)],
+    ["retry", ""])
+})
+
+test("dueRun: a run that died half way (start past the end) gets its retry, flagged, once, and no check piles up behind it", () => {
+  const now = Date.parse("2026-10-07T12:00:00Z")
+  const died = (start) => [now, "2026-10-07T10:01:00Z", Date.parse("2026-10-07T" + start + "Z"), 3600]
+  // The last good check ended two hours ago: still the retry, not a check.
+  same([m.dueRun(...died("11:55:00"), true, false), m.dueRun(...died("11:58:00"), true, false),
+    m.dueRun(...died("11:55:00"), true, true), m.dueRun(...died("11:00:00"), true, true)], ["retry", "", "", "check"])
+})
+
+// One bar over four hours, asking every pollSec what to start as Main.qml
+// does, with every run ending one way: "ok", "fail" (it completes with
+// failing rows), "die" (stopped early: runError, the new start, the old
+// end) or "silent" (it writes nothing; checkError only). The answer is the
+// minute and kind of each run, C for a check, R for a retry.
+function runsOver(outcome) {
+  const t0 = Date.parse("2026-10-07T10:00:00Z")
+  let file = { checkedAt: new Date(t0 + 60e3).toISOString(), startedMs: t0, runError: "", rowsFail: false, retry: false }
+  let checkError = "", retryAskedMs = NaN, askedMs = 0
+  const runs = []
+  for (let now = t0 + 60e3; now < t0 + 4 * 3600e3; now += model.pollSec * 1000) {
+    const failed = checkError !== "" || file.runError !== "" || file.rowsFail
+    const run = m.barDueRun(now, file.checkedAt, file.startedMs, askedMs, 3600, failed, file.retry, retryAskedMs)
+    if (run === "") continue
+    if (run === "retry") retryAskedMs = model.lastRunMs(file.checkedAt, file.startedMs)
+    askedMs = now
+    const how = outcome(runs.length)
+    runs.push(new Date(now).toISOString().slice(11, 16) + (run === "retry" ? "R" : "C"))
+    const retry = run === "retry"
+    if (how === "ok" || how === "fail") {
+      file = { checkedAt: new Date(now + 60e3).toISOString(), startedMs: now, runError: "", rowsFail: how === "fail", retry }
+      checkError = ""
+    } else if (how === "die") {
+      file = { ...file, startedMs: now, runError: "The check stopped early", retry }
+      checkError = "exit 1"
+    } else {
+      checkError = "exit 137"
+    }
+  }
+  return runs.join(" ")
+}
+
+test("barDueRun: one check an hour, and after a failure one retry five minutes on, however runs fail", () => {
+  same([runsOver(() => "ok"), runsOver((n) => n === 0 ? "fail" : "ok"), runsOver(() => "fail"), runsOver(() => "die"),
+    runsOver(() => "silent"), runsOver((n) => n === 0 ? "silent" : "ok")], [
+    "11:00C 12:00C 13:00C",
+    "11:00C 11:05R 12:05C 13:05C",
+    "11:00C 11:05R 12:05C 12:10R 13:10C 13:15R",
+    "11:00C 11:05R 12:05C 12:10R 13:10C 13:15R",
+    "11:00C 11:05R 12:05C 13:05C",
+    "11:00C 11:05R 12:05C 13:05C"])
 })
 
 // --- this shell's checks ------------------------------------------------------------
