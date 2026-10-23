@@ -492,7 +492,12 @@ mise_disabled_backends() {
 }
 # No release-age cooldown, as Omarchy's own agent wrappers and `omarchy
 # update` run mise: an agent CLI's new release shows and installs at once.
-# The check and mise up share it, so what the panel offers is what installs.
+# Nor mise's versions host (mise-versions.jdx.dev), which lists a release
+# hours after its tag: mise asks the tool's own registry, GitHub's API
+# included, and caches the answer (fetch_remote_versions_cache, 1 h). A
+# "latest" request activates the newest version installed, so Omarchy's
+# wrappers run what Update installed even while the host lags.
+# The check and mise up share both, so what the panel offers is what installs.
 # `mise settings` resolves no tool, so it runs no plugin code; it gets no
 # MISE_DISABLE_BACKENDS of Omabump's, which would replace the setting asked.
 # With mise_offline=1 (the local refresh) mise fetches nothing: mise ls
@@ -501,7 +506,7 @@ mise_disabled_backends() {
 mise_offline=0
 mise_run() {
   local off=()
-  [[ ${1:-} == settings ]] || off=("MISE_DISABLE_BACKENDS=$(mise_disabled_backends)")
+  [[ ${1:-} == settings ]] || off=("MISE_DISABLE_BACKENDS=$(mise_disabled_backends)" MISE_USE_VERSIONS_HOST=false)
   (( ! mise_offline )) || off+=(MISE_OFFLINE=1)
   (cd "$HOME" && run_killable env MISE_HIDE_UPDATE_WARNING=1 MISE_MINIMUM_RELEASE_AGE=0 "${off[@]}" \
     timeout -k 10 "${mise_timeout:-120}" mise "$@" </dev/null)
@@ -628,13 +633,37 @@ mise_select() {
 # The text is read once and searched as a here-string: no pipe, so an early
 # grep exit cannot fail the search with SIGPIPE under pipefail.
 mise_note_fetch_failures() {
-  local key line text
+  local key line text name names backend
   text=$(sed 's/\x1b\[[0-9;]*m//g' "$1")
   for key in "${mise_query[@]}"; do
     [[ -z ${mise_fetch_failed[$key]:-} ]] || continue
-    line=$(grep -F -m1 "Error getting latest version for $key: " <<<"$text") || continue
-    mise_fetch_failed[$key]=${line#*"Error getting latest version for $key: "}
+    if line=$(grep -F -m1 "Error getting latest version for $key: " <<<"$text"); then
+      mise_fetch_failed[$key]=${line#*"Error getting latest version for $key: "}
+      continue
+    fi
+    # A pinned or ranged request whose version list could not be fetched
+    # (a rate limit, a 504): mise leaves the entry out, exits 0 and names
+    # the backend's tool, openai/codex for codex (aqua:openai/codex).
+    names=("$key" "${key#*:}")
+    backend=$(mise_backend_name "$key") && names+=("$backend")
+    for name in "${names[@]}"; do
+      line=$(grep -F -m1 "Remote versions cannot be fetched for $name: " <<<"$text") || continue
+      mise_fetch_failed[$key]=${line#*"Remote versions cannot be fetched for $name: "}
+      break
+    done
   done
+}
+
+# The backend's name for the installed mise tool $1 (a key without a
+# backend, codex), as mise recorded it at install: openai/codex for
+# aqua:openai/codex. Fails when there is no such record.
+mise_backend_name() {
+  local full
+  [[ $1 =~ ^[A-Za-z0-9._-]+$ && $1 != .* ]] || return 1
+  full=$(sed -n 's/^[[:space:]]*full[[:space:]]*=[[:space:]]*"\([^"]*\)".*$/\1/p' \
+    "${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}/installs/$1/.mise.backend.toml" 2>/dev/null | head -n1)
+  [[ $full == *:?* ]] || return 1
+  echo "${full#*:}"
 }
 
 # $2, when given, is the one key to ask outdated about (an Update asks about

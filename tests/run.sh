@@ -591,6 +591,20 @@ same "mise_row: a key mise did fetch is still answered" '1.0|true|false||' "$(ro
 mise_fetch_failed=() mise_query=(e)
 (set -euo pipefail; mise_note_fetch_failures "$scratch/mise.err"; echo "${mise_fetch_failed[e]:-}") >"$scratch/mise.out"
 same "mise_note_fetch_failures: a large stderr under pipefail" offline "$(<"$scratch/mise.out")"
+# A pinned request whose version list failed: mise names the backend's
+# tool, which its install record maps to the key.
+mkdir -p "$scratch/mise-rec/installs/e"
+printf 'version = 1\nfull = "aqua:org/e-cli"\n' >"$scratch/mise-rec/installs/e/.mise.backend.toml"
+echo "mise WARN  Remote versions cannot be fetched for org/e-cli: HTTP status server error (504 Gateway Timeout)" >"$scratch/mise.err"
+mise_fetch_failed=() mise_query=(e aqua:org/f other)
+echo "mise WARN  Remote versions cannot be fetched for org/f: 403 rate limit exceeded" >>"$scratch/mise.err"
+MISE_DATA_DIR=$scratch/mise-rec mise_note_fetch_failures "$scratch/mise.err"
+same "mise_note_fetch_failures: a version list that failed, by the install record and by a backend key" \
+  'HTTP status server error (504 Gateway Timeout)|403 rate limit exceeded|' \
+  "${mise_fetch_failed[e]:-}|${mise_fetch_failed[aqua:org/f]:-}|${mise_fetch_failed[other]:-}"
+same "mise_backend_name: none without a record, nor for a key with a path" '|' \
+  "$(MISE_DATA_DIR=$scratch/mise-rec mise_backend_name other)|$(MISE_DATA_DIR=$scratch/mise-rec mise_backend_name ../e)"
+mise_fetch_failed=() mise_query=()
 reset_mise
 mise_fail_ls=1 mise_load 1
 same "mise: a failed inventory is an error, not an empty list" 'mise ls failed: mise ERROR invalid config|{}' "$mise_inventory_error|$mise_ls_json"
@@ -635,6 +649,11 @@ printf '#!/bin/sh\necho "${MISE_MINIMUM_RELEASE_AGE-unset}"\n' >"$scratch/agebin
 chmod +x "$scratch/agebin/mise"
 same "mise_run: no release-age cooldown, as Omarchy runs mise" 0 \
   "$(PATH=$scratch/agebin:$PATH MISE_MINIMUM_RELEASE_AGE=7d real_mise_run ls)"
+# shellcheck disable=SC2016 # expanded by the fake mise, not here
+printf '#!/bin/sh\necho "${MISE_USE_VERSIONS_HOST-unset}"\n' >"$scratch/agebin/mise"
+same "mise_run: not through mise's versions host, which lags releases" false \
+  "$(PATH=$scratch/agebin:$PATH MISE_USE_VERSIONS_HOST=true real_mise_run outdated)"
+same "mise_run: mise settings get as it is" unset "$(PATH=$scratch/agebin:$PATH real_mise_run settings get x)"
 # A vfox backend plugin is disabled by its own name: every installed plugin
 # directory is added, and a name with odd characters is not.
 mkdir -p "$scratch/mise-data/plugins/foo" "$scratch/mise-data/plugins/vfox-bar" "$scratch/mise-data/plugins/x y" "$scratch/mise-data/plugins/.hidden"
