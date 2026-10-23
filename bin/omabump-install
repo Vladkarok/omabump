@@ -10,7 +10,8 @@
 #               diff is shown before anything is built.
 #   vendor-pkg  The Arch package the vendor publishes, at the version the
 #               app's feed advertises, installed with pacman -U.
-#   mise        mise up <tool>.
+#   mise        mise install <tool>@<version>, the version mise outdated
+#               finds under the configured request.
 #
 #   self        Omabump itself: its clone fast-forwarded to the release tag,
 #               after the log is shown and you answer y.
@@ -810,10 +811,10 @@ install_vendor_pkg() {
   target_version=$ver
 }
 
-# mise up keeps the configured request (an exact pin or a range), the same
-# policy the check used through mise outdated, and like it runs with no
-# release-age cooldown, so the target shown in the panel is the one
-# installed here.
+# mise outdated finds the version the configured request reaches (an exact
+# pin or a range), the same policy the check used, and like it runs with no
+# release-age cooldown; mise install puts in exactly that version, so the
+# target shown in the panel is the one installed here.
 install_mise() {
   local tool=$installed_name target request now
   [[ -n $tool ]] || die "${mise_inventory_error:-mise has no active $label}"
@@ -838,18 +839,33 @@ install_mise() {
       [[ $request == latest ]] && refuse "$label is held back at $installed by your mise settings ($now exists); mise up would not move it. See mise settings."
       refuse "$label is held at $installed by its mise request '$request' ($now exists); mise up would not move it. Change the request with mise use."
     fi
-    nothing_newer "$installed" "mise up keeps $label at $installed" "mise showed at the last check"
+    nothing_newer "$installed" "mise keeps $label at $installed" "mise showed at the last check"
   fi
-  echo "mise up -- $tool would install $target"
+  # The version the request reaches now, as mise outdated just found it,
+  # installed as it is: mise neither looks for the newest again nor lists
+  # every release (mise_run, mise_versions_host), and the request in your
+  # config, unchanged, makes it the active one.
+  [[ $target =~ ^[A-Za-z0-9][A-Za-z0-9._+~-]*$ ]] || die "mise gave $tool an odd version '$target'"
+  echo "mise install -- $tool@$target"
   if (( prepare )); then
-    echo "Would run: mise up -- $tool (in $HOME)"
+    echo "Would run: mise install -- $tool@$target (in $HOME)"
     return 0
   fi
   tool_name_ok "$tool" || die "'$tool' is not a mise tool name Omabump accepts"
-  mise_timeout=900 mise_run up -- "$tool"
+  mise_timeout=900 mise_versions_host=1 mise_run install -- "$tool@$target"
   mise_load 0
   now=$(mise_active "$app") || now=""
   now=${now#* }
+  # Installed but not the active one: a lockfile can keep the request on
+  # the old version, which mise up rewrites. That is the slower way, as it
+  # finds the version again and lists every release.
+  if [[ $now != "$target" ]]; then
+    echo "$label is ${now:-not active} after mise install; running mise up -- $tool, which also updates a lockfile."
+    mise_timeout=900 mise_run up -- "$tool"
+    mise_load 0
+    now=$(mise_active "$app") || now=""
+    now=${now#* }
+  fi
   if [[ $now == "$target" ]]; then
     echo "$label is now $now."
   else

@@ -215,10 +215,14 @@ check "the installer's Update loads mise for its tool only" grep -q '^  mise_loa
 
 same "mise_disabled_backends: your MISE_DISABLE_BACKENDS and mise's setting are added, once each" 'asdf,vfox,foo,bar,baz' \
   "$(MISE_DATA_DIR=$scratch/no-mise-data MISE_DISABLE_BACKENDS='foo, bar,asdf,../x' mise_user_backends='baz,foo' mise_disabled_backends)"
-same "mise_backends_load: mise's setting as mise prints it" 'zed,asdf' \
-  "$(mise_run() { [[ $* == 'settings get disable_backends' ]] && echo '["zed", "asdf"]'; }; mise_backends_load; echo "$mise_user_backends")"
-same "mise_backends_load: a mise that cannot answer leaves it out" '' \
-  "$(mise_run() { return 1; }; mise_user_backends=x; mise_backends_load; echo "$mise_user_backends")"
+same "mise_backends_load: mise's settings as mise prints them" 'zed,asdf|mine|false' \
+  "$(mise_run() { [[ $* == 'settings ls --all --json' ]] && echo '{"disable_backends": ["zed", "asdf"], "disable_tools": ["mine", 3], "use_versions_host": false}'; }
+     mise_backends_load; echo "$mise_user_backends|$mise_user_tools|$mise_user_host")"
+same "mise_backends_load: settings mise leaves unset leave them out, the host on" '||true' \
+  "$(mise_run() { echo '{"disable_backends": null}'; }; mise_backends_load; echo "$mise_user_backends|$mise_user_tools|$mise_user_host")"
+same "mise_backends_load: a mise that cannot answer leaves them out" '||true' \
+  "$(mise_run() { return 1; }; mise_user_backends=x mise_user_tools=y mise_user_host=false; mise_backends_load
+     echo "$mise_user_backends|$mise_user_tools|$mise_user_host")"
 mkdir -p "$scratch/setbin"
 printf '#!/bin/sh\necho "${MISE_DISABLE_BACKENDS-unset}|$*"\n' >"$scratch/setbin/mise"
 chmod +x "$scratch/setbin/mise"
@@ -428,8 +432,8 @@ same "a run leaves no scratch files" '' "$(leftovers)"
 check "a run keeps its lock file: the leftover sweep spares it" test -e "$run_state/.check.lock"
 run_settings ''
 check_run
-same "without the setting the mise rows are checked, mise's setting read first" 'settings get disable_backends|ls --json' \
-  "$(head -2 "$run_dir/mise.log" | paste -sd'|')"
+same "without the setting the mise rows are checked, mise's settings read first, the inventory offline" \
+  'settings ls --all --json|MISE_OFFLINE=1 ls --json' "$(head -2 "$run_dir/mise.log" | paste -sd'|')"
 run_settings ', "showMise": true'
 check_run --no-mise
 same "--no-mise wins over showMise true" '' "$(cat "$run_dir/mise.log")"
@@ -719,7 +723,7 @@ same "--local: checkedAt and startedAt stay the check's, inventoryAt is this run
   "$(run_status '"\(.checkedAt)|\(.startedAt)|\(.inventoryAt == "2026-01-01T00:09:00+00:00")|\(.inventoryAt | test("^20[0-9-]+T[0-9:]+[+-][0-9:]+$"))"')"
 same "--local: no feed and no git call" '' "$(cat "$run_dir/net.log")"
 same "--local: mise is asked for its setting and its inventory, offline, never outdated" \
-  'MISE_OFFLINE=1 settings get disable_backends|MISE_OFFLINE=1 ls --json' \
+  'MISE_OFFLINE=1 settings ls --all --json|MISE_OFFLINE=1 ls --json' \
   "$(paste -sd'|' "$run_dir/mise.log")"
 
 loc_status

@@ -490,50 +490,99 @@ mise_disabled_backends() {
   done
   (IFS=,; echo "${out[*]}")
 }
-# No release-age cooldown, as Omarchy's own agent wrappers and `omarchy
-# update` run mise: an agent CLI's new release shows and installs at once.
-# Nor mise's versions host (mise-versions.jdx.dev), which lists a release
-# hours after its tag: mise asks the tool's own registry, GitHub's API
-# included, and caches the answer (fetch_remote_versions_cache, 1 h). A
-# "latest" request activates the newest version installed, so Omarchy's
-# wrappers run what Update installed even while the host lags.
-# The check and mise up share both, so what the panel offers is what installs.
-# `mise settings` resolves no tool, so it runs no plugin code; it gets no
-# MISE_DISABLE_BACKENDS of Omabump's, which would replace the setting asked.
-# With mise_offline=1 (the local refresh) mise fetches nothing: mise ls
-# would otherwise resolve "latest" for each configured tool not installed
-# over the network. The active versions it lists are the same.
-mise_offline=0
-mise_run() {
-  local off=()
-  [[ ${1:-} == settings ]] || off=("MISE_DISABLE_BACKENDS=$(mise_disabled_backends)" MISE_USE_VERSIONS_HOST=false)
-  (( ! mise_offline )) || off+=(MISE_OFFLINE=1)
-  (cd "$HOME" && run_killable env MISE_HIDE_UPDATE_WARNING=1 MISE_MINIMUM_RELEASE_AGE=0 "${off[@]}" \
-    timeout -k 10 "${mise_timeout:-120}" mise "$@" </dev/null)
+# Tools mise is told to leave alone (MISE_DISABLE_TOOLS): yours (your
+# environment's MISE_DISABLE_TOOLS and mise's disable_tools setting,
+# mise_user_tools, read with mise_user_backends) and the tools your config
+# names that are not installed (mise_unused_tools, mise_unused_load).
+# Omarchy's config names some twenty agent CLIs, most never installed, and
+# mise would resolve each one's "latest" over the network on every call,
+# for nothing Omabump shows. Not the unused ones for mise install or up
+# (mise_run): those end by rewriting the shims of every tool not disabled,
+# and an unused tool's shim is how Omarchy installs it on first use. A name
+# with other characters is left out, and each name is listed once.
+mise_user_tools="" mise_unused_tools=""
+mise_disabled_tools() {
+  local name names=() out=()
+  IFS=, read -ra names <<<"${MISE_DISABLE_TOOLS:-},$mise_user_tools,$mise_unused_tools"
+  for name in "${names[@]}"; do
+    # Spaces around a name go; one inside it makes it odd.
+    name=${name#"${name%%[! ]*}"} name=${name%"${name##*[! ]}"}
+    [[ $name =~ ^[A-Za-z0-9._:@/-]+$ && $name != .* && " ${out[*]} " != *" $name "* ]] && out+=("$name")
+  done
+  (IFS=,; echo "${out[*]}")
 }
 
-# mise's own disable_backends setting, as `mise settings get` prints it (a
-# JSON list), into mise_user_backends. Read once per run, by mise_load; a
-# mise that cannot answer leaves the setting out.
+# No release-age cooldown, as Omarchy's own agent wrappers and `omarchy
+# update` run mise: an agent CLI's new release shows and installs at once.
+# Finding the newest version skips mise's versions host
+# (mise-versions.jdx.dev), which can list a release hours after its tag (a
+# day for Codex): mise asks the tool's own source, one light request per
+# tool (GitHub's /releases/latest for aqua and github tools), and caches the
+# answer for an hour (fetch_remote_versions_cache). Installing a version
+# already found goes through the host (mise_versions_host=1, the
+# installer), unless you turned the host off (mise_user_host): there mise
+# maps the version to its release from the host's cache, where GitHub's
+# own list of releases can be tens of MB (45 MB for Codex) and often times
+# out. Never with mise's install counter.
+# `mise settings` resolves no tool, so it runs no plugin code; it gets no
+# MISE_DISABLE_BACKENDS of Omabump's, which would replace the setting asked.
+# With mise_offline=1 mise fetches nothing: the inventory (mise ls, which
+# would otherwise resolve "latest" for each configured tool not installed)
+# and the local refresh. The active versions it lists are the same.
+mise_offline=0 mise_versions_host=0
+mise_run() {
+  local off=() host=false unused=$mise_unused_tools
+  (( ! mise_versions_host )) || [[ $mise_user_host != true ]] || host=true
+  [[ ${1:-} != install && ${1:-} != up ]] || unused=""
+  [[ ${1:-} == settings ]] || off=("MISE_DISABLE_BACKENDS=$(mise_disabled_backends)"
+    "MISE_DISABLE_TOOLS=$(mise_unused_tools=$unused mise_disabled_tools)" "MISE_USE_VERSIONS_HOST=$host")
+  (( ! mise_offline )) || off+=(MISE_OFFLINE=1)
+  (cd "$HOME" && run_killable env MISE_HIDE_UPDATE_WARNING=1 MISE_MINIMUM_RELEASE_AGE=0 MISE_USE_VERSIONS_HOST_TRACK=false \
+    "${off[@]}" timeout -k 10 "${mise_timeout:-120}" mise "$@" </dev/null)
+}
+
+# mise's own settings, as `mise settings ls --all --json` gives them, your
+# environment's MISE_* included, read once per run by mise_load:
+# disable_backends and disable_tools (lists) into mise_user_backends and
+# mise_user_tools, and use_versions_host into mise_user_host (false only
+# when you turned it off). A mise that cannot answer leaves them out.
+mise_user_host=true
 mise_backends_load() {
   local out
-  mise_user_backends=""
-  out=$(mise_run settings get disable_backends 2>/dev/null) || return 0
-  mise_user_backends=$(jq -r 'if type == "array" then map(strings) | join(",") else strings end' <<<"$out" 2>/dev/null) \
-    || mise_user_backends=""
+  mise_user_backends="" mise_user_tools="" mise_user_host=true
+  out=$(mise_run settings ls --all --json 2>/dev/null) || return 0
+  IFS=$'\x1f' read -r mise_user_backends mise_user_tools mise_user_host < <(jq -r '
+    def names: if type == "array" then map(strings) | join(",") else strings // "" end;
+    [(.disable_backends | names), (.disable_tools | names), (.use_versions_host != false | tostring)]
+    | join("\u001f")' <<<"$out" 2>/dev/null) || mise_user_host=true
+}
+
+# The tools your mise config names that are not installed, into
+# mise_unused_tools: `mise config ls` read offline, less the inventory's
+# keys. Nothing when mise cannot list its config.
+mise_unused_load() {
+  local out
+  mise_unused_tools=""
+  out=$(mise_offline=1 mise_run config ls --json 2>/dev/null) || return 0
+  # Both on stdin: the inventory can outgrow an argument.
+  mise_unused_tools=$(printf '%s\n%s\n' "$out" "$mise_ls_json" | jq -rn '
+    input as $config | input as $ls
+    | [$config | .[]? | objects | .tools[]? | strings] | unique | map(select(. as $t | $ls | has($t) | not)) | join(",")' \
+    2>/dev/null) || mise_unused_tools=""
 }
 
 # mise_load fills these once, in the calling shell (never call it in a
 # subshell, the values would be lost there):
 #   mise_user_backends  mise's disable_backends setting (mise_backends_load)
-#   mise_ls_json        `mise ls --json`, the inventory
+#   mise_user_tools     mise's disable_tools setting (mise_backends_load)
+#   mise_ls_json        `mise ls --json`, the inventory, read offline
 #   mise_safe_json      {key: true} for the installed tools that resolve
 #                       through a backend in mise_safe_backends, from one
 #                       `mise ls --json --backend <b> --backend <b2> ...`
 #                       (which classifies registry shorthands by the backend
 #                       they resolve to)
-# and with $1=1, for the key each mise row selected (mise_select) that is
-# also safe:
+# and with $1=1 mise_unused_tools (mise_unused_load), then, for the key
+# each mise row selected (mise_select) that is also safe:
 #   mise_outdated_json  `mise outdated --json`: what `mise up` reaches under
 #                       the configured request
 #   mise_bump_json      `mise outdated --bump --json`: newer releases outside
@@ -570,7 +619,7 @@ mise_inventory() {
   mise_inventory_error=""
   mkdir -p "$cache_dir"
   err=$(mktemp "${run_tmp:-$cache_dir}/.mise.XXXXXX")
-  if out=$(mise_run ls --json 2>"$err") && out=$(jq -ce 'if type == "object" then . else {} end' <<<"$out" 2>/dev/null); then
+  if out=$(mise_offline=1 mise_run ls --json 2>"$err") && out=$(jq -ce 'if type == "object" then . else {} end' <<<"$out" 2>/dev/null); then
     mise_ls_json=$out
   else
     mise_ls_json='{}'
@@ -585,7 +634,7 @@ mise_safe_keys() {
   local b out args=()
   mise_backend_error="" mise_safe_json='{}'
   for b in "${mise_safe_backends[@]}"; do args+=(--backend "$b"); done
-  if out=$(mise_run ls --json "${args[@]}" 2>/dev/null) \
+  if out=$(mise_offline=1 mise_run ls --json "${args[@]}" 2>/dev/null) \
      && out=$(jq -ce 'if type == "object" then with_entries(.value = true) else error("bad") end' <<<"$out" 2>/dev/null); then
     mise_safe_json=$out
   else
@@ -675,6 +724,7 @@ mise_load() {
   mise_backends_load
   mise_inventory
   (( ${1:-0} )) || return 0
+  mise_unused_load
   mise_safe_keys
   mise_select || return 0
   if [[ -n $only ]]; then

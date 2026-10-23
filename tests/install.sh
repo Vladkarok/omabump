@@ -168,8 +168,17 @@ cat >"$istubs/mise" <<'EOF'
 echo "mise $*" >>"$STUB_LOG/calls"
 none='{}'
 case "$*" in
-  "settings get disable_backends") echo '[]' ;;
-  "ls --json"|"ls --json --backend "*) echo '{"testtool": [{"version": "1.0.0", "active": true, "installed": true}]}' ;;
+  "settings ls --all --json") echo "{\"disable_backends\": [], \"disable_tools\": [\"mine\"], \"use_versions_host\": ${STUB_MISE_HOST:-true}}" ;;
+  "config ls --json") echo '[{"path": "/etc/mise/x.toml", "tools": ["testtool", "unused-tool"]}]' ;;
+  "ls --json"|"ls --json --backend "*)
+    echo "{\"testtool\": [{\"version\": \"$(cat "$STUB_LOG/mise-version" 2>/dev/null || echo 1.0.0)\", \"active\": true, \"installed\": true}]}" ;;
+  "install -- testtool@"*)
+    echo "env $MISE_USE_VERSIONS_HOST $MISE_USE_VERSIONS_HOST_TRACK $MISE_DISABLE_TOOLS" >>"$STUB_LOG/calls"
+    all="$*"
+    [ -n "${STUB_MISE_LOCKED:-}" ] || echo "${all#install -- testtool@}" >"$STUB_LOG/mise-version" ;;
+  "up -- testtool")
+    echo "env $MISE_USE_VERSIONS_HOST $MISE_USE_VERSIONS_HOST_TRACK $MISE_DISABLE_TOOLS" >>"$STUB_LOG/calls"
+    echo "${STUB_MISE_UP:-1.0.0}" >"$STUB_LOG/mise-version" ;;
   "outdated --json -- testtool") printf '%s\n' "${STUB_MISE_OUTDATED:-$none}" ;;
   "outdated --bump --json -- testtool") printf '%s\n' "${STUB_MISE_BUMP:-$none}" ;;
   *) echo "mise stub: unexpected $*" >&2; exit 99 ;;
@@ -694,9 +703,48 @@ says "install (mise): worded as the check words it" 'mise outdated gave an entry
 STUB_MISE_BUMP='{"testtool": ["1.1.0"]}' inst mise:testtool
 same "install (mise): so is a --bump entry that is not an object" 1 "$irc"
 says "install (mise): also worded as the check words it" 'mise outdated --bump gave an entry for testtool that is not an object'
-no_call "install (mise): mise up never runs then" 'mise up'
+no_call "install (mise): mise install never runs then" 'mise install'
 STUB_MISE_OUTDATED='{"testtool": {"latest": "1.1.0"}}' STUB_MISE_BUMP='{"testtool": 5}' inst --prepare mise:testtool
-says "install --prepare (mise): an update mise up reaches does not read the --bump table" 'Would run: mise up -- testtool (in '
+says "install --prepare (mise): an update mise reaches does not read the --bump table" 'Would run: mise install -- testtool@1.1.0 (in '
+no_call "install --prepare (mise): mise install never runs" 'mise install'
+
+# The update itself: the version mise outdated found, installed as it is,
+# through mise's versions host, never with its install counter, and with
+# the tools you disabled left alone. Not the unused ones: mise install
+# rewrites the shims of every tool not disabled, and an unused tool's shim
+# is how Omarchy installs it on first use.
+fresh
+rm -f "$ilog/mise-version"
+STUB_MISE_OUTDATED='{"testtool": {"latest": "1.1.0"}}' inst mise:testtool
+same "install (mise): a success" 0 "$irc"
+calls "install (mise): installs the version mise found" 'mise install -- testtool@1.1.0'
+calls "install (mise): through the versions host, no install counter, your disabled tools left alone" 'env true false mine'
+refuse "install (mise): the unused tools keep their shims" grep -qF 'unused-tool' <(grep '^env ' "$ilog/calls")
+calls "install (mise): while the check's mise outdated leaves them alone" 'mise outdated --json -- testtool'
+says "install (mise): and says the tool is at it" 'Test Tool is now 1.1.0.'
+refuse "install (mise): mise up never runs" grep -qF 'mise up' "$ilog/calls"
+# You turned mise's versions host off: Update does not turn it on.
+fresh
+rm -f "$ilog/mise-version"
+STUB_MISE_HOST=false STUB_MISE_OUTDATED='{"testtool": {"latest": "1.1.0"}}' inst mise:testtool
+calls "install (mise): with the versions host off in your settings, without it" 'env false false mine'
+# A lockfile keeps the request on the old version: mise up, which rewrites
+# it, then runs as before.
+fresh
+rm -f "$ilog/mise-version"
+STUB_MISE_LOCKED=1 STUB_MISE_UP=1.1.0 STUB_MISE_OUTDATED='{"testtool": {"latest": "1.1.0"}}' inst mise:testtool
+same "install (mise): installed but not active: mise up after it, and then a success" '0|mise up -- testtool' \
+  "$irc|$(grep -o 'mise up -- testtool' "$ilog/calls")"
+says "install (mise): says why it runs mise up" 'Test Tool is 1.0.0 after mise install; running mise up -- testtool, which also updates a lockfile.'
+says "install (mise): and that the tool is then at it" 'Test Tool is now 1.1.0.'
+rm -f "$ilog/mise-version"
+STUB_MISE_LOCKED=1 STUB_MISE_OUTDATED='{"testtool": {"latest": "1.1.0"}}' inst mise:testtool
+says "install (mise): still not active after mise up: says so" 'Test Tool is 1.0.0 after mise up, expected 1.1.0. See mise ls testtool.'
+rm -f "$ilog/mise-version"
+fresh
+rm -f "$ilog/mise-version"
+STUB_MISE_OUTDATED='{"testtool": {"latest": "1.1.0 --force"}}' inst mise:testtool
+same "install (mise): an odd version from mise is not installed" "1|" "$irc|$(grep -F 'mise install' "$ilog/calls")"
 
 # Nothing newer for mise up, nothing held back: what is installed is the
 # newest mise knows. Compared with the panel's row as strings.
@@ -705,7 +753,7 @@ inst mise:testtool
 same "install (mise), nothing newer, no check yet: a success" 0 "$irc"
 says "install (mise), nothing newer, no check yet: says so" 'Test Tool 1.0.0 is already installed; nothing to do.'
 calls "install (mise), nothing newer, no check yet: refreshes the panel" 'omabump-check --no-notify --wait'
-no_call "install (mise), nothing newer, no check yet: mise up never runs" 'mise up'
+no_call "install (mise), nothing newer, no check yet: mise install never runs" 'mise install'
 # Omarchy's wrapper updated the tool on launch, after a check that saw
 # 0.9.0: to the version the panel showed, or past it.
 fresh
@@ -732,13 +780,13 @@ shown mise:testtool 1.1.0 1.0.0
 inst mise:testtool
 same "install (mise), mise up behind the panel: a failure" 1 "$irc"
 says "install (mise), mise up behind the panel: names both versions" \
-  'omabump: mise up keeps Test Tool at 1.0.0, not the 1.1.0 mise showed at the last check; Update cannot install it yet.'
+  'omabump: mise keeps Test Tool at 1.0.0, not the 1.1.0 mise showed at the last check; Update cannot install it yet.'
 no_call "install (mise), mise up behind the panel: no panel refresh" 'omabump-check'
 inst --prepare mise:testtool
 same "install --prepare (mise), mise up behind the panel: succeeds" 0 "$irc"
 says "install --prepare (mise), mise up behind the panel: says it would refuse" \
-  'Would refuse: mise up keeps Test Tool at 1.0.0, not the 1.1.0 mise showed at the last check'
-no_call "install --prepare (mise): mise up never runs" 'mise up'
+  'Would refuse: mise keeps Test Tool at 1.0.0, not the 1.1.0 mise showed at the last check'
+no_call "install --prepare (mise), mise behind the panel: mise install never runs" 'mise install'
 
 # --- functions, sourced ---------------------------------------------------------------
 

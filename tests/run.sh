@@ -636,6 +636,8 @@ app_table='not json'
 mise_select
 same "mise_select: a failed selection is a mise error" 'could not select the mise tools to check|' "$mise_error|${mise_query[*]}"
 unset -f mise
+# A guard for calls a test does not expect; tests below stub it in turn.
+# shellcheck disable=SC2329
 mise_run() { echo "mise_run called in a test" >&2; return 1; }
 # Every mise call runs with asdf and vfox disabled, so no plugin script runs.
 mkdir -p "$scratch/fakebin"
@@ -650,10 +652,33 @@ chmod +x "$scratch/agebin/mise"
 same "mise_run: no release-age cooldown, as Omarchy runs mise" 0 \
   "$(PATH=$scratch/agebin:$PATH MISE_MINIMUM_RELEASE_AGE=7d real_mise_run ls)"
 # shellcheck disable=SC2016 # expanded by the fake mise, not here
-printf '#!/bin/sh\necho "${MISE_USE_VERSIONS_HOST-unset}"\n' >"$scratch/agebin/mise"
-same "mise_run: not through mise's versions host, which lags releases" false \
-  "$(PATH=$scratch/agebin:$PATH MISE_USE_VERSIONS_HOST=true real_mise_run outdated)"
-same "mise_run: mise settings get as it is" unset "$(PATH=$scratch/agebin:$PATH real_mise_run settings get x)"
+printf '#!/bin/sh\necho "${MISE_USE_VERSIONS_HOST-unset} ${MISE_USE_VERSIONS_HOST_TRACK-unset} ${MISE_DISABLE_TOOLS-unset}"\n' >"$scratch/agebin/mise"
+same "mise_run: finding versions skips mise's versions host, which lags releases; no install counter" 'false false ' \
+  "$(unset MISE_DISABLE_TOOLS; PATH=$scratch/agebin:$PATH MISE_USE_VERSIONS_HOST=true real_mise_run outdated)"
+same "mise_run: an install of a version found goes through the host" 'true false ' \
+  "$(unset MISE_DISABLE_TOOLS; PATH=$scratch/agebin:$PATH mise_versions_host=1 real_mise_run install -- x@1)"
+same "mise_run: not when you turned the host off" 'false false ' \
+  "$(unset MISE_DISABLE_TOOLS; PATH=$scratch/agebin:$PATH mise_user_host=false mise_versions_host=1 real_mise_run install -- x@1)"
+same "mise_run: mise settings get as it is" 'unset false unset' "$(unset MISE_DISABLE_TOOLS; PATH=$scratch/agebin:$PATH real_mise_run settings get x)"
+same "mise_disabled_tools: yours, mise's setting and the unused ones, once each, odd names left out" 'a,npm:@s/b,c,d' \
+  "$(MISE_DISABLE_TOOLS='a, npm:@s/b,../x' mise_user_tools='c,a' mise_unused_tools='d,c,x y' mise_disabled_tools)"
+same "mise_run: every other call is told them" 'false false mine,u' \
+  "$(unset MISE_DISABLE_TOOLS; mise_user_tools=mine mise_unused_tools=u PATH=$scratch/agebin:$PATH real_mise_run ls)"
+same "mise_run: mise install and up are told only yours: they rewrite every other tool's shims" $'true false mine\nfalse false mine' \
+  "$(unset MISE_DISABLE_TOOLS
+     PATH=$scratch/agebin:$PATH mise_user_tools=mine mise_unused_tools=u mise_versions_host=1 real_mise_run install -- x@1
+     PATH=$scratch/agebin:$PATH mise_user_tools=mine mise_unused_tools=u real_mise_run up -- x)"
+# The tools the config names that mise has nothing installed of.
+mise_unused_tools=x mise_ls_json='{"a": [], "npm:@s/b": []}'
+mise_run() { [[ $* == 'config ls --json' ]] && echo '[{"tools": ["a", "c", "npm:@s/b"]}, {"tools": ["d", "c", 5]}, "x"]'; }
+mise_unused_load
+same "mise_unused_load: what the config names, less the inventory's keys" 'c,d' "$mise_unused_tools"
+mise_run() { return 1; }
+mise_unused_tools=x
+mise_unused_load
+same "mise_unused_load: none when mise cannot list its config" '' "$mise_unused_tools"
+mise_run() { echo "mise_run called in a test" >&2; return 1; }
+mise_ls_json='{}'
 # A vfox backend plugin is disabled by its own name: every installed plugin
 # directory is added, and a name with odd characters is not.
 mkdir -p "$scratch/mise-data/plugins/foo" "$scratch/mise-data/plugins/vfox-bar" "$scratch/mise-data/plugins/x y" "$scratch/mise-data/plugins/.hidden"
