@@ -12,6 +12,7 @@ An Omarchy bar widget. It lists the agent desktop apps and agent CLIs installed 
 - `jq`, `curl`, `python` 3.11 or newer, `libarchive` (`bsdtar`): what omarchy-pkgs' `bin/sync-upstream` needs
 - sudo rights for `pacman -U`
 - `mise`, optional, for the agent CLIs
+- `7zip`, optional, to read the version of an app installed as its self-updating AppImage (T3 Code); without it that row shows "version unknown"
 
 When something is missing, omarchy rows have no Update button and say what to install, for example "Missing: makepkg, jq; sudo pacman -S --needed base-devel jq".
 
@@ -41,7 +42,7 @@ Arrows or `j` and `k` select a row, `Enter` updates it (or asks the agent on a r
 
 IPC: `omarchy-shell io.github.vladkarok.omabump status|open|close|toggle|refresh|settings`. `status` counts what the bar counts, including unchecked rows, and adds "(+N muted/skipped)" when quiet rows have updates, with "check failed for N muted apps" inside it when muted rows failed. `refresh` answers `throttled` and starts nothing while this bar's own Refresh check runs or within a minute after its last check ended (a run that left because another check held the lock, or never ran, does not count); during another bar's or a terminal's check it waits for that one and then checks. `open`, `close`, `toggle` and `settings` go through the shell's own panel handling, as `omarchy-shell shell toggle io.github.vladkarok.omabump` does, so the panel opens on the focused monitor (or the open one closes), whichever monitor's bar received the call. The check interval is kept between 60 seconds and a day.
 
-The last check's result is `~/.local/state/omarchy/plugins/io.github.vladkarok.omabump/status.json`, with a top-level `schemaVersion` (1). A row's `note` holds only its exceptions; that a package is installed under another name is in `installedName`, `switchable`, `updateAvailable` and `installable`, and the panel writes the "Installed as ..., switch to ..." text from them. `inventoryAt` says when the installed versions were last read: a full check's start, or a local refresh.
+The last check's result is `~/.local/state/omarchy/plugins/io.github.vladkarok.omabump/status.json`, with a top-level `schemaVersion` (1). A row's `note` holds only its exceptions; that a package is installed under another name is in `installedName`, `switchable`, `updateAvailable` and `installable`, and the panel writes the "Installed as ..., switch to ..." text from them. `inventoryAt` says when the installed versions were last read: a full check's start, or a local refresh. `selfUpdating` marks a row for an app that updates itself (see Self-updating apps); its `installedName` is the AppImage's path as apps.json writes it, and `installed` is empty when the version is unknown.
 
 ### Settings
 
@@ -75,7 +76,7 @@ Mute, skip, Notify and Show mise tools apply to every check, whoever starts it: 
 |---|---|---|
 | `claude-desktop` | Claude Desktop | omarchy |
 | `openai-codex-desktop` | Codex (also found as AUR `chatgpt-desktop`) | omarchy |
-| `t3code-bin` | T3 Code | omarchy, while installed as a package: Omarchy's migration 1792345511 replaces the package with T3 Code's self-updating app, and the row goes with it |
+| `t3code-bin` | T3 Code | omarchy as the `t3code-bin` package; once Omarchy's migration 1792345511 replaces it with T3 Code's self-updating app, the row shows that app's version and no Update (it updates itself) |
 | `hermes-desktop` | Hermes | omarchy, no Update until the recipe has an upstream watch |
 | `grok-bot` | Grok | omarchy |
 | `lmstudio-bin` | LM Studio | omarchy |
@@ -127,6 +128,8 @@ A local build says `Packager: Unknown Packager` in `pacman -Qi`. pacman replaces
 
 **Omabump itself.** See Updating Omabump: a fast-forward to the release tag after you read the log and answer y.
 
+**Self-updating apps.** An app installed as its vendor's own AppImage, which replaces itself when it updates (T3 Code, since Omarchy's migration 1792345511), has no Update, Switch or Ask agent, and `bin/omabump-install` refuses it: open the app to update it. The row shows the version the AppImage names, read with 7z from its desktop entry without running it, against the newest release, and notifies once per new version. A stable version is compared with vercmp; a pre-release (`0.1.1-nightly.20261019.1`) or an unknown version is not compared and counts as unchecked, with the reason in its note. The local refresh follows the app's own updates. When the package is installed too, the package's row wins.
+
 **indicator.** No Update button. These rows show the installed and newest version. Update them the way you installed them: an AUR row installed from the AUR says "Updates with omarchy update (AUR)", since `omarchy update` runs `yay -Sua`, and has no Ask agent.
 
 **Switch.** Codex may be installed as the AUR's `chatgpt-desktop` and ZCode as `z-code-bin`. When the canonical package has the same or a newer version, the row offers Switch (`w`), which runs `omabump-install --switch <pkg>`. It checks that one package declares a conflict with the other, prints both packages' install scripts and the app's config directory, and lets pacman ask before removing the old package. On omarchy rows the conflict is read from the recipe (`makepkg --printsrcinfo`, this machine's architecture included) before makepkg builds, so a switch that would be refused costs no build, and it is checked again on the built package. The same holds for Update when it replaces a package installed under another name.
@@ -168,6 +171,7 @@ Fields:
 - `checksum` (vendor-pkg, required for Update): `"feed"` reads the base64 `sha512` listed next to the file's `url` in the feed document (electron-updater's `latest.yml` format, as ZCode's manifest uses), or `{"url": ..., "algo": "sha256"|"sha512"}` reads a `sha256sum`-style list.
 - `recipeCommit` (optional, omarchy): a 40-hex omarchy-pkgs commit whose recipe tree replaces the pinned one, for a package whose upstream watch is still in an unmerged PR. `recipeFetch` names a ref to fetch it from and `recipeNote` is the text the row shows. Once the pinned commit's own recipe has a watch, it is ignored.
 - `configDir` (optional): where the app keeps its settings, printed before a switch.
+- `appImage` (optional, not for mise): the app's self-updating AppImage, a path under your home written `~/...` (letters, digits and `._+-`, no `.` or `..` component, at most 200 characters), used only when none of the `installed` packages is there. It must be a regular file you own, not a symlink, at most 2 GiB. `"appImage": ""` in your own file turns a shipped one off.
 - `updateBlocked` (optional): a short reason, at most 200 characters, that turns Omabump's Update off for the row, Ask agent included: the row still shows its versions and notifies, and says "Update off: <reason>", and `bin/omabump-install` refuses it. The shipped table uses it for a known problem in what Update would install. `"updateBlocked": ""` in your own file turns a shipped block off.
 - `feed`: where the newest version comes from. `url` may be a string or an object keyed by `uname -m`, and must be HTTPS.
   - `apt-index` with `url` and `package`: a Debian `Packages` file.
@@ -182,7 +186,7 @@ Fields:
     command feed from the shipped `apps.json` is refused.
 - `icon` and `iconLight` (optional): SVG marks for dark and light themes, as paths relative to the plugin directory. Absolute paths, URLs and `..` are ignored. Put your own marks in `assets/user/`, which git ignores, so they never count as local changes that would stop Updating Omabump.
 
-pacman versions are compared with `vercmp`; mise versions are left to mise.
+pacman versions are compared with `vercmp`; mise versions are left to mise; a self-updating AppImage's stable version is compared with `vercmp` as it is, and a pre-release not at all.
 
 ## Pinned snapshots
 
@@ -221,7 +225,7 @@ The bar tooltip and the panel footer then say "omarchy-pkgs: following master (u
 
 What each guarantee covers, exactly:
 
-- **No fetched code in the background check.** Feeds and recipes are parsed as text; nothing Omabump downloads is executed. mise runs with asdf, vfox and every installed plugin disabled as backends, so a tool named with one of them runs no plugin script (another plugin backend mise may add later is not covered by that setting; `mise outdated` is still asked only about tools on the allowed backends). A plugin you installed yourself can still run its version-listing script for a bare tool name whose configured version is missing (see How CLI tools are found); that is your plugin's code, not something Omabump downloads. A `command` feed in your own `apps.json` is your code, and it runs. The shipped table has no command feeds. The whole check runs under `timeout -k 10 600`.
+- **No fetched code in the background check.** Feeds and recipes are parsed as text; nothing Omabump downloads is executed. A self-updating app's AppImage is only read: 7z extracts its one top-level desktop entry to standard output (at most 64 KiB, within 20 seconds); it is never run or mounted. mise runs with asdf, vfox and every installed plugin disabled as backends, so a tool named with one of them runs no plugin script (another plugin backend mise may add later is not covered by that setting; `mise outdated` is still asked only about tools on the allowed backends). A plugin you installed yourself can still run its version-listing script for a bare tool name whose configured version is missing (see How CLI tools are found); that is your plugin's code, not something Omabump downloads. A `command` feed in your own `apps.json` is your code, and it runs. The shipped table has no command feeds. The whole check runs under `timeout -k 10 600`.
 - **HTTPS only.** Omabump's own downloads allow only HTTPS, redirects included, with connect, total-time and size limits (8 MB for a feed, 4 GB for a package). Code from omarchy-pkgs that Update runs is held to the same rule from outside: `bin/sync-upstream` and its hooks run with `CURL_HOME` pointing at a generated `.curlrc` (`proto = "=https"`, `proto-redir = "=https"`, time and size limits), and makepkg runs with a generated `--config` that sources your makepkg configuration and replaces `DLAGENTS` with an HTTPS-only curl (`http`, `ftp`, `scp` and `rsync` sources fail). Not covered: a hook that bypasses curl, git calls inside `bin/sync-upstream` (git does not read `.curlrc`), a PKGBUILD that sets its own `DLAGENTS`, and VCS sources (`git+https://...`), which makepkg fetches with git. None of the shipped apps' recipes does any of these at the pinned commit. `bin/sync-upstream` gets `TMPDIR` under `~/.cache/omabump/scratch` and runs without the maintainer-only `BYPASS_MIN_RELEASE_AGE`.
 - **Checksums are integrity, not authenticity.** The vendor package's digest comes from the vendor's own unsigned manifest or list over HTTPS. It catches a corrupted or swapped download on the way (transport, CDN), not a compromised vendor. The omarchy route likewise takes its hashes from the vendor's unsigned index through `bin/sync-upstream`; voxtype is the exception, its recipe checks a signed `.asc`.
 - **pacman asks before it installs.** Both installs run plain `sudo pacman -U`, so pacman shows the package and asks "Proceed with installation?". sudo may not ask for a password at all (a cached credential, or makepkg's own `sudo pacman -S` a moment earlier), so the pacman prompt is the point where you can still stop. Answering n prints "pacman did not install <pkg> <version> (you answered no, or it failed above)", and the verified package stays in `~/.cache/omabump/packages` for a retry. When pacman exits with an error after installing (a failed hook or install script), the install counts as done, with a warning to read pacman's output. makepkg installs missing build dependencies with `sudo pacman -S --asdeps`, and pacman asks for those too.
