@@ -233,11 +233,13 @@ function liveSkips(apps, skips) {
   return out
 }
 
-// Whether every listed row from source is muted (and there is one).
+// Whether every listed row from source is muted (and there is one). A
+// self-updating app takes no route of its source, so a failure of that
+// route (the omarchy-pkgs fetch) is none of its business.
 function allMuted(apps, muted, source) {
   var any = false
   for (var i = 0; i < apps.length; i++) {
-    if (apps[i].source !== source) continue
+    if (apps[i].source !== source || selfUpdating(apps[i])) continue
     if (!isMuted(muted, apps[i])) return false
     any = true
   }
@@ -346,7 +348,9 @@ function mutedErrorCount(apps, muted) {
 
 // mise rows on no backend Omabump queries: their newest version is
 // unknown, so no summary may call them current, muted or not (mute
-// silences an update, it does not make an unknown state known).
+// silences an update, it does not make an unknown state known). So are
+// self-updating apps whose version is unknown or a pre-release the feed
+// cannot be compared with.
 function uncheckedCount(apps) {
   return count(apps, function(app) { return app.unchecked === true })
 }
@@ -536,25 +540,35 @@ function openedRun(checking, due) {
 
 // --- rows ------------------------------------------------------------------------
 
-function updatable(app) { return !!app && app.updateAvailable === true && app.installable === true }
+// An app installed as its self-updating AppImage (the checker's
+// selfUpdating): its own updater replaces the file, so the row has no
+// Update, no Switch and no Ask agent, whatever else it says.
+function selfUpdating(app) { return !!app && app.selfUpdating === true }
+
+function updatable(app) { return !!app && app.updateAvailable === true && app.installable === true && !selfUpdating(app) }
+
+// Installed under another package name at a version the canonical package
+// matches (the checker's switchable): Switch replaces it.
+function switchable(app) { return !!app && app.switchable === true && !selfUpdating(app) }
 
 // An update exists but the plugin cannot install it: an indicator row, a
 // recipe without a watch, or a feed that failed with a newer version known.
 // Or a mise tool whose request holds it below a newer release. Not a
 // release omarchy-pkgs still holds (held): Update comes back by itself.
 // Not an AUR package omarchy update already updates (omarchyUpdate, its
-// note says so): there is nothing to plan. Not a row no check has read
-// (unchecked): a local refresh found a mise tool at another version than
-// its newest one was known for, and the check it asked for says.
+// note says so), nor an app that updates itself: there is nothing to plan.
+// Not a row no check has read (unchecked): a local refresh found a mise
+// tool at another version than its newest one was known for, and the
+// check it asked for says.
 function askable(app) {
   if (!app || app.installable === true || app.source === "self" || app.held === true
-    || app.omarchyUpdate === true || app.blocked === true || app.unchecked === true) return false
+    || app.omarchyUpdate === true || app.blocked === true || app.unchecked === true || selfUpdating(app)) return false
   if (app.updateAvailable === true) return true
   return app.source === "mise" && String(app.error || "") === ""
     && String(app.latest || "") !== "" && app.latest !== app.installed
 }
 
-function hasAction(app) { return updatable(app) || askable(app) || (!!app && app.switchable === true) }
+function hasAction(app) { return updatable(app) || askable(app) || switchable(app) }
 
 // What Enter does: "update" when the plugin can install the row, else
 // "ask" (Ask agent) when an agent can plan it, else nothing.
@@ -618,10 +632,12 @@ function legacyFirstClause(note) {
 }
 
 // The package release (-1) says nothing next to an upstream version, so
-// rows drop it unless it is the only difference.
+// rows drop it unless it is the only difference. An AppImage's version has
+// none and shows as it is, or as unknown when the checker could not read it.
 function installedText(app) {
   if (!app) return ""
   var full = String(app.installed || "")
+  if (selfUpdating(app)) return full !== "" ? full : "version unknown"
   if (app.source === "mise") return full
   var short = full.replace(/-[0-9.]+$/, "")
   return app.updateAvailable === true && short === String(app.latest || "") ? full : short
@@ -650,19 +666,22 @@ function sourceLabel(app) {
 
 // How the row knows what it shows and what Update would do. A row with no
 // Update says so, with the reason its second line gives, instead of a
-// route it cannot take.
+// route it cannot take. A self-updating app's says which file updates
+// itself (its installedName, the path apps.json gives), then the note.
 function rowTooltip(app, schema, muted, skipped, pkgsCommit) {
   if (!app) return ""
   var lines = []
   var note = fullNote(app, schema)
   var name = String(app.installedName || "")
-  lines.push("Installed " + String(app.installed || "")
-    + (name !== "" && name !== app.pkg && app.source !== "mise" ? " as " + name : ""))
+  var itself = selfUpdating(app)
+  lines.push("Installed " + (itself ? installedText(app) : String(app.installed || ""))
+    + (name !== "" && name !== app.pkg && app.source !== "mise" && !itself ? " as " + name : ""))
   if (String(app.latest || "") !== "") {
     var from = sourceLabel(app)
     lines.push("Newest " + app.latest + (from !== "" ? " from " + from : ""))
   }
-  if (app.source === "self") lines.push(app.installable === true
+  if (itself) lines.push("No Update here: " + (name !== "" ? "the app at " + name : "the app") + " updates itself")
+  else if (app.source === "self") lines.push(app.installable === true
     ? "Updates to the release's tagged commit, after showing its log and asking"
     : "omarchy update does not update plugins")
   else if (app.installable !== true) {
@@ -754,7 +773,7 @@ function hintText(settingsOpen, app, rowCount, muted, skipped) {
   if (app && app.updateAvailable === true) mute = (isSkipped(skipped, app) ? " · K unskip" : " · K skip") + mute
   if (askable(app)) return "Enter ask agent · c copy prompt" + mute
   if (updatable(app)) return "Enter update" + mute + " · Esc close"
-  if (app && app.switchable === true) return "w switch package" + mute + " · Esc close"
+  if (switchable(app)) return "w switch package" + mute + " · Esc close"
   return (rowCount > 0 ? "↑↓ select · " : "") + "r refresh · s settings" + mute
 }
 

@@ -39,7 +39,7 @@ function row(fields) {
     pkg: "app", label: "App", source: "omarchy", installedName: "app", installed: "1.0.0-1",
     latest: "1.0.0", versionFrom: "feed", updateAvailable: false, installable: true, error: "", note: "",
     stale: false, switchable: false, recipe: "", recipeCommit: "", request: "", muted: false, skipped: false,
-    unchecked: false, held: false, omarchyUpdate: false, icon: "", iconLight: ""
+    unchecked: false, held: false, omarchyUpdate: false, blocked: false, selfUpdating: false, icon: "", iconLight: ""
   }, fields)
 }
 // QML hands lists over as QVariantList: indexable, with a length, not an Array.
@@ -434,6 +434,61 @@ test("hasAction and primaryAction: Update, Ask agent or Switch", () => {
   const sw = row({ installedName: "app-bin", switchable: true })
   same([update, indicator, sw, row({})].map(a => m.hasAction(a)), [true, true, true, false])
   same([update, indicator, sw, null].map(a => m.primaryAction(a)), ["update", "ask", "", ""])
+})
+
+// An app installed as its self-updating AppImage, as the checker writes it:
+// installedName is the file, as apps.json names it.
+const appImage = row({ pkg: "t3code-bin", label: "T3 Code", installedName: "~/.local/share/t3code/T3-Code.AppImage", installed: "0.1.0",
+  latest: "0.1.1", updateAvailable: true, installable: false, selfUpdating: true, note: "Updates itself: open T3 Code to update" })
+
+test("selfUpdating: the checker's flag, nothing else", () => {
+  same([m.selfUpdating(appImage), m.selfUpdating(row({})), m.selfUpdating(row({ selfUpdating: "true" })), m.selfUpdating(null)],
+    [true, false, false, false])
+})
+
+test("switchable: the checker's switchable, never for a self-updating app", () => {
+  same([m.switchable(row({ installedName: "app-bin", switchable: true })), m.switchable(row({})),
+    m.switchable(Object.assign({}, appImage, { switchable: true })), m.switchable(null)], [true, false, false, false])
+})
+
+test("a self-updating app: no Update, Switch or Ask agent, whatever else the row says", () => {
+  const odd = Object.assign({}, appImage, { installable: true, switchable: true })
+  same([appImage, odd, Object.assign({}, appImage, { updateAvailable: false, latest: "0.1.0" })]
+    .map(a => [m.updatable(a), m.askable(a), m.hasAction(a), m.primaryAction(a)]),
+    [[false, false, false, ""], [false, false, false, ""], [false, false, false, ""]])
+  same(m.firstActionIndex([appImage, update], [], {}), 1)
+})
+
+test("a self-updating app's update counts as one without an install path, and skips and mutes as any row", () => {
+  same([m.updateCount([appImage], [], {}), m.waitingCount([appImage], [], {}), m.waitingCount([appImage], ["t3code-bin"], {}),
+    m.quietCount([appImage], [], { "t3code-bin": "0.1.1" })], [0, 1, 0, 1])
+  same([m.hintText(false, appImage, 1, [], {}), m.hintText(false, Object.assign({}, appImage, { updateAvailable: false, switchable: true }), 1, [], {})],
+    ["↑↓ select · r refresh · s settings · K skip · m mute", "↑↓ select · r refresh · s settings · m mute"])
+})
+
+test("installedText: a self-updating app's version as it is, or unknown", () => {
+  same([m.installedText(appImage), m.installedText(Object.assign({}, appImage, { installed: "0.1.1-nightly.20261019.1", updateAvailable: false })),
+    m.installedText(Object.assign({}, appImage, { installed: "" })), m.installedText(Object.assign({}, appImage, { installed: "1.0-1", updateAvailable: false }))],
+    ["0.1.0", "0.1.1-nightly.20261019.1", "version unknown", "1.0-1"])
+})
+
+test("rowTooltip: a self-updating app says it updates itself and which file it is", () => {
+  same(m.rowTooltip(appImage, 1, [], {}, ""), ["Installed 0.1.0", "Newest 0.1.1 from the vendor's release feed",
+    "No Update here: the app at ~/.local/share/t3code/T3-Code.AppImage updates itself", "Updates itself: open T3 Code to update"].join("\n"))
+  const unknown = Object.assign({}, appImage, { installed: "", updateAvailable: false, unchecked: true, error: "e", stale: true,
+    note: "Version unknown: install 7zip to read it; Updates itself: open T3 Code to update" })
+  same(m.rowTooltip(unknown, 1, ["t3code-bin"], {}, ""), ["Installed version unknown", "Newest 0.1.1 from an earlier check",
+    "No Update here: the app at ~/.local/share/t3code/T3-Code.AppImage updates itself",
+    "Version unknown: install 7zip to read it; Updates itself: open T3 Code to update", "Check failed: e", "Muted: no badge, no notification"].join("\n"))
+  same(m.rowTooltip(Object.assign({}, appImage, { installedName: "", latest: "" }), 1, [], { "t3code-bin": "0.1.1" }, ""),
+    ["Installed 0.1.0", "No Update here: the app updates itself", "Updates itself: open T3 Code to update"].join("\n"))
+  same(m.extraLine(appImage, 1, ""), "Updates itself: open T3 Code to update")
+})
+
+test("allMuted: a self-updating app takes no route of its source, so it never keeps a failure of one showing", () => {
+  const apps = [appImage, row({ pkg: "b" })]
+  same([m.allMuted(apps, ["b"], "omarchy"), m.allMuted([appImage], [], "omarchy"),
+    m.failureText({ checkError: "", runError: "", pkgsError: "p", miseError: "" }, apps, ["b"])], [true, false, ""])
 })
 
 test("firstActionIndex: the first row with something to do that is not quiet", () => {

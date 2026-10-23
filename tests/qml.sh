@@ -125,6 +125,13 @@ check "Model.js reads the runError field bin/omabump-check writes" \
   grep -q 'file.runError' "$root/Model.js"
 check "bin/omabump-check writes runError into status.json" \
   grep -q 'runError: \$rerr' "$root/bin/omabump-check"
+# So with a row's selfUpdating: the panel offers no Update, Switch or Ask
+# agent for it, and decides Update and Switch through Model.js.
+check "Model.js reads the selfUpdating field bin/omabump-check writes" \
+  grep -q 'function selfUpdating(app) { return !!app && app.selfUpdating === true }' "$root/Model.js"
+check "bin/omabump-check writes selfUpdating into every row" grep -q 'selfUpdating: \$selfUpdating, icon' "$root/bin/omabump-check"
+check "Panel.qml decides Update and Switch through Model.js" \
+  bash -c '[[ $(grep -cE "readonly property bool (updatable: Model.updatable|switchable: Model.switchable)\(app\)" "$1") == 2 ]]' _ "$root/Panel.qml"
 
 # The widget reads states from status.json's fields, never from the
 # checker's wording: no "Update check skipped" prefix for unchecked, no

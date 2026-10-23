@@ -12,6 +12,10 @@
 #   mise        `mise outdated`: what `mise up` would reach under the
 #               configured request, and what lies outside it (a pin).
 #
+# An app installed as its self-updating AppImage (apps.json "appImage")
+# rather than its package: the feed in apps.json, against the version the
+# AppImage names, read with 7z; the app updates itself, so no route.
+#
 #   omabump-check [--no-notify] [--no-mise] [--wait]
 #   omabump-check --local [--no-mise]
 #
@@ -149,20 +153,53 @@ row_switchable() {
     && ! newer "$(upstream_part "$7")" "$6"
 }
 
+# The row of an app installed as its self-updating AppImage (installed_app
+# names it by its path): its own updater replaces the file, so the row has
+# no route, and its note says to open the app. $1 label, $2 the AppImage's
+# version (empty when unknown), $3 the newest known. Sets update, unchecked
+# and note. A release version (version_ok: no "-", and a digit first)
+# compares with the feed's by vercmp as it is, since an AppImage has no
+# pkgrel. A pre-release (0.1.1-nightly.20261019.1) is compared with
+# nothing: a feed's version never has a "-", so it is a release of another
+# channel, and vercmp would take the suffix for a pkgrel and call
+# 0.1.1-nightly.x the same as 0.1.1. Nor is a version with a letter first
+# (continuous, as some CI builds name theirs): vercmp ranks it below every
+# numeric one, an update forever. Such a row, or one whose version is
+# unknown, never claims an update and never reads as current (unchecked),
+# and its note says why first.
+appimage_row() {
+  local label=$1 have=$2 latest=$3 why=""
+  update=false unchecked=false
+  if [[ -z $have ]]; then
+    unchecked=true
+    if command -v 7z >/dev/null; then why="Version unknown: 7z could not read it from the AppImage"
+    else why="Version unknown: install 7zip to read it (sudo pacman -S --needed 7zip)"; fi
+  elif [[ $have != [0-9]* ]]; then
+    unchecked=true why="Not a release number, not compared with the feed's"
+  elif ! version_ok "$have"; then
+    unchecked=true why="Pre-release build, not compared with the feed's stable releases"
+  elif [[ -n $latest ]] && newer "$latest" "$have"; then
+    update=true
+  fi
+  note="${why:+$why; }Updates itself: open $label to update"
+}
+
 # --- a local refresh (--local) -------------------------------------------------
 #
 # Apps are updated outside Omabump: Omarchy's wrappers update mise CLIs on
 # launch, and omarchy update runs pacman and mise up. Until the next check,
-# a row can then offer an Update that is already installed. This reads the
-# installed versions again, from pacman (installed_app) and mise's inventory
-# (mise ls), and nothing else: no feed, no omarchy-pkgs, no mise outdated,
-# nothing on the network. It starts from the last check's status.json and
-# keeps the rest of each row (the newest version, the route, notes, errors,
-# muted, skipped), and writes the file once, with checkedAt and startedAt as
-# that check left them: the widget counts the next check from those, and a
-# local refresh must never put it off. inventoryAt says when the installed
-# versions were last read, by a check or by this. It never notifies and
-# never reads or writes notified.json. It exits:
+# a row can then offer an Update that is already installed, and a
+# self-updating app's own updater moves it. This reads the installed
+# versions again, from pacman and the apps' AppImages (installed_app) and
+# mise's inventory (mise ls), and nothing else: no feed, no omarchy-pkgs,
+# no mise outdated, nothing on the network. It starts from the last check's
+# status.json and keeps the rest of each row (the newest version, the
+# route, notes, errors, muted, skipped), and writes the file once, with
+# checkedAt and startedAt as that check left them: the widget counts the
+# next check from those, and a local refresh must never put it off.
+# inventoryAt says when the installed versions were last read, by a check
+# or by this. It never notifies and never reads or writes notified.json.
+# It exits:
 #   0                  done
 #   full_check_exit    something only a check can read changed; the rows say
 #                      what is known until one runs (the widget starts it)
@@ -272,34 +309,79 @@ local_pacman_busy() {
 # versions it knows: sets row, and why when only a check can read the rest.
 # Fails, row unset, when the row stays as it is.
 local_row() {
-  local p_source p_name p_installed p_latest p_from p_installable p_held p_unchecked have update held=false
-  local installable unhold=false switchable=false label muted blocked=false
+  local p_source p_name p_installed p_latest p_from p_installable p_held p_unchecked p_self p_unread have update held=false
+  local installable unhold=false switchable=false label muted blocked=false self=false unchecked note
   row="" why=""
+  self_updating_name "$name" && self=true
   if [[ $prev == '{}' ]]; then
     # Installed since the last check: what it is, not yet what is newer.
     label=$(jq -r '.label // .pkg' <<<"$app")
     muted=$(jq --arg pkg "$pkg" 'index($pkg) != null' <<<"$muted_json")
-    [[ -z $(jq -r '.updateBlocked // ""' <<<"$app") ]] || blocked=true
+    [[ $self == true || -z $(jq -r '.updateBlocked // ""' <<<"$app") ]] || blocked=true
     row=$(jq -cn --arg pkg "$pkg" --arg label "$(clean_text "$label")" --arg source "$source" \
       --arg installedName "$name" --arg installed "$installed" --argjson muted "$muted" --argjson blocked "$blocked" \
+      --argjson selfUpdating "$self" \
       --arg icon "$(jq -r '.icon // ""' <<<"$app")" --arg iconLight "$(jq -r '.iconLight // ""' <<<"$app")" \
       '{pkg: $pkg, label: $label, source: $source, installedName: $installedName,
         installed: $installed, latest: "", versionFrom: "",
         updateAvailable: false, installable: false, error: "", note: "Not checked yet",
         stale: false, switchable: false, recipe: "", recipeCommit: "",
         request: "", muted: $muted, skipped: false, unchecked: true, held: false, omarchyUpdate: false, blocked: $blocked,
-        icon: $icon, iconLight: $iconLight}')
-    why="$pkg $installed is installed since the last check"
+        selfUpdating: $selfUpdating, icon: $icon, iconLight: $iconLight}')
+    why="$pkg${installed:+ $installed} is installed since the last check"
     return 0
   fi
-  IFS=$'\x1f' read -r p_source p_name p_installed p_latest p_from p_installable p_held p_unchecked < <(jq -r '
+  # p_unread: a row a local refresh wrote and no check has read since (new,
+  # or moved between package and AppImage). For a self-updating app,
+  # unchecked alone does not say so: its unknown or pre-release version is
+  # unchecked too.
+  IFS=$'\x1f' read -r p_source p_name p_installed p_latest p_from p_installable p_held p_unchecked p_self p_unread < <(jq -r '
     [.source // "", .installedName // "", .installed // "", .latest // "", .versionFrom // "",
-     .installable == true, .held == true, .unchecked == true] | map(tostring) | join("\u001f")' <<<"$prev")
+     .installable == true, .held == true, .unchecked == true, .selfUpdating == true,
+     (.unchecked == true and .note == "Not checked yet")] | map(tostring) | join("\u001f")' <<<"$prev")
   if [[ $p_source != "$source" ]]; then
     why="$pkg has another source in the app table"
     return 1
   fi
   [[ $name != "$p_name" || $installed != "$p_installed" ]] || return 1
+
+  # From the package to the self-updating AppImage or back: the route, the
+  # note and what counts as newer all change, and only a check reads them.
+  # The newest version stays (the feed is the entry's, whatever is
+  # installed); what only the other form had goes, as a new row has it: the
+  # recipe, omarchy update's AUR route, and updateBlocked's mark, which an
+  # app that updates itself never carries.
+  if [[ $self != "$p_self" ]]; then
+    [[ $self == true || -z $(jq -r '.updateBlocked // ""' <<<"$app") ]] || blocked=true
+    row=$(jq -c --arg name "$name" --arg installed "$installed" --argjson self "$self" --argjson blocked "$blocked" '
+      . + {installedName: $name, installed: $installed, selfUpdating: $self, updateAvailable: false, installable: false,
+           switchable: false, held: false, skipped: false, unchecked: true, note: "Not checked yet",
+           recipe: "", recipeCommit: "", omarchyUpdate: false, blocked: $blocked}' <<<"$prev")
+    why="$pkg is installed as $name now"
+    return 0
+  fi
+  if [[ $self == true ]]; then
+    # No check has read the row yet: it stays unread at its new version, as
+    # a package row does, and the check asked for reads the rest.
+    if [[ $p_unread == true ]]; then
+      row=$(jq -c --arg name "$name" --arg installed "$installed" '. + {installedName: $name, installed: $installed}' <<<"$prev")
+      why="$pkg${installed:+ $installed} is not checked yet"
+      return 0
+    fi
+    # Its version against the newest known, by the rules a check applies
+    # (appimage_row): its own updater moved it.
+    appimage_row "$(jq -r '.label // .pkg' <<<"$app")" "$installed" "$p_latest"
+    row=$(jq -c --arg name "$name" --arg installed "$installed" --argjson update "$update" --argjson unchecked "$unchecked" \
+      --arg note "$(clean_text "$note")" '
+      . + {installedName: $name, installed: $installed, updateAvailable: $update, unchecked: $unchecked, note: $note}
+      | if $update then . else .skipped = false end' <<<"$prev")
+    if [[ $name != "$p_name" ]]; then
+      why="$pkg is installed as $name now"
+    elif [[ $unchecked == false && -n $p_latest ]] && newer "$installed" "$p_latest"; then
+      why="$pkg $installed is past the last known $p_latest"
+    fi
+    return 0
+  fi
 
   if [[ $source == mise ]]; then
     # mise's answer about a newer version holds only for the version it was
@@ -449,8 +531,8 @@ order=$(jq -c 'map(.pkg)' <<<"$table")
 # inventoryAt, when the installed versions were last read, is the run's
 # start once it is done, and stays the last one's until then.
 # schemaVersion names the file's shape. Version 1: no switch clause in a
-# row's note, and "unchecked" on every row; inventoryAt came later, a field
-# a reader may find missing.
+# row's note, and "unchecked" on every row; inventoryAt and a row's
+# selfUpdating came later, fields a reader may find missing.
 write_status() {
   local final=$1 run_error=${2:-} out at
   at=$(jq -r '.checkedAt // ""' <<<"$previous")
@@ -497,9 +579,15 @@ while IFS= read -r app; do
   prev=$(jq -c --arg pkg "$pkg" '[.apps[] | select(.pkg == $pkg)][0] // {}' <<<"$previous")
   latest="" from="" note="" installable=false stale=false
   route_error="" feed_error="" recipe="" recipe_commit="" mise_update=false request="" unchecked=false
-  hold=0 held=false omarchy_update=false
+  hold=0 held=false omarchy_update=false self_updating=false
 
-  case $source in
+  # Installed as its self-updating AppImage: no route of its source applies,
+  # and nothing of omarchy-pkgs is read for it. appimage_row words the row
+  # once the newest version is known.
+  route=$source
+  if self_updating_name "$installed_name"; then self_updating=true route=self-updating; fi
+  case $route in
+    self-updating) ;;
     mise)
       mise_row "$installed_name" "$installed" ;;
     vendor-pkg)
@@ -558,8 +646,9 @@ while IFS= read -r app; do
   # apps.json can turn Omabump's Update off for a row (updateBlocked says
   # why): a known problem in what Update would install. The versions still
   # show and still notify; only the route is closed, and Ask agent with it.
+  # An app that updates itself has no Update to turn off.
   blocked=$(jq -r '.updateBlocked // ""' <<<"$app")
-  if [[ -n $blocked && $source != self ]]; then
+  if [[ -n $blocked && $source != self && $self_updating == false ]]; then
     installable=false
     note="Update off: $blocked${note:+; $note}"
   else
@@ -596,7 +685,9 @@ while IFS= read -r app; do
   # A feed knows only upstream's version, so it is compared with the
   # installed one less epoch and pkgrel. The installer compares full versions.
   update=$mise_update
-  if [[ -n $latest && $source != mise ]]; then
+  if [[ $self_updating == true ]]; then
+    appimage_row "$label" "$installed" "$latest"
+  elif [[ -n $latest && $source != mise ]]; then
     have=$installed
     [[ $from == feed ]] && have=$(upstream_part "$installed")
     newer "$latest" "$have" && update=true
@@ -635,6 +726,7 @@ while IFS= read -r app; do
   elif [[ $action == send ]]; then
     body="Installed: $installed. Open the Omabump panel to update."
     [[ $installable == true ]] || body="Installed: $installed. ${note^}."
+    [[ $self_updating == false ]] || body="Installed: $installed. $label updates itself: open it to update."
     if notify-send -a Omabump "$(clean_text "$label $latest available")" "$(clean_text "$body")" 2>/dev/null; then
       notified=$(jq -c --arg pkg "$pkg" --arg v "$latest" '.[$pkg] = $v' <<<"$notified")
       save_notified
@@ -649,13 +741,14 @@ while IFS= read -r app; do
     --argjson installable "$installable" --arg error "$error" --arg note "$(clean_text "$note")" \
     --argjson stale "$stale" --argjson switchable "$switchable" --arg recipe "$(clean_text "$recipe")" --arg recipeCommit "$recipe_commit" \
     --arg request "$(clean_text "$request")" --argjson muted "$muted" --argjson skipped "$skipped" --argjson unchecked "$unchecked" --argjson held "$held" --argjson omarchyUpdate "$omarchy_update" --argjson blocked "$is_blocked" \
+    --argjson selfUpdating "$self_updating" \
     --arg icon "$(jq -r '.icon // ""' <<<"$app")" --arg iconLight "$(jq -r '.iconLight // ""' <<<"$app")" \
     '{pkg: $pkg, label: $label, source: $source, installedName: $installedName,
       installed: $installed, latest: $latest, versionFrom: $versionFrom,
       updateAvailable: $update, installable: $installable, error: $error, note: $note,
       stale: $stale, switchable: $switchable, recipe: $recipe, recipeCommit: $recipeCommit,
       request: $request, muted: $muted, skipped: $skipped, unchecked: $unchecked, held: $held, omarchyUpdate: $omarchyUpdate, blocked: $blocked,
-      icon: $icon, iconLight: $iconLight}')")
+      selfUpdating: $selfUpdating, icon: $icon, iconLight: $iconLight}')")
   write_status 0
 done < <(jq -c '.[]' <<<"$table"; echo "$self_app")
 
