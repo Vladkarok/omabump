@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.7 (2026-10-23)
+
+- A new agent CLI release shows and installs as soon as its registry has it. mise now runs without its versions host (`MISE_USE_VERSIONS_HOST=false`), which listed Codex 0.164.0 hours after its release while T3 Code already offered it. mise asks the tool's registry instead, GitHub's API included, about once an hour per configured tool. Without a GitHub token that counts against GitHub's 60 requests an hour per address; the README says how to give mise one.
+- A pinned or ranged mise tool whose version list could not be fetched (a rate limit, a 504) reads as a failed check, not as current.
+- The panel's cursor follows the pointer onto a row again when one fast move lands there, which 0.1.6 missed. A pointer at rest still moves nothing, now also when the card moves under it (a bar at the bottom or a side, as the content grows) or when it rests on a section header while the list scrolls. The rule is in `PointerGate.qml`, and `tests/tst_pointer.qml` runs it under qmltestrunner.
+
 ## 0.1.6 (2026-10-23)
 
 - The panel rereads installed versions between checks, offline (mise with `MISE_OFFLINE=1`): when it opens (or it runs the full check, when one is due) and every 5 minutes (`bin/omabump-check --local`). An app updated outside Omabump, by `omarchy update` or an Omarchy wrapper updating a mise CLI on launch, no longer keeps offering an Update that is already installed; nor does Omabump's own row after `omarchy plugin update`. A version the refresh cannot judge alone (past the newest known one, a mise tool at another version, a new app) shows "Not checked yet" and starts one full check. status.json gains `inventoryAt`; a check that meets a local refresh waits for it.
