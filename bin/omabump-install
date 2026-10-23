@@ -57,6 +57,13 @@ done
 pkg=${1:?usage: omabump-install [--prepare] [--switch] <pkg>}
 
 die() { echo "omabump: $*" >&2; exit 1; }
+# Ends a run that cannot install: says why, $1, or with --prepare what a
+# run would refuse, and stops there as that run would.
+refuse() {
+  (( prepare )) && { echo "Would refuse: $1"; exit 0; }
+  die "$1"
+}
+
 command -v jq >/dev/null || die "jq is missing; install it with: sudo pacman -S --needed jq"
 
 if [[ $pkg == "$self_pkg" ]]; then
@@ -148,7 +155,7 @@ if jq -e '(.appImage // "") != ""' >/dev/null 2>&1 <<<"$app" \
   for copy in "${left_copies[@]}"; do
     echo "omabump: a stopped Update of the $pkg package left its staged copy in $copy, and no Update of $label will remove it now; remove it with: sudo rm -f -- $copy" >&2
   done
-  die "$label updates itself: open $label to update it (it is installed as $installed_name, which Omabump does not replace)"
+  refuse "$label updates itself: open $label to update it (it is installed as $installed_name, which Omabump does not replace)"
 fi
 
 # The copies stopped runs left go first, whatever the run does next (a
@@ -157,7 +164,7 @@ clear_staged_left
 # apps.json turned Update off for this app (updateBlocked): a known problem in
 # what it would install. The check shows the same reason on the row.
 blocked=$(jq -r '.updateBlocked // ""' <<<"$app")
-[[ -z $blocked ]] || die "Update of $label is off in Omabump: $(term_safe <<<"$blocked" | tr '\t\n' '  ' | sed 's/ *$//')"
+[[ -z $blocked ]] || refuse "Update of $label is off in Omabump: $(term_safe <<<"$blocked" | tr '\t\n' '  ' | sed 's/ *$//')"
 
 installed_name="" installed=""
 [[ $(jq -r '.source' <<<"$app") == mise ]] && mise_load 0
@@ -167,8 +174,8 @@ fi
 [[ $source == omarchy ]] && require_omarchy_tools
 echo "$label: installed ${installed:-nothing} (${installed_name:-$pkg}, $source)"
 if (( switch )); then
-  [[ $source == omarchy || $source == vendor-pkg ]] || die "--switch works for omarchy and vendor rows only"
-  [[ -n $installed_name && $installed_name != "$pkg" ]] || die "$label is not installed under another name; nothing to switch"
+  [[ $source == omarchy || $source == vendor-pkg ]] || refuse "--switch works for omarchy and vendor rows only"
+  [[ -n $installed_name && $installed_name != "$pkg" ]] || refuse "$label is not installed under another name; nothing to switch"
   echo "Switching from $installed_name to $pkg at the same or a newer version."
 fi
 
@@ -294,13 +301,6 @@ guard_version() {
   return 1
 }
 
-# Ends a run that cannot install: says why, $1, or with --prepare what a
-# run would refuse, and stops there as that run would.
-refuse() {
-  (( prepare )) && { echo "Would refuse: $1"; exit 0; }
-  die "$1"
-}
-
 # The field $1 of this app's row in the last check's status.json, which the
 # panel shows until the next check, on one line; true or false for a flag.
 # Nothing when no check ran, the file is not one the check wrote, or the
@@ -418,7 +418,7 @@ require_conflict() {
   local rc=0
   switch_conflicts "$1" || rc=$?
   (( rc != 2 )) || die "cannot read the conflicts $pkg or $installed_name declares; not switching"
-  (( rc == 0 )) || die "neither $pkg nor $installed_name declares a conflict with the other, so pacman would keep both; not switching"
+  (( rc == 0 )) || refuse "neither $pkg nor $installed_name declares a conflict with the other, so pacman would keep both; not switching"
 }
 
 # The install script the recipe in the current directory gives package $1,
@@ -690,7 +690,7 @@ install_omarchy() {
     echo "Recipe tree taken whole from $recipe_rev"
   fi
   blocker=$(recipe_blocker "$recipe_rev" "$pkg") || die "could not read the $pkg recipe at ${recipe_rev:0:12}"
-  [[ -z $blocker ]] || die "$blocker; wait for the [omarchy] repo"
+  [[ -z $blocker ]] || refuse "$blocker; wait for the [omarchy] repo"
 
   # The first fetched code that runs: omarchy-pkgs' sync tool and the
   # recipe's upstream hook, as you, after you pressed Update. Its curl calls
@@ -761,9 +761,9 @@ install_vendor_pkg() {
     rm -f "$feed_file"
     nothing_newer "$installed" "the vendor's feed gives $latest now" "it gave at the last check"
   fi
-  url=$(vendor_pkg_url "$app" "$latest") || { rm -f "$feed_file"; die "the vendor publishes no https $pkg package for $(uname -m)"; }
+  url=$(vendor_pkg_url "$app" "$latest") || { rm -f "$feed_file"; refuse "the vendor publishes no https $pkg package for $(uname -m)"; }
   echo "Vendor package: $url"
-  sum=$(vendor_checksum "$app" "$url" "$latest" "$feed_file") || { rm -f "$feed_file"; die "no published checksum for ${url##*/}; not downloading"; }
+  sum=$(vendor_checksum "$app" "$url" "$latest" "$feed_file") || { rm -f "$feed_file"; refuse "no published checksum for ${url##*/}; not downloading"; }
   rm -f "$feed_file"
   read -r algo want <<<"$sum"
   echo "Published $algo: $want"
@@ -791,7 +791,7 @@ install_vendor_pkg() {
   [[ $(upstream_part "$ver") == "$latest" ]] || die "the vendor package is $ver, expected $latest"
   # The feed knows no epoch or pkgrel; the file does. Compare its full
   # version with what is installed right now.
-  msg=$(guard_version "$ver") || die "vendor package: $msg; not installing"
+  msg=$(guard_version "$ver") || refuse "vendor package: $msg; not installing"
   echo "Package file: $file ($line)"
   show_switch "$file"
   stage_and_install "$file" "$line" "$algo" "$want"
@@ -818,7 +818,7 @@ install_mise() {
   local tool=$installed_name target request now
   [[ -n $tool ]] || die "${mise_inventory_error:-mise has no active $label}"
   mise_load 1 "$tool"
-  mise_key_safe "$tool" || die "$(mise_skip_note "$tool"); Omabump updates mise tools on mise's own backends only. Update $tool with mise up yourself."
+  mise_key_safe "$tool" || refuse "$(mise_skip_note "$tool"); Omabump updates mise tools on mise's own backends only. Update $tool with mise up yourself."
   [[ -z $mise_error ]] || die "$mise_error"
   [[ -z ${mise_fetch_failed[$tool]:-} ]] || die "mise could not fetch the versions of $tool: ${mise_fetch_failed[$tool]}"
   # An entry mise_outdated_table could not read has no fields: read as such,
@@ -835,8 +835,8 @@ install_mise() {
     now=$(mise_field "$mise_bump_json" "$tool" latest)
     [[ -n $now ]] || now=$(mise_field "$mise_bump_json" "$tool" bump)
     if [[ -n $now && $now != "$installed" ]]; then
-      [[ $request == latest ]] && die "$label is held back at $installed by your mise settings ($now exists); mise up would not move it. See mise settings."
-      die "$label is held at $installed by its mise request '$request' ($now exists); mise up would not move it. Change the request with mise use."
+      [[ $request == latest ]] && refuse "$label is held back at $installed by your mise settings ($now exists); mise up would not move it. See mise settings."
+      refuse "$label is held at $installed by its mise request '$request' ($now exists); mise up would not move it. Change the request with mise use."
     fi
     nothing_newer "$installed" "mise up keeps $label at $installed" "mise showed at the last check"
   fi
@@ -945,16 +945,13 @@ self_restore() {
 # read after the merge replaced it.
 install_self() {
   local latest answer before validate=(omarchy-plugin-validate)
-  self_git_managed || die "Omabump runs from a local checkout ($plugin_dir); update it with git"
+  self_git_managed || refuse "Omabump runs from a local checkout ($plugin_dir); update it with git"
   command -v omarchy-plugin-validate >/dev/null || validate=(omarchy plugin validate)
   command -v "${validate[0]}" >/dev/null || die "omarchy-plugin-validate is missing"
   latest=$(feed_version "$app") || die "could not read Omabump's newest release"
   echo "Newest release: $latest"
-  if ! newer "$latest" "$installed"; then
-    echo "Omabump $installed is the newest release."
-    exit 0
-  fi
-  self_origin_ok || die "the plugin clone's origin is not $self_repo; update it with: omarchy plugin update $self_plugin_id"
+  newer "$latest" "$installed" || nothing_newer "$installed" "Omabump's newest release is $latest" "the panel showed"
+  self_origin_ok || refuse "the plugin clone's origin is not $self_repo; update it with: omarchy plugin update $self_plugin_id"
   self_plan "$latest" || die "not updating to v$latest. omarchy plugin update $self_plugin_id still works; it installs the repository's HEAD"
   echo "Release v$latest is commit $self_target."
   echo
@@ -991,7 +988,7 @@ install_main() {
     omarchy) install_omarchy ;;
     vendor-pkg) install_vendor_pkg ;;
     mise) install_mise ;;
-    indicator) die "$label has no supported install path; update it the way you installed it" ;;
+    indicator) refuse "$label has no supported install path; update it the way you installed it" ;;
     *) die "unknown source '$source'" ;;
   esac
 

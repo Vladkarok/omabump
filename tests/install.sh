@@ -273,6 +273,9 @@ same "install, updateBlocked: refuses" 1 "$irc"
 says "install, updateBlocked: says why" 'omabump: Update of Blocked App is off in Omabump: a known problem in its install script, see x#1'
 no_call "install, updateBlocked: nothing staged" 'sudo'
 no_call "install, updateBlocked: nothing built" 'makepkg'
+inst --prepare blockedapp
+same "install --prepare, updateBlocked: says it would refuse, and why" \
+  '0|Would refuse: Update of Blocked App is off in Omabump: a known problem in its install script, see x#1' "$irc|$iout"
 
 # --- an app installed as its self-updating AppImage ---------------------------------
 
@@ -292,9 +295,12 @@ for args in selfapp '--prepare selfapp' '--switch selfapp'; do
   : >"$it/elsewhere.pkg.tar"
   # shellcheck disable=SC2086 # the arguments, split on purpose
   inst $args
-  same "install $args, a self-updating app: refuses as other refusals do" 1 "$irc"
+  # --prepare says what a run would refuse, as for any other refusal.
+  refusal='omabump: ' rc=1
+  [[ $args != --prepare* ]] || refusal='Would refuse: ' rc=0
+  same "install $args, a self-updating app: refuses as other refusals do" "$rc" "$irc"
   says "install $args, a self-updating app: says it updates itself, and which file it is" \
-    'omabump: Self App updates itself: open Self App to update it (it is installed as ~/.local/share/selfapp/Self.AppImage, which Omabump does not replace)'
+    "${refusal}Self App updates itself: open Self App to update it (it is installed as ~/.local/share/selfapp/Self.AppImage, which Omabump does not replace)"
   no_call "install $args, a self-updating app: never calls sudo" 'sudo'
   no_call "install $args, a self-updating app: nothing built" 'makepkg'
   check "install $args, a self-updating app: the staged copy left stays" test -e "$istaging/selfapp-old.pkg.tar"
@@ -568,6 +574,9 @@ says "install, a refused --switch: says why" 'Test App is not installed under an
 calls "install, a refused --switch: a recorded copy is removed all the same" "sudo rm -f -- $vstaged"
 check "install, a refused --switch: the copy is gone" test ! -e "$vstaged"
 check "install, a refused --switch: and so is the record" test ! -e "$ileft/testapp"
+inst --prepare --switch testapp
+same "install --prepare, a refused --switch: says it would refuse" \
+  '0|Would refuse: Test App is not installed under another name; nothing to switch' "$irc|$(grep -F 'Would refuse' <<<"$iout")"
 
 # The record is a file of yours: only a file name in the staging directory
 # reaches sudo rm.
@@ -652,6 +661,10 @@ STUB_PACMAN_U=ok inst testapp
 says "install (vendor): guard_version refuses a file older than an installed epoch" \
   'vendor package: 2.0.0-1 is not newer than the installed testapp 1:1.0.0-1; not installing'
 no_call "install (vendor): before anything is staged" 'sudo '
+inst --prepare testapp
+same "install --prepare (vendor): says it would refuse a file older than an installed epoch" \
+  '0|Would refuse: vendor package: 2.0.0-1 is not newer than the installed testapp 1:1.0.0-1; not installing' \
+  "$irc|$(grep -F 'Would refuse' <<<"$iout")"
 
 fresh 'testapp-bin 2.0.0-1'
 printf 'Name            : testapp-bin\nProvides        : None\nConflicts With  : None\n' >"$idb/qi/testapp-bin"
@@ -969,6 +982,26 @@ refuse "install --prepare --switch (omarchy), an older recipe: and stops there" 
 rm -f "$idb/qi/testpkg-bin"
 
 # --- Omabump's own update: the fast-forward and its rollback ---------------------------
+
+# Omabump updated outside its Update (omarchy plugin update, a git pull) to
+# the release the panel showed: nothing to do, and the panel's refresh
+# clears the row. A feed behind the panel names both versions.
+self_version=$(jq -r .version "$iplugin/manifest.json")
+# shellcheck disable=SC2016 # expanded by the child bash
+self_inst='feed_version() { echo "$T_FEED"; }; self_git_managed() { :; }; install_self'
+fresh
+shown self:omabump "$self_version" 0.0.1
+T_FEED=$self_version inst_src "$self_inst" self:omabump
+same "install (self), the release the panel showed installed since: a success that says so" \
+  "0|Omabump $self_version is already installed; nothing to do." "$irc|$(grep -F 'already installed' <<<"$iout")"
+calls "install (self), the release the panel showed installed since: refreshes the panel" 'omabump-check --no-notify --wait'
+fresh
+shown self:omabump 9.9.9 "$self_version"
+T_FEED=$self_version inst_src "$self_inst" self:omabump
+same "install (self), the feed behind the panel: a failure that names both versions" \
+  "1|omabump: Omabump's newest release is $self_version, not the 9.9.9 the panel showed; Update cannot install it yet." \
+  "$irc|$(grep -F 'newest release is' <<<"$iout")"
+no_call "install (self), the feed behind the panel: no panel refresh" 'omabump-check'
 
 # The release changes a.txt and adds c.txt, d/new, n/sub/f (in directories
 # the installed commit does not have) and b.log, which the installed
