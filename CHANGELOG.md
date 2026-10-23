@@ -4,6 +4,7 @@
 
 - A new agent CLI release shows and installs as soon as its registry has it. mise now runs without its versions host (`MISE_USE_VERSIONS_HOST=false`), which listed Codex 0.164.0 hours after its release while T3 Code already offered it. mise asks the tool's registry instead, GitHub's API included, about once an hour per configured tool. Without a GitHub token that counts against GitHub's 60 requests an hour per address; the README says how to give mise one.
 - A pinned or ranged mise tool whose version list could not be fetched (a rate limit, a 504) reads as a failed check, not as current.
+- A check that failed (offline after a resume, a feed that timed out) is tried once more 5 minutes after it started instead of an hour later. Only once: a retry that fails waits the usual interval. status.json gains `retry`; `bin/omabump-check` gains `--retry`.
 - The panel's cursor follows the pointer onto a row again when one fast move lands there, which 0.1.6 missed. A pointer at rest still moves nothing, now also when the card moves under it (a bar at the bottom or a side, as the content grows) or when it rests on a section header while the list scrolls. The rule is in `PointerGate.qml`, and `tests/tst_pointer.qml` runs it under qmltestrunner.
 
 ## 0.1.6 (2026-10-23)
