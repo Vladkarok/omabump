@@ -190,13 +190,15 @@ appimage_row() {
 # launch, and omarchy update runs pacman and mise up. Until the next check,
 # a row can then offer an Update that is already installed, and a
 # self-updating app's own updater moves it. This reads the installed
-# versions again, from pacman and the apps' AppImages (installed_app) and
-# mise's inventory (mise ls), and nothing else: no feed, no omarchy-pkgs,
-# no mise outdated, nothing on the network. It starts from the last check's
-# status.json and keeps the rest of each row (the newest version, the
-# route, notes, errors, muted, skipped), and writes the file once, with
-# checkedAt and startedAt as that check left them: the widget counts the
-# next check from those, and a local refresh must never put it off.
+# versions again, from pacman, the apps' AppImages and Omabump's
+# manifest.json (installed_app) and mise's inventory (mise ls, offline),
+# after discovery has read Omarchy's menu (load_table), and nothing else:
+# no feed, no omarchy-pkgs, no mise outdated, nothing on the network. It
+# starts from the last check's status.json and keeps the rest of each row
+# (the newest version, the route, notes, errors, muted, skipped), and
+# writes the file once, with checkedAt and startedAt as that check left
+# them: the widget counts the next check from those, and a local refresh
+# must never put it off.
 # inventoryAt says when the installed versions were last read, by a check
 # or by this. It never notifies and never reads or writes notified.json.
 # It exits:
@@ -236,10 +238,10 @@ local_refresh() {
 
   load_table
   order=$(jq -c 'map(.pkg)' <<<"$app_table")
-  # The inventory alone, under a shorter limit than a check's: mise ls names
-  # the active versions without asking any backend.
+  # The inventory alone, under a shorter limit than a check's, offline:
+  # mise ls names the active versions without asking any backend.
   if (( with_mise )); then
-    mise_timeout=30
+    mise_timeout=30 mise_offline=1
     mise_load 0
     [[ -z $mise_inventory_error ]] || echo "omabump-check: $mise_inventory_error; the mise rows stay as they were" >&2
   fi
@@ -267,7 +269,7 @@ local_refresh() {
       echo "omabump-check: $why; a full check is needed" >&2
       need_full=1
     fi
-  done < <(jq -c '.[]' <<<"$app_table")
+  done < <(jq -c '.[]' <<<"$app_table"; echo "$self_app")
   ! pacman_busy || local_pacman_busy
 
   out=$(mktemp "$tmp/.status.XXXXXX")
@@ -371,15 +373,17 @@ local_row() {
     # Its version against the newest known, by the rules a check applies
     # (appimage_row): its own updater moved it.
     appimage_row "$(jq -r '.label // .pkg' <<<"$app")" "$installed" "$p_latest"
+    # Past the newest version known: a release no check has seen, which only
+    # a check can compare with the feed's newest. Unread until one does.
+    if [[ $unchecked == false && -n $p_latest ]] && newer "$installed" "$p_latest"; then
+      update=false unchecked=true note="Not checked yet"
+      why="$pkg $installed is past the last known $p_latest"
+    fi
     row=$(jq -c --arg name "$name" --arg installed "$installed" --argjson update "$update" --argjson unchecked "$unchecked" \
       --arg note "$(clean_text "$note")" '
       . + {installedName: $name, installed: $installed, updateAvailable: $update, unchecked: $unchecked, note: $note}
       | if $update then . else .skipped = false end' <<<"$prev")
-    if [[ $name != "$p_name" ]]; then
-      why="$pkg is installed as $name now"
-    elif [[ $unchecked == false && -n $p_latest ]] && newer "$installed" "$p_latest"; then
-      why="$pkg $installed is past the last known $p_latest"
-    fi
+    [[ $name == "$p_name" ]] || why="$pkg is installed as $name now"
     return 0
   fi
 
@@ -418,6 +422,10 @@ local_row() {
     | if $update then . else .skipped = false end
     | if $unhold then .note = (.note | strings // "" | sub($re; "")) else . end' <<<"$prev")
   if [[ -n $p_latest ]] && newer "$have" "$p_latest"; then
+    # A release no check has seen, as for an AppImage above. What the check
+    # knew about the route (installable, omarchy update's AUR route) stays:
+    # a check that finds the omarchy-pkgs clone busy keeps it from here.
+    row=$(jq -c '. + {updateAvailable: false, switchable: false, skipped: false, unchecked: true, note: "Not checked yet"}' <<<"$row")
     why="$pkg $installed is past the last known $p_latest"
   elif [[ $name != "$p_name" ]]; then
     why="$pkg is installed as $name now"

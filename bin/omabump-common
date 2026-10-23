@@ -495,9 +495,14 @@ mise_disabled_backends() {
 # The check and mise up share it, so what the panel offers is what installs.
 # `mise settings` resolves no tool, so it runs no plugin code; it gets no
 # MISE_DISABLE_BACKENDS of Omabump's, which would replace the setting asked.
+# With mise_offline=1 (the local refresh) mise fetches nothing: mise ls
+# would otherwise resolve "latest" for each configured tool not installed
+# over the network. The active versions it lists are the same.
+mise_offline=0
 mise_run() {
   local off=()
   [[ ${1:-} == settings ]] || off=("MISE_DISABLE_BACKENDS=$(mise_disabled_backends)")
+  (( ! mise_offline )) || off+=(MISE_OFFLINE=1)
   (cd "$HOME" && run_killable env MISE_HIDE_UPDATE_WARNING=1 MISE_MINIMUM_RELEASE_AGE=0 "${off[@]}" \
     timeout -k 10 "${mise_timeout:-120}" mise "$@" </dev/null)
 }

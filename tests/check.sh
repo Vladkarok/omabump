@@ -379,7 +379,7 @@ printf '#!/bin/sh\nexit 1\n' >"$run_dir/bin/sudo"
 printf '#!/bin/sh\n[ "$1" = config ] || echo "git $*" >>"$OMABUMP_TEST_NET"\nexit 1\n' >"$run_dir/bin/git"
 cat >"$run_dir/bin/mise" <<'EOF'
 #!/bin/sh
-echo "$*" >>"$OMABUMP_TEST_MISE"
+echo "${MISE_OFFLINE:+MISE_OFFLINE=$MISE_OFFLINE }$*" >>"$OMABUMP_TEST_MISE"
 if [ "$*" = "ls --json" ] && [ -n "${OMABUMP_TEST_HANG:-}" ]; then
   echo $$ >"$OMABUMP_TEST_HANG"
   exec sleep 60
@@ -664,8 +664,12 @@ cat >"$run_dir/config/omarchy/omabump/apps.json" <<'JSON'
  {"pkg": "mise:u", "label": "U", "source": "mise", "tool": "u"},
  {"pkg": "mise:k", "label": "K", "source": "mise", "tool": ["k", "npm:k"]}]
 JSON
+# Omabump's own row, at the version of this copy, is in every check's file.
+self_version=$(jq -r .version "$root/manifest.json")
 loc_status() {
-  jq -c '.apps |= map({label: "", installedName: "", installed: "", latest: "", versionFrom: "feed", updateAvailable: false,
+  jq -c --arg self "$self_version" '.apps += [{pkg: "self:omabump", label: "Omabump", source: "self", installedName: "omabump",
+    installed: $self, latest: $self}]
+    | .apps |= map({label: "", installedName: "", installed: "", latest: "", versionFrom: "feed", updateAvailable: false,
     installable: true, error: "", note: "", stale: false, switchable: false, recipe: "", recipeCommit: "", request: "",
     muted: false, skipped: false, unchecked: false, held: false, omarchyUpdate: false, blocked: false, selfUpdating: false,
     icon: "", iconLight: ""} + .)' \
@@ -714,7 +718,8 @@ same "--local: checkedAt and startedAt stay the check's, inventoryAt is this run
   '2026-01-01T00:10:00+00:00|2026-01-01T00:09:00+00:00|false|true' \
   "$(run_status '"\(.checkedAt)|\(.startedAt)|\(.inventoryAt == "2026-01-01T00:09:00+00:00")|\(.inventoryAt | test("^20[0-9-]+T[0-9:]+[+-][0-9:]+$"))"')"
 same "--local: no feed and no git call" '' "$(cat "$run_dir/net.log")"
-same "--local: mise is asked for its setting and its inventory, never outdated" 'settings get disable_backends|ls --json' \
+same "--local: mise is asked for its setting and its inventory, offline, never outdated" \
+  'MISE_OFFLINE=1 settings get disable_backends|MISE_OFFLINE=1 ls --json' \
   "$(paste -sd'|' "$run_dir/mise.log")"
 
 loc_status
@@ -733,8 +738,13 @@ rm -f "$run_state/notified.json" "$run_state/seen.json"
 loc_status
 loc_pkgs 'loc-a 1.3-1' 'loc-b 2.0-1' 'loc-held 1.0-1' 'loc-gone 3.0-1'
 local_run; rc=$?
-same "--local: installed past the newest known version asks for a check, no update meanwhile" "$local_full|1.3-1|false" \
-  "$rc|$(loc_row loc-a '"\(.installed)|\(.updateAvailable)"')"
+same "--local: installed past the newest known version: not checked yet, no update, the route kept, and a check asked for" \
+  "$local_full|1.3-1|false|true|true|Not checked yet" \
+  "$rc|$(loc_row loc-a '"\(.installed)|\(.updateAvailable)|\(.installable)|\(.unchecked)|\(.note)"')"
+same "--local: and the newest known version stays for the check" 1.2 "$(loc_row loc-a .latest)"
+local_run; rc=$?
+same "--local: the next refresh, nothing moved: the row stays unread, no second check asked" "0|true|Not checked yet" \
+  "$rc|$(loc_row loc-a '"\(.unchecked)|\(.note)"')"
 same "--local: and makes no notified.json or seen.json" '' \
   "$(find "$run_state" -maxdepth 1 \( -name notified.json -o -name seen.json \) -printf '%f\n')"
 
@@ -767,8 +777,25 @@ local_run; rc=$?
 same "--local: an app installed since the check: an unchecked row, and a check asked for" \
   "$local_full|Loc New|indicator|loc-new|5.0-1||false|false|true|Not checked yet|assets/new.svg" \
   "$rc|$(loc_row loc-new '"\(.label)|\(.source)|\(.installedName)|\(.installed)|\(.latest)|\(.updateAvailable)|\(.installable)|\(.unchecked)|\(.note)|\(.icon)"')"
-same "--local: the new row in table order" 'loc-a loc-b loc-held loc-gone loc-new mise:t mise:u mise:k' "$(run_status '[.apps[].pkg] | join(" ")')"
+same "--local: the new row in table order" 'loc-a loc-b loc-held loc-gone loc-new mise:t mise:u mise:k self:omabump' \
+  "$(run_status '[.apps[].pkg] | join(" ")')"
 same "--local: the new row has every field a check writes" "$(jq -c '.apps[0] | keys' "$run_dir/fixture.json")" "$(loc_row loc-new 'keys | tojson')"
+
+# Omabump updated outside its Update (omarchy plugin update, a git pull):
+# its row follows manifest.json as the others follow pacman.
+loc_status
+jq '.apps |= map(if .pkg == "self:omabump" then .installed = "0.0.1" | .updateAvailable = true else . end)' \
+  "$run_dir/fixture.json" >"$run_state/status.json"
+loc_same
+local_run; rc=$?
+same "--local: Omabump at the release its row offered: no update, no check needed" "0|$self_version|false|false" \
+  "$rc|$(loc_row self:omabump '"\(.installed)|\(.updateAvailable)|\(.unchecked)"')"
+jq '.apps |= map(if .pkg == "self:omabump" then .installed = "0.0.1" | .latest = "0.0.1" else . end)' \
+  "$run_dir/fixture.json" >"$run_state/status.json"
+local_run; rc=$?
+same "--local: Omabump past its newest known release: not checked yet, and a check asked for" \
+  "$local_full|$self_version|false|true|Not checked yet" \
+  "$rc|$(loc_row self:omabump '"\(.installed)|\(.updateAvailable)|\(.unchecked)|\(.note)"')"
 
 loc_status
 loc_pkgs 'loc-a 1.0-1' 'loc-b 2.0-1' 'loc-held 1.0-1' 'loc-gone 3.0-1'
@@ -1033,8 +1060,9 @@ ai_run --local; rc=$?
 same "--local: back below the newest known: the update again" "0|0.1.0|true" "$rc|$(ai_row '"\(.installed)|\(.updateAvailable)"')"
 ai_put 0.1.2
 ai_run --local; rc=$?
-same "--local: past the newest known: a check asked for, no update meanwhile" "$local_full|0.1.2|false" \
-  "$rc|$(ai_row '"\(.installed)|\(.updateAvailable)"')"
+same "--local: past the newest known: not checked yet, no update, and a check asked for" \
+  "$local_full|0.1.2|false|true|Not checked yet|0.1.1" \
+  "$rc|$(ai_row '"\(.installed)|\(.updateAvailable)|\(.unchecked)|\(.note)|\(.latest)"')"
 ai_put 0.1.0
 ai_run
 ai_put 0.1.1-nightly.20261019.1
