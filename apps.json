@@ -53,9 +53,12 @@
     "label": "Grok",
     "source": "omarchy",
     "feed": {
-      "type": "apt-index",
-      "url": "https://downloads.cursor.com/aptrepo/dists/grok-bot/main/binary-amd64/Packages",
-      "package": "grok-bot"
+      "type": "json",
+      "url": {
+        "x86_64": "https://api2.cursor.sh/updates/api/update/linux-x64/sand/0.0.0/00000000-0000-0000-0000-000000000000/stable",
+        "aarch64": "https://api2.cursor.sh/updates/api/update/linux-arm64/sand/0.0.0/00000000-0000-0000-0000-000000000000/stable"
+      },
+      "path": ".version"
     }
   },
   {
@@ -76,7 +79,10 @@
       "type": "json",
       "url": "https://registry.npmjs.org/openclaw/latest",
       "path": ".version"
-    }
+    },
+    "npmPackage": "~/.openclaw/tools/node/lib/node_modules/openclaw",
+    "selfUpdate": "run openclaw update",
+    "updateBlocked": "Omarchy moves OpenClaw to ~/.openclaw, where it updates itself: omarchy update, or omarchy-install-openclaw-cli --now"
   },
   {
     "pkg": "perplexity",
@@ -95,8 +101,7 @@
     "feed": {
       "type": "github-release",
       "repo": "peteonrails/voxtype"
-    },
-    "updateBlocked": "the recipe's install script hands a path to root through /tmp; waiting for omarchy-pkgs#937"
+    }
   },
   {
     "pkg": "zcode",

@@ -1145,13 +1145,13 @@ rm -f "$run_state/notified.json"
 ai_put 0.1.0
 ai_notify
 same "AppImage: an update notifies, saying the app updates itself" \
-  "T3 Code 0.1.1 available|Installed: 0.1.0. T3 Code updates itself: open it to update.|0.1.1" \
+  "T3 Code 0.1.1 available|Installed: 0.1.0. Updates itself: open T3 Code to update.|0.1.1" \
   "$(cat "$run_dir/notify.log")|$(jq -r '."t3code-bin"' "$run_state/notified.json")"
 ai_notify
 same "AppImage: not twice for one version" '' "$(cat "$run_dir/notify.log")"
 ai_feed 0.1.2
 ai_notify
-same "AppImage: again for a newer one" "T3 Code 0.1.2 available|Installed: 0.1.0. T3 Code updates itself: open it to update." \
+same "AppImage: again for a newer one" "T3 Code 0.1.2 available|Installed: 0.1.0. Updates itself: open T3 Code to update." \
   "$(cat "$run_dir/notify.log")"
 ai_feed 0.1.3
 ai_put 0.1.2-nightly.20261019.1
@@ -1165,5 +1165,103 @@ check "AppImage: nothing ever ran it" test ! -e "$run_dir/appimage-ran"
 same "AppImage: the runs leave no scratch files" '' "$(leftovers)"
 rm -rf "$run_dir/home/.local/share/t3code" "$run_dir/elsewhere.AppImage" "$run_dir/elsewhere.AppImage.desktop" "$run_dir/no7z" \
   "$run_dir/7zbin" "$run_dir/statbin" "$run_dir/notifybin" "$run_dir/7z.log" "$run_dir/notify.log" "$run_dir/ai.err" "$run_dir/pkgs" \
+  "$run_state/notified.json"
+rm -f "$run_dir/config/omarchy/omabump/apps.json" "$run_state/status.json"
+
+# --- an app installed as its self-updating npm package ------------------------------------
+
+# OpenClaw as the shipped table has it (npmPackage, selfUpdate and an
+# updateBlocked for its package, the seed), its feed a command feed of the
+# user's (np_feed), its package.json where upstream's installer puts it,
+# with tools/node a link to the Node directory as that installer makes it
+# (np_put: the version it names, none for ""). The package's entry point
+# leaves a mark if anything runs it. ai_run and ai_notify run the checks,
+# with the fake notify-send again.
+np_tools=$run_dir/home/.openclaw/tools
+np_dir=$np_tools/node-v24/lib/node_modules/openclaw
+mkdir -p "$np_dir" "$run_dir/notifybin"
+ln -s node-v24 "$np_tools/node"
+printf '#!/bin/sh\n: >"%s/openclaw-ran"\n' "$run_dir" >"$np_dir/openclaw.mjs"
+cat >"$run_dir/notifybin/notify-send" <<'EOF'
+#!/bin/sh
+[ "$1 $2" = "-a Omabump" ] || exit 7
+printf '%s|%s\n' "$3" "$4" >>"$OMABUMP_TEST_NOTIFY"
+EOF
+chmod +x "$np_dir/openclaw.mjs" "$run_dir/notifybin/notify-send"
+np_feed() {
+  jq -cn --arg v "$1" '[{pkg: "openclaw", feed: {type: "command", command: "echo \($v)"}}]' \
+    >"$run_dir/config/omarchy/omabump/apps.json"
+}
+np_put() {
+  if [[ -n $1 ]]; then jq -n --arg v "$1" '{name: "openclaw", version: $v, bin: {openclaw: "openclaw.mjs"}}'
+  else echo '{"name": "openclaw"}'; fi >"$np_dir/package.json"
+}
+np_row() { run_status ".apps[] | select(.pkg == \"openclaw\") | $1"; }
+np_fields='"\(.installedName)|\(.installed)|\(.selfUpdating)|\(.installable)|\(.blocked)|\(.updateAvailable)|\(.unchecked)|\(.latest)|\(.versionFrom)|\(.error)|\(.note)"'
+np_note="Updates itself: run openclaw update"
+# shellcheck disable=SC2088 # the path as apps.json writes it
+np_name='~/.openclaw/tools/node/lib/node_modules/openclaw'
+np_blocked="Update off: Omarchy moves OpenClaw to ~/.openclaw, where it updates itself: omarchy update, or omarchy-install-openclaw-cli --now"
+
+run_settings ', "showMise": "false"'
+rm -f "$run_state/status.json" "$run_state/notified.json"
+loc_pkgs ''
+np_feed 2026.10.10
+np_put 2026.10.9
+ai_run; rc=$?
+same "npm package: no package, the copy's row: its version, no route, no updateBlocked mark, the feed's update" \
+  "0|$np_name|2026.10.9|true|false|false|true|false|2026.10.10|feed||$np_note" "$rc|$(np_row "$np_fields")"
+same "npm package: no omarchy-pkgs read for it" '' "$(grep '^git' "$run_dir/net.log")"
+loc_pkgs 'openclaw 2026.10.9-1'
+ai_run
+same "npm package: the copy wins over the package, its seed" "$np_name|2026.10.9|true|false|false" \
+  "$(np_row '"\(.installedName)|\(.installed)|\(.selfUpdating)|\(.installable)|\(.blocked)"')"
+np_put 2026.10.10
+ai_run
+same "npm package: at the feed's version, current" "false|false|$np_note" "$(np_row '"\(.updateAvailable)|\(.unchecked)|\(.note)"')"
+np_put 2026.10.11-beta.1
+ai_run
+same "npm package: a pre-release is compared with no release: no update, unchecked, the note says why" \
+  "false|true|Pre-release build, not compared with the feed's stable releases; $np_note" \
+  "$(np_row '"\(.updateAvailable)|\(.unchecked)|\(.note)"')"
+np_put ''
+ai_run
+same "npm package: no version in its package.json: unknown, unchecked, the note says so" \
+  "$np_name||false|true|Version unknown: its package.json names none; $np_note" \
+  "$(np_row '"\(.installedName)|\(.installed)|\(.updateAvailable)|\(.unchecked)|\(.note)"')"
+rm "$np_dir/package.json"
+ai_run
+same "npm package: without its package.json, the seed's row: Update off, as updateBlocked says" \
+  "openclaw|2026.10.9-1|false|false|true|$np_blocked" \
+  "$(np_row '"\(.installedName)|\(.installed)|\(.selfUpdating)|\(.installable)|\(.blocked)|\(.note | split("; ")[0])"')"
+
+# --local: the copy's own updater moves it between checks, and Omarchy's
+# setup puts it beside the seed or takes it away.
+np_put 2026.10.9
+ai_run
+np_put 2026.10.10
+ai_run --local; rc=$?
+same "--local: the copy updated itself to the newest known: no update, no check needed, no network" \
+  "0|2026.10.10|false|false|$np_note|" \
+  "$rc|$(np_row '"\(.installed)|\(.updateAvailable)|\(.unchecked)|\(.note)"')|$(cat "$run_dir/net.log")"
+rm "$np_dir/package.json"
+ai_run --local; rc=$?
+same "--local: the copy gone, the seed left: a check asked for, no route meanwhile, the updateBlocked mark" \
+  "$local_full|openclaw|false|false|true" "$rc|$(np_row '"\(.installedName)|\(.selfUpdating)|\(.installable)|\(.blocked)"')"
+ai_run
+np_put 2026.10.9
+ai_run --local; rc=$?
+same "--local: the copy set up beside the seed: a check asked for, no updateBlocked mark" \
+  "$local_full|$np_name|2026.10.9|true|false" \
+  "$rc|$(np_row '"\(.installedName)|\(.installed)|\(.selfUpdating)|\(.blocked)"')"
+
+# Notifications say how the app updates itself.
+rm -f "$run_state/notified.json"
+ai_notify
+same "npm package: an update notifies, saying how the app updates itself" \
+  "OpenClaw 2026.10.10 available|Installed: 2026.10.9. Updates itself: run openclaw update." "$(cat "$run_dir/notify.log")"
+check "npm package: nothing ever ran it" test ! -e "$run_dir/openclaw-ran"
+same "npm package: the runs leave no scratch files" '' "$(leftovers)"
+rm -rf "$run_dir/home/.openclaw" "$run_dir/notifybin" "$run_dir/notify.log" "$run_dir/7z.log" "$run_dir/ai.err" "$run_dir/pkgs" \
   "$run_state/notified.json"
 rm -f "$run_dir/config/omarchy/omabump/apps.json" "$run_state/status.json"

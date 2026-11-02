@@ -270,7 +270,11 @@ cat >"$ihome/.config/omarchy/omabump/apps.json" <<'EOF'
   {"pkg": "nocon", "label": "No Conflict", "source": "omarchy", "installed": ["nocon", "nocon-bin"]},
   {"pkg": "mise:testtool", "label": "Test Tool", "source": "mise", "tool": "testtool"},
   {"pkg": "blockedapp", "label": "Blocked App", "source": "omarchy", "updateBlocked": "a known problem in its install script, see x#1"},
-  {"pkg": "selfapp", "label": "Self App", "source": "omarchy", "appImage": "~/.local/share/selfapp/Self.AppImage"}
+  {"pkg": "selfapp", "label": "Self App", "source": "omarchy", "appImage": "~/.local/share/selfapp/Self.AppImage"},
+  {"pkg": "npmapp", "label": "Npm App", "source": "omarchy", "npmPackage": "~/.npmapp/lib/node_modules/npmapp",
+   "selfUpdate": "run npmapp update", "updateBlocked": "its package is the seed"},
+  {"pkg": "npmesc", "label": "Npm Esc", "source": "omarchy", "npmPackage": "~/.npmesc/lib/node_modules/npmesc",
+   "selfUpdate": "run \u001b]0;x\u0007npmesc update"}
 ]
 EOF
 
@@ -309,7 +313,7 @@ for args in selfapp '--prepare selfapp' '--switch selfapp'; do
   [[ $args != --prepare* ]] || refusal='Would refuse: ' rc=0
   same "install $args, a self-updating app: refuses as other refusals do" "$rc" "$irc"
   says "install $args, a self-updating app: says it updates itself, and which file it is" \
-    "${refusal}Self App updates itself: open Self App to update it (it is installed as ~/.local/share/selfapp/Self.AppImage, which Omabump does not replace)"
+    "${refusal}Self App updates itself: open Self App to update (it is installed as ~/.local/share/selfapp/Self.AppImage, which Omabump does not replace)"
   no_call "install $args, a self-updating app: never calls sudo" 'sudo'
   no_call "install $args, a self-updating app: nothing built" 'makepkg'
   check "install $args, a self-updating app: the staged copy left stays" test -e "$istaging/selfapp-old.pkg.tar"
@@ -322,7 +326,7 @@ rm -f "$it/elsewhere.pkg.tar"
 fresh
 inst selfapp
 same "install, a self-updating app with no staged copy left: the refusal alone" \
-  '1|omabump: Self App updates itself: open Self App to update it (it is installed as ~/.local/share/selfapp/Self.AppImage, which Omabump does not replace)' \
+  '1|omabump: Self App updates itself: open Self App to update (it is installed as ~/.local/share/selfapp/Self.AppImage, which Omabump does not replace)' \
   "$irc|$iout"
 check "install, a self-updating app: nothing ran the AppImage" test ! -e "$it/selfapp-ran"
 # With its package installed, the package is what Update works on: the
@@ -332,6 +336,39 @@ fresh 'selfapp 1.0-1'
 inst_src 'echo "$installed_name $installed"' selfapp
 same "install, an app with an appImage whose package is installed: the package, no refusal" '0|selfapp 1.0-1' "$irc|$iout"
 rm -rf "$ihome/.local/share/selfapp"
+
+# An app installed as its self-updating npm package, beside the package
+# that seeded it: the copy is what runs, so the refusal is the copy's,
+# whatever the package's updateBlocked says.
+mkdir -p "$ihome/.npmapp/lib/node_modules/npmapp"
+echo '{"name": "npmapp", "version": "2.0.0"}' >"$ihome/.npmapp/lib/node_modules/npmapp/package.json"
+for args in npmapp '--prepare npmapp'; do
+  fresh 'npmapp 1.0-1'
+  # shellcheck disable=SC2086 # the arguments, split on purpose
+  inst $args
+  refusal='omabump: ' rc=1
+  [[ $args != --prepare* ]] || refusal='Would refuse: ' rc=0
+  same "install $args, a self-updating npm package: refuses, saying how it updates and which copy it is" \
+    "$rc|${refusal}Npm App updates itself: run npmapp update (it is installed as ~/.npmapp/lib/node_modules/npmapp, which Omabump does not replace)" \
+    "$irc|$iout"
+  no_call "install $args, a self-updating npm package: never calls sudo" 'sudo'
+  no_call "install $args, a self-updating npm package: nothing built" 'makepkg'
+done
+rm -rf "$ihome/.npmapp"
+# The selfUpdate text reaches the terminal as the label does, through
+# term_safe.
+mkdir -p "$ihome/.npmesc/lib/node_modules/npmesc"
+echo '{"name": "npmesc", "version": "2.0.0"}' >"$ihome/.npmesc/lib/node_modules/npmesc/package.json"
+fresh
+inst npmesc
+same "install, a self-updating npm package: its selfUpdate text has no control characters on the terminal" 0 \
+  "$(LC_ALL=C grep -c $'[\x01-\x08\x0b-\x1f\x7f]' <<<"$iout")"
+says "install, a self-updating npm package: the rest of its selfUpdate text stays" 'npmesc update (it is installed as'
+rm -rf "$ihome/.npmesc"
+fresh 'npmapp 1.0-1'
+inst npmapp
+same "install, the npm package's seed alone: its updateBlocked refuses" \
+  '1|omabump: Update of Npm App is off in Omabump: its package is the seed' "$irc|$iout"
 
 # --- the vendor route ------------------------------------------------------------
 

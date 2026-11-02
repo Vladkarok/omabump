@@ -193,18 +193,38 @@ same "apps_table: an appImage is a ~/ path Omabump accepts, and never on a mise 
 same "apps_table: \"\" (or false) is none, as with updateBlocked: a user's file turns a shipped appImage off with it" \
   '"a":""' "$(apps_table 2>/dev/null | jq -r '.[] | select(.pkg == "a") | "\(.pkg | tojson):\(.appImage | tojson)"')"
 same "apps_table: each entry with another appImage is named on stderr, and says why" 7 \
-  "$(apps_table 2>&1 >/dev/null | grep -c '^ignoring app .*an appImage that is not a ~/ path Omabump accepts')"
+  "$(apps_table 2>&1 >/dev/null | grep -c '^ignoring app .*an appImage or npmPackage that is not a ~/ path Omabump accepts')"
+# npmPackage takes the same paths, never on a mise row either; selfUpdate
+# is text of at most 100 characters.
+jq -n --arg long "$(printf 'a%.0s' {1..101})" --arg most "$(printf 'a%.0s' {1..100})" '[
+  {pkg: "a", npmPackage: ""},
+  {pkg: "np-ok", source: "omarchy", npmPackage: "~/.openclaw/tools/node/lib/node_modules/openclaw", selfUpdate: "run openclaw update"},
+  {pkg: "np-null", source: "indicator", npmPackage: null},
+  {pkg: "np-up", source: "omarchy", npmPackage: "~/../x"},
+  {pkg: "np-abs", source: "omarchy", npmPackage: "/home/u/x"},
+  {pkg: "np-num", source: "omarchy", npmPackage: 5},
+  {pkg: "mise:np", source: "mise", tool: "np", npmPackage: "~/x"},
+  {pkg: "su-most", source: "omarchy", selfUpdate: $most},
+  {pkg: "su-long", source: "omarchy", selfUpdate: $long},
+  {pkg: "su-num", source: "omarchy", selfUpdate: 5}
+]' >"$user_apps"
+same "apps_table: an npmPackage is a ~/ path as an appImage is, and a selfUpdate is short text" \
+  'a b c np-ok np-null su-most' "$(apps_table 2>/dev/null | jq -r 'map(.pkg) | join(" ")')"
+same "apps_table: each such entry is named on stderr" 6 \
+  "$(apps_table 2>&1 >/dev/null | grep -c '^ignoring app .*an appImage or npmPackage that is not a ~/ path Omabump accepts, an updateBlocked or selfUpdate too long')"
+same "apps_table: and the ones with another selfUpdate too" 2 \
+  "$(apps_table 2>&1 >/dev/null | grep -c '^ignoring app "su-')"
 rm -f "$user_apps"
-# appimage_path_ok and apps_table's appimage_ok take the same paths.
+# home_path_ok and apps_table's home_path_ok take the same paths.
 # shellcheck disable=SC2088 # paths as apps.json writes them, ~ and all
 ai_paths=('~/x' '~/.local/share/t3code/T3-Code.AppImage' '~/a/b+c_d-e.f' '~/.x' '~' '~/' '~/a/' '~//a' '~/.' '~/..'
   '~/a/./b' '~/a/.' '~/a..b' '/x' 'x' '~root/x' '~/a b' '~/é' $'~/a\n' "~/$(printf 'a%.0s' {1..198})"
   "~/$(printf 'a%.0s' {1..199})")
-same "appimage_path_ok and apps_table agree on every path" \
-  "$(for p in "${ai_paths[@]}"; do if appimage_path_ok "$p"; then echo true; else echo false; fi; done)" \
-  "$(jq -rn "$jq_name_rules"' $ARGS.positional[] | appimage_ok' --args "${ai_paths[@]}")"
-same "appimage_path_ok: the paths it takes" 'true true true true false false false false false false false false false false false false false false false true false' \
-  "$(for p in "${ai_paths[@]}"; do if appimage_path_ok "$p"; then echo true; else echo false; fi; done | paste -sd' ')"
+same "home_path_ok and apps_table agree on every path" \
+  "$(for p in "${ai_paths[@]}"; do if home_path_ok "$p"; then echo true; else echo false; fi; done)" \
+  "$(jq -rn "$jq_name_rules"' $ARGS.positional[] | home_path_ok' --args "${ai_paths[@]}")"
+same "home_path_ok: the paths it takes" 'true true true true false false false false false false false false false false false false false false false true false' \
+  "$(for p in "${ai_paths[@]}"; do if home_path_ok "$p"; then echo true; else echo false; fi; done | paste -sd' ')"
 
 # --- apps that update themselves --------------------------------------------------
 
@@ -310,6 +330,71 @@ else
   pass "appimage_version (real 7z) (skipped: 7z is not installed)"
 fi
 check "appimage_version: nothing ran the AppImage" test ! -e "$scratch/ai-ran"
+
+# An app whose npmPackage is ~/claw/tools/node/lib/node_modules/claw under
+# $ai_home, tools/node a link to tools/node-v24 as upstream's installer
+# makes it, and the same app's AppImage. The package's entry point is a
+# script that leaves a mark if anything runs it.
+np_dir=$ai_home/claw/tools/node-v24/lib/node_modules/claw
+mkdir -p "$np_dir"
+ln -s node-v24 "$ai_home/claw/tools/node"
+printf '#!/bin/sh\n: >"%s/np-ran"\n' "$scratch" >"$np_dir/claw.mjs"
+chmod +x "$np_dir/claw.mjs"
+np_app='{"pkg": "x", "source": "omarchy", "npmPackage": "~/claw/tools/node/lib/node_modules/claw", "appImage": "~/apps/X.AppImage"}'
+# np_put <package.json text>: the package.json the app's copy has.
+np_put() { printf '%s' "$1" >"$np_dir/package.json"; }
+np_put '{"name": "claw", "version": "2026.10.9", "bin": {"claw": "claw.mjs"}}'
+same "npm_package_version: the version of its package.json" 2026.10.9 "$(npm_package_version "$np_dir/package.json")"
+np_put '{"name": "claw", "version": "2026.10.9-beta.1"}'
+same "npm_package_version: a pre-release stays as it is" 2026.10.9-beta.1 "$(npm_package_version "$np_dir/package.json")"
+for doc in '{"name": "claw"}' '{"version": 5}' '{"version": "1 0"}' '{"version": "../1"}' '{"version": ""}' \
+  '["1.0"]' '"1.0"' '{"version": "1.0"} {"version": "1.1"}' 'not json' ''; do
+  np_put "$doc"
+  same "npm_package_version: no version from $(jq -Rsc . <<<"$doc")" '' "$(npm_package_version "$np_dir/package.json")"
+done
+np_put '{"version": "2026.10.9"}'
+# shellcheck disable=SC2088 # the path as apps.json writes it
+same "npm_package_installed: the npmPackage as apps.json writes it, and the version" \
+  '~/claw/tools/node/lib/node_modules/claw 2026.10.9' "$(HOME=$ai_home npm_package_installed "$np_app")"
+refuse "npm_package_installed: an app without npmPackage" npm_package_installed '{"pkg": "x", "source": "omarchy"}'
+same "npm_package_installed: nor with npmPackage \"\"" '' \
+  "$(HOME=$ai_home npm_package_installed '{"pkg": "x", "source": "omarchy", "npmPackage": ""}')"
+same "npm_package_installed: a path the rules refuse" '' \
+  "$(HOME=$ai_home npm_package_installed '{"npmPackage": "~/claw/../claw/tools/node/lib/node_modules/claw"}')"
+same "npm_package_installed: the text test is no rule: a mention elsewhere is read as JSON" '' \
+  "$(HOME=$ai_home npm_package_installed '{"pkg": "x", "label": "\"npmPackage\""}')"
+mv "$np_dir/package.json" "$np_dir/real.json"
+ln -s real.json "$np_dir/package.json"
+same "npm_package_installed: a package.json that is a symlink is not read" '' "$(HOME=$ai_home npm_package_installed "$np_app")"
+rm "$np_dir/package.json"
+same "npm_package_installed: nor a package without one" '' "$(HOME=$ai_home npm_package_installed "$np_app")"
+mv "$np_dir/real.json" "$np_dir/package.json"
+# shellcheck disable=SC2329 # stat is what home_file calls
+same "npm_package_installed: nor one of another user" '' \
+  "$(stat() { echo "regular file/$(( UID + 1 ))/1000"; }; HOME=$ai_home npm_package_installed "$np_app")"
+# shellcheck disable=SC2329 # stat is what home_file calls
+same "npm_package_installed: nor one larger than npm_package_max_bytes" '' \
+  "$(stat() { echo "regular file/$UID/$(( npm_package_max_bytes + 1 ))"; }; HOME=$ai_home npm_package_installed "$np_app")"
+np_put '{"name": "claw"}'
+# shellcheck disable=SC2088 # the path as apps.json writes it
+same "npm_package_installed: a version it cannot read is empty" '~/claw/tools/node/lib/node_modules/claw |' \
+  "$(HOME=$ai_home npm_package_installed "$np_app" | sed 's/$/|/')"
+np_put '{"version": "2026.10.9"}'
+# shellcheck disable=SC2088 # the path as apps.json writes it
+check "self_updating_name: the npmPackage path installed_app gives" self_updating_name '~/claw/tools/node/lib/node_modules/claw'
+same "installed_app: an app installed as its npm package" 'omarchy ~/claw/tools/node/lib/node_modules/claw 2026.10.9' \
+  "$(pacman() { return 1; }; PATH=$ai_bin:$PATH HOME=$ai_home installed_app "$np_app")"
+same "installed_app: the npm package wins over the package, its seed, and over the AppImage" \
+  'omarchy ~/claw/tools/node/lib/node_modules/claw 2026.10.9' \
+  "$(pacman() { [[ $3 == x ]] && echo 'x 1.0-1'; }; PATH=$ai_bin:$PATH HOME=$ai_home installed_app "$np_app")"
+rm "$np_dir/package.json"
+same "installed_app: without its package.json, the package again" 'omarchy x 1.0-1' \
+  "$(pacman() { [[ $3 == x ]] && echo 'x 1.0-1'; }; PATH=$ai_bin:$PATH HOME=$ai_home installed_app "$np_app")"
+same "self_update_text: the app's selfUpdate" 'run claw update' \
+  "$(self_update_text '{"pkg": "x", "selfUpdate": "run claw update"}' X)"
+same "self_update_text: else open the app" 'open X to update|open X to update' \
+  "$(self_update_text '{"pkg": "x"}' X)|$(self_update_text '{"pkg": "x", "selfUpdate": ""}' X)"
+check "npm_package_version: nothing ran the package" test ! -e "$scratch/np-ran"
 rm -rf "$ai_home" "$ai_bin"
 
 # --- discovered agents in the app table -----------------------------------------

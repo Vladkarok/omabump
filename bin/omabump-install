@@ -16,8 +16,8 @@
 #   self        Omabump itself: its clone fast-forwarded to the release tag,
 #               after the log is shown and you answer y.
 #
-# An app installed as its self-updating AppImage (apps.json "appImage")
-# instead of its package is refused: the app updates itself.
+# An app installed as a copy that updates itself (apps.json "appImage" or
+# "npmPackage") instead of its package is refused: the app updates itself.
 #
 #   omabump-install [--prepare] [--switch] <pkg>
 #
@@ -144,19 +144,21 @@ mkdir -p "$cache_dir/locks"
 exec 7>"$cache_dir/locks/$pkg.lock"
 flock -n 7 || die "another update of $label is already running"
 
-# An app installed as its self-updating AppImage (apps.json appImage, its
-# package not installed) is updated by the app itself, which replaces the
-# file: nothing here may stage, build or call sudo for it, so this comes
-# before the staged copies go. A copy an earlier Update of its package
-# left would then stay for good, with no next Update to remove it: each is
-# named, with the command that removes it.
-if jq -e '(.appImage // "") != ""' >/dev/null 2>&1 <<<"$app" \
+# An app installed as a copy that updates itself (installed_app: an
+# npmPackage, or an appImage with its package not installed) is updated by
+# the app itself, which replaces the copy: nothing here may stage, build or
+# call sudo for it, so this comes before the staged copies go. A copy an
+# earlier Update of its package left would then stay for good, with no
+# next Update to remove it: each is named, with the command that removes
+# it.
+if jq -e '(.appImage // "") != "" or (.npmPackage // "") != ""' >/dev/null 2>&1 <<<"$app" \
   && read -r _ installed_name _ < <(installed_app "$app") && self_updating_name "$installed_name"; then
   mapfile -t left_copies < <(staged_left_copies)
   for copy in "${left_copies[@]}"; do
     echo "omabump: a stopped Update of the $pkg package left its staged copy in $copy, and no Update of $label will remove it now; remove it with: sudo rm -f -- $copy" >&2
   done
-  refuse "$label updates itself: open $label to update it (it is installed as $installed_name, which Omabump does not replace)"
+  how=$(self_update_text "$app" "$label" | term_safe | tr '\t\n' '  ' | sed 's/ *$//')
+  refuse "$label updates itself: $how (it is installed as $installed_name, which Omabump does not replace)"
 fi
 
 # The copies stopped runs left go first, whatever the run does next (a

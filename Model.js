@@ -578,9 +578,10 @@ function openedRun(checking, due) {
 
 // --- rows ------------------------------------------------------------------------
 
-// An app installed as its self-updating AppImage (the checker's
-// selfUpdating): its own updater replaces the file, so the row has no
-// Update, no Switch and no Ask agent, whatever else it says.
+// An app installed as a copy that updates itself (the checker's
+// selfUpdating: its AppImage or its npm package): its own updater replaces
+// the copy, so the row has no Update, no Switch and no Ask agent, whatever
+// else it says.
 function selfUpdating(app) { return !!app && app.selfUpdating === true }
 
 function updatable(app) { return !!app && app.updateAvailable === true && app.installable === true && !selfUpdating(app) }
@@ -682,8 +683,9 @@ function legacyFirstClause(note) {
 }
 
 // The package release (-1) says nothing next to an upstream version, so
-// rows drop it unless it is the only difference. An AppImage's version has
-// none and shows as it is, or as unknown when the checker could not read it.
+// rows drop it unless it is the only difference. A self-updating copy's
+// version has none and shows as it is, or as unknown when the checker could
+// not read it.
 function installedText(app) {
   if (!app) return ""
   var full = String(app.installed || "")
@@ -716,7 +718,7 @@ function sourceLabel(app) {
 
 // How the row knows what it shows and what Update would do. A row with no
 // Update says so, with the reason its second line gives, instead of a
-// route it cannot take. A self-updating app's says which file updates
+// route it cannot take. A self-updating app's says which copy updates
 // itself (its installedName, the path apps.json gives), then the note.
 function rowTooltip(app, schema, muted, skipped, pkgsCommit) {
   if (!app) return ""

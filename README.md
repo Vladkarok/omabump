@@ -44,7 +44,7 @@ Arrows or `j` and `k` select a row, `Enter` updates it (or asks the agent on a r
 
 IPC: `omarchy-shell io.github.vladkarok.omabump status|open|close|toggle|refresh|settings`. `status` counts what the bar counts, including unchecked rows, and adds "(+N muted/skipped)" when quiet rows have updates, with "check failed for N muted apps" inside it when muted rows failed. `refresh` answers `throttled` and starts nothing while this bar's own Refresh check runs or within a minute after its last check ended (a run that left because another check held the lock, or never ran, does not count); during another bar's or a terminal's check it waits for that one and then checks. `open`, `close`, `toggle` and `settings` go through the shell's own panel handling, as `omarchy-shell shell toggle io.github.vladkarok.omabump` does, so the panel opens on the focused monitor (or the open one closes), whichever monitor's bar received the call. The check interval is kept between 60 seconds and a day.
 
-The last check's result is `~/.local/state/omarchy/plugins/io.github.vladkarok.omabump/status.json`, with a top-level `schemaVersion` (1). A row's `note` holds only its exceptions; that a package is installed under another name is in `installedName`, `switchable`, `updateAvailable` and `installable`, and the panel writes the "Installed as ..., switch to ..." text from them. `inventoryAt` says when the installed versions were last read: a full check's start, or a local refresh. `retry` is true when the check was the widget's retry of one that failed (`bin/omabump-check --retry`). `selfUpdating` marks a row for an app that updates itself (see Self-updating apps); its `installedName` is the AppImage's path as apps.json writes it, and `installed` is empty when the version is unknown.
+The last check's result is `~/.local/state/omarchy/plugins/io.github.vladkarok.omabump/status.json`, with a top-level `schemaVersion` (1). A row's `note` holds only its exceptions; that a package is installed under another name is in `installedName`, `switchable`, `updateAvailable` and `installable`, and the panel writes the "Installed as ..., switch to ..." text from them. `inventoryAt` says when the installed versions were last read: a full check's start, or a local refresh. `retry` is true when the check was the widget's retry of one that failed (`bin/omabump-check --retry`). `selfUpdating` marks a row for an app that updates itself (see Self-updating apps); its `installedName` is the AppImage's or npm package's path as apps.json writes it, and `installed` is empty when the version is unknown.
 
 ### Settings
 
@@ -82,9 +82,9 @@ Mute, skip, Notify and Show mise tools apply to every check, whoever starts it: 
 | `hermes-desktop` | Hermes | omarchy, no Update until the recipe has an upstream watch |
 | `grok-bot` | Grok | omarchy |
 | `lmstudio-bin` | LM Studio | omarchy |
-| `openclaw` | OpenClaw | omarchy |
+| `openclaw` | OpenClaw | omarchy as the `openclaw` package, no Update (it is the seed of OpenClaw's own copy); once Omarchy's migration 1792334754 sets that copy up in `~/.openclaw`, the row shows its version and no Update (it updates itself) |
 | `perplexity` | Perplexity | omarchy |
-| `voxtype-bin` | Dictation (voxtype) | omarchy, no Update until [omarchy-pkgs#937](https://github.com/omacom/omarchy-pkgs/pull/937) fixes its install script |
+| `voxtype-bin` | Dictation (voxtype) | omarchy |
 | `zcode` | ZCode (also found as AUR `z-code-bin`) | vendor |
 | `antigravity` | Antigravity (or `antigravity-appimage`) | indicator, version from the AUR; `omarchy update` updates it |
 | `antigravity-ide` | Antigravity IDE | indicator, version from the AUR; `omarchy update` updates it |
@@ -114,11 +114,11 @@ Every mise call Omabump makes, in the check and in Update, runs with `MISE_DISAB
 
 Update opens a floating terminal and runs `bin/omabump-install <pkg>`. The row's route decides what happens.
 
-**omarchy.** The apps behind Omarchy's Install > AI menu come from the [omarchy] pacman repo, built from the recipes in [omacom/omarchy-pkgs](https://github.com/omacom/omarchy-pkgs). That repo notices a vendor release within hours. For most of these apps its bot's version bumps now merge on their own once CI passes, so the repo follows within hours too; for the rest (T3 Code, Hermes) a bump waits for a reviewed pull request, and the repo can lag the vendor by days. Omabump closes that gap, and covers the hours in between. Update checks out the pinned omarchy-pkgs commit (see Pinned snapshots) detached in `~/.cache/omabump/omarchy-pkgs`, runs its `bin/sync-upstream <pkg>`, prints the recipe diff (normally `pkgver` and checksums), checks that the recipe builds the expected package at a full version newer than the installed one (when it is not, see Already installed), builds it with `makepkg` and installs it with `sudo pacman -U`. The sync tool and the recipe's hook have run by the time the diff shows, so read the diff as a record. pacman asks before it installs; that prompt is the point where you can still stop.
+**omarchy.** The apps behind Omarchy's Install > AI menu come from the [omarchy] pacman repo, built from the recipes in [omacom/omarchy-pkgs](https://github.com/omacom/omarchy-pkgs). That repo notices a vendor release within hours (hourly for most of these apps, every six hours for the rest), and its bot's version bumps merge on their own once CI passes, so the repo usually follows within hours, a day later for a recipe that holds new releases. Omabump covers those hours, and a bump whose CI fails and waits for a person. Update checks out the pinned omarchy-pkgs commit (see Pinned snapshots) detached in `~/.cache/omabump/omarchy-pkgs`, runs its `bin/sync-upstream <pkg>`, prints the recipe diff (normally `pkgver` and checksums), checks that the recipe builds the expected package at a full version newer than the installed one (when it is not, see Already installed), builds it with `makepkg` and installs it with `sudo pacman -U`. The sync tool and the recipe's hook have run by the time the diff shows, so read the diff as a record. pacman asks before it installs; that prompt is the point where you can still stop.
 
-A recipe may hold new releases for a while (`min_release_age`; openclaw and voxtype: 24 h), and `bin/sync-upstream` does not move it to a younger release. Such a row shows the update, without an Update button or a notification, and says from when Update works. A feed gives no release date, so the wait counts from the first check that saw the version.
+A recipe may hold new releases for a while (`min_release_age`; voxtype: 24 h), and `bin/sync-upstream` does not move it to a younger release. Such a row shows the update, without an Update button or a notification, and says from when Update works. A feed gives no release date, so the wait counts from the first check that saw the version.
 
-Update is off for voxtype-bin for now: its recipe's root install script hands a path from `pre_upgrade` to `post_upgrade` through `/tmp`, where another local user can plant one ([omarchy-pkgs#937](https://github.com/omacom/omarchy-pkgs/pull/937) moves it to `/run`). The [omarchy] repo package runs the same script on every `pacman -Syu` that upgrades it; Omabump only stops adding its own route to it, and turns Update back on with the pin bump that brings the fix.
+Update is off for the `openclaw` package. Since [omarchy-pkgs#797](https://github.com/omacom/omarchy-pkgs/pull/797) it is no longer OpenClaw itself but the seed of a copy in `~/.openclaw` that updates itself (`openclaw update`, or Update in its Control UI), which Omarchy's migration 1792334754 or `omarchy-install-openclaw-cli --now` sets up. Built from the pinned recipe, Update would take OpenClaw out of `/usr` on a machine that still runs it from there, before Omarchy has moved it. `omarchy update` updates the seed with the rest; the copy's row is under Self-updating apps.
 
 A local build says `Packager: Unknown Packager` in `pacman -Qi`. pacman replaces it with the repo package once the repo's full version is higher, and `sudo pacman -S <pkg>` puts the repo package back at any time. Switching Omarchy's channel (`omarchy channel set`) runs `pacman -Syyuu --noconfirm`, which also puts the repo's older version back, without asking.
 
@@ -130,7 +130,7 @@ A local build says `Packager: Unknown Packager` in `pacman -Qi`. pacman replaces
 
 **Omabump itself.** See Updating Omabump: a fast-forward to the release tag after you read the log and answer y.
 
-**Self-updating apps.** An app installed as its vendor's own AppImage, which replaces itself when it updates (T3 Code, since Omarchy's migration 1792345511), has no Update, Switch or Ask agent, and `bin/omabump-install` refuses it: open the app to update it. The row shows the version the AppImage names, read with 7z from its desktop entry without running it, against the newest release, and notifies once per new version. A stable version is compared with vercmp; a pre-release (`0.1.1-nightly.20261019.1`) or an unknown version is not compared and counts as unchecked, with the reason in its note. The local refresh follows the app's own updates. When the package is installed too, the package's row wins.
+**Self-updating apps.** An app installed as a copy that replaces itself when it updates has no Update, Switch or Ask agent, and `bin/omabump-install` refuses it; the row's note says how the app updates. The copy is the vendor's own AppImage (T3 Code, since Omarchy's migration 1792345511: open the app to update it), whose version is read with 7z from its desktop entry without running it, or an npm package that updates itself in place (OpenClaw, since Omarchy's migration 1792334754 set it up in `~/.openclaw`: run `openclaw update`), whose version is its `package.json`'s, read with jq. The row compares it with the newest release and notifies once per new version. A stable version is compared with vercmp; a pre-release (`0.1.1-nightly.20261019.1`) or an unknown version is not compared and counts as unchecked, with the reason in its note. The local refresh follows the app's own updates. When the package is installed too, it wins over an AppImage, which Omarchy installs in the package's place, and loses to an npm package's copy: Omarchy sets that copy up from the package and keeps the package installed as its seed.
 
 **indicator.** No Update button. These rows show the installed and newest version. Update them the way you installed them: an AUR row installed from the AUR says "Updates with omarchy update (AUR)", since `omarchy update` runs `yay -Sua`, and has no Ask agent.
 
@@ -174,6 +174,8 @@ Fields:
 - `recipeCommit` (optional, omarchy): a 40-hex omarchy-pkgs commit whose recipe tree replaces the pinned one, for a package whose upstream watch is still in an unmerged PR. `recipeFetch` names a ref to fetch it from and `recipeNote` is the text the row shows. Once the pinned commit's own recipe has a watch, it is ignored.
 - `configDir` (optional): where the app keeps its settings, printed before a switch.
 - `appImage` (optional, not for mise): the app's self-updating AppImage, a path under your home written `~/...` (letters, digits and `._+-`, no `.` or `..` component, at most 200 characters), used only when none of the `installed` packages is there. It must be a regular file you own, not a symlink, at most 2 GiB. `"appImage": ""` in your own file turns a shipped one off.
+- `npmPackage` (optional, not for mise): the directory of the app's self-updating npm package, a path written as for `appImage`. Its `package.json`, a regular file you own, not a symlink, at most 1 MiB, gives the version, and while it is there the row is that copy's, whatever packages are installed. `"npmPackage": ""` in your own file turns a shipped one off.
+- `selfUpdate` (optional): how the app updates itself, at most 100 characters, for a self-updating row's note (`Updates itself: <selfUpdate>`), its notification and the installer's refusal. The default is `open <label> to update`.
 - `updateBlocked` (optional): a short reason, at most 200 characters, that turns Omabump's Update off for the row, Ask agent included: the row still shows its versions and notifies, and says "Update off: <reason>", and `bin/omabump-install` refuses it. The shipped table uses it for a known problem in what Update would install. `"updateBlocked": ""` in your own file turns a shipped block off.
 - `feed`: where the newest version comes from. `url` may be a string or an object keyed by `uname -m`, and must be HTTPS.
   - `apt-index` with `url` and `package`: a Debian `Packages` file.
@@ -195,7 +197,7 @@ pacman versions are compared with `vercmp`; mise versions are left to mise; a se
 `pins.json` holds the omarchy-pkgs commit every check and Update starts from:
 
 ```json
-{ "omarchyPkgs": { "commit": "eba2a95f2e9ef209e906a93e93db70b9a856b910", "date": "2026-10-13T07:33:03Z", "ref": "refs/heads/master" } }
+{ "omarchyPkgs": { "commit": "c1f46a344df9f20785a446334ab59d8e66b1230d", "date": "2026-11-01T22:44:27Z", "ref": "refs/heads/master" } }
 ```
 
 Update executes code from that repository (`bin/sync-upstream` and each recipe's upstream hook), so it runs only code from a commit reviewed for the release, never a moving branch. The marketplace baseline checks for exactly this. Bumping the pin is a plugin release: resolve the new commit with `git ls-remote https://github.com/omacom/omarchy-pkgs.git refs/heads/master`, read the diff of `bin/` and the recipes, update `pins.json`, and release.
@@ -259,7 +261,7 @@ The local refresh contacts no host: it fetches nothing, and runs mise with `MISE
 - `downloads.claude.ai` (Claude Desktop apt index)
 - `persistent.oaistatic.com` (Codex apt index)
 - `packages.perplexity.ai` (Perplexity apt index)
-- `downloads.cursor.com` (Grok apt index)
+- `api2.cursor.sh` (Grok's update feed)
 - `github.com` (`/releases/latest` redirects for T3 Code, Hermes, voxtype and Omabump itself; the omarchy-pkgs clone)
 - `registry.npmjs.org` (OpenClaw)
 - `lmstudio.ai` (LM Studio download page)
@@ -270,7 +272,7 @@ The local refresh contacts no host: it fetches nothing, and runs mise with `MISE
 
 Update additionally contacts:
 
-- omarchy rows: every host the recipe's sources and its upstream hook name: the vendor hosts above, GitHub release assets and `raw.githubusercontent.com` (voxtype), and the npm registry's tarballs (OpenClaw)
+- omarchy rows: every host the recipe's sources and its upstream hook name: the vendor hosts above, `downloads.cursor.com` (Grok's packages), and GitHub release assets and `raw.githubusercontent.com` (voxtype)
 - vendor rows: `cdn-zcode.z.ai` (the ZCode package)
 - mise rows: mise's versions host `mise-versions.jdx.dev` (the release's metadata, from its cache) and the tool's download host
 - Omabump's own row: `github.com` (the release tag)

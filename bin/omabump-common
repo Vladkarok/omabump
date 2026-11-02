@@ -110,31 +110,35 @@ pkg_name_ok() { [[ $1 =~ ^[a-z0-9@_+][a-z0-9@._+-]*$ ]]; }
 app_id_ok() { pkg_name_ok "$1" || { [[ $1 == mise:* ]] && pkg_name_ok "${1#mise:}"; } || [[ $1 == "$self_pkg" ]]; }
 tool_name_ok() { [[ $1 =~ ^[A-Za-z0-9@_+:][A-Za-z0-9@._+:/-]*$ && $1 != *..* ]]; }
 ref_ok() { [[ $1 =~ ^refs/[A-Za-z0-9._/-]+$ && $1 != *..* ]]; }
-# An app's "appImage" (see installed_app): a file under your home, written
-# ~/<path>, at most 200 characters of letters, digits and ._+- with no
-# "." or ".." component (and no ".." at all, as in the names above). It
-# reaches status.json as written, so it has no blank either. In apps.json,
-# null or "" is none: a user's file turns a shipped appImage off with "",
-# as it does updateBlocked.
-appimage_path_ok() {
+# An app's "appImage" or "npmPackage" (see installed_app): a path under
+# your home, written ~/<path>, at most 200 characters of letters, digits
+# and ._+- with no "." or ".." component (and no ".." at all, as in the
+# names above). It reaches status.json as written, so it has no blank
+# either. In apps.json, null or "" is none: a user's file turns a shipped
+# one off with "", as it does updateBlocked.
+home_path_ok() {
   local re='^~(/[A-Za-z0-9._+-]+)+$'
   [[ ${#1} -le 200 && $1 =~ $re && $1 != *..* && $1 != */. && $1 != */./* ]]
 }
 # The same rules as jq definitions, for apps_table. \z, not $: in jq's
 # regexes $ also matches before a final newline, which bash's =~ refuses.
-# A mise row is mise's tool, never a file, so its appImage can only be none.
+# A mise row is mise's tool, never a file, so its appImage and npmPackage
+# can only be none. selfUpdate is text for the note, at most 100
+# characters.
 jq_name_rules='
   def pkg_ok: type == "string" and test("^[a-z0-9@_+][a-z0-9@._+-]*\\z");
   def id_ok: pkg_ok or (type == "string" and startswith("mise:") and (.[5:] | pkg_ok));
   def tool_ok: type == "string" and test("^[A-Za-z0-9@_+:][A-Za-z0-9@._+:/-]*\\z") and (contains("..") | not);
-  def appimage_ok: type == "string" and length <= 200 and test("^~(/[A-Za-z0-9._+-]+)+\\z")
+  def home_path_ok: type == "string" and length <= 200 and test("^~(/[A-Za-z0-9._+-]+)+\\z")
     and (contains("..") | not) and (test("/\\.(/|\\z)") | not);
   def entry_ok: (.pkg | id_ok) and ((.pkg | pkg_ok) or .source == "mise")
     and (.source | IN("omarchy", "vendor-pkg", "mise", "indicator"))
     and ((.installed // []) | type == "array" and all(.[]; pkg_ok))
     and ([.tool // empty] | flatten | all(.[]; tool_ok))
     and ((.updateBlocked // "") | type == "string" and length <= 200)
-    and ((.appImage // "") == "" or (.source != "mise" and (.appImage | appimage_ok)));'
+    and ((.selfUpdate // "") | type == "string" and length <= 100)
+    and ((.appImage // "") == "" or (.source != "mise" and (.appImage | home_path_ok)))
+    and ((.npmPackage // "") == "" or (.source != "mise" and (.npmPackage | home_path_ok)));'
 
 # A version as mise or a feed prints it, for a skipped version: what
 # version_ok allows plus "-" (mise versions such as 1.0.0-beta.1). Model.js
@@ -334,8 +338,8 @@ discover_agents() {
 # additions after, new discovered rows last. An entry whose feed the user's
 # file set carries "_userFeed": true (never taken from either file), which
 # feed_version requires for a command feed. An entry whose pkg, installed
-# names, tool names or appImage break the rules above is dropped with a line
-# on stderr.
+# names, tool names, appImage, npmPackage, updateBlocked or selfUpdate break
+# the rules above is dropped with a line on stderr.
 #
 # A command is off when the user disabled the entry "mise:<command>" or an
 # entry whose "command" it is: every row with that command is hidden and a
@@ -383,7 +387,7 @@ apps_table() {
   rm -f "$disc"
   (( rc == 0 )) || return 1
   jq -r "$jq_name_rules"' .[] | select(entry_ok | not)
-    | "ignoring app \(.pkg | tojson): a pkg, installed or tool name with characters Omabump does not accept, an appImage that is not a ~/ path Omabump accepts, or a source other than omarchy, vendor-pkg, mise or indicator"' <<<"$merged" >&2
+    | "ignoring app \(.pkg | tojson): a pkg, installed or tool name with characters Omabump does not accept, an appImage or npmPackage that is not a ~/ path Omabump accepts, an updateBlocked or selfUpdate too long, or a source other than omarchy, vendor-pkg, mise or indicator"' <<<"$merged" >&2
   jq -c "$jq_name_rules"' map(select(entry_ok))' <<<"$merged"
 }
 
@@ -834,31 +838,50 @@ mise_active() {
 
 # --- apps that update themselves ------------------------------------------------
 #
-# An app may be installed as its vendor's self-updating AppImage instead of
-# a package: Omarchy's migration 1792345511 replaced the t3code-bin package
-# with T3 Code's own AppImage, ~/.local/share/t3code/T3-Code.AppImage, and
-# its Install menu calls T3 Code installed once that file is there. The
-# app's "appImage" in apps.json names the file (appimage_path_ok). The app's
-# own updater replaces it, so Omabump only reads its version: the row has
-# no Update (bin/omabump-check, appimage_row) and the installer refuses one.
+# An app may be installed as a copy that updates itself instead of a
+# package, and Omabump only reads its version: the row has no Update
+# (bin/omabump-check, self_row) and the installer refuses one.
+#
+#   appImage    the vendor's self-updating AppImage. Omarchy's migration
+#               1792345511 replaced the t3code-bin package with T3 Code's
+#               own AppImage, ~/.local/share/t3code/T3-Code.AppImage, and
+#               its Install menu calls T3 Code installed once that file is
+#               there. The app's own updater replaces the file.
+#   npmPackage  the directory of an npm package that updates itself in
+#               place. Omarchy's migration 1792334754 set OpenClaw up under
+#               ~/.openclaw from the openclaw package, which stays as its
+#               seed: upstream's installer puts the package in
+#               ~/.openclaw/tools/node/lib/node_modules/openclaw, and
+#               `openclaw update` replaces it there.
+#
+# Both are paths in apps.json (home_path_ok), and selfUpdate says how the
+# app updates itself (self_update_text).
 
 # The largest AppImage read: an Electron app such as T3 Code is 150 to 300 MB.
 appimage_max_bytes=$(( 2 * 1024 * 1024 * 1024 ))
+# The largest package.json read: OpenClaw's is about 120 KiB.
+npm_package_max_bytes=$(( 1024 * 1024 ))
 
-# The full path of the file the app $1's appImage names, when it is one
-# Omabump reads: a regular file of yours, not a symlink, of at most
-# appimage_max_bytes. Fails otherwise.
-appimage_file() {
-  local rel file facts type uid size
-  rel=$(jq -r '.appImage | strings' <<<"$1")
-  appimage_path_ok "$rel" || return 1
-  file=$HOME/${rel#"~/"}
+# The full path of ~/<path> $1, when it is a file Omabump reads: a regular
+# file of yours, not a symlink, of at most $2 bytes. Fails otherwise. The
+# caller checks the path (home_path_ok).
+home_file() {
+  local file=$HOME/${1#"~/"} facts type uid size
   # stat without -L describes a symlink itself, not what it points to.
   facts=$(stat -c '%F/%u/%s' -- "$file" 2>/dev/null) || return 1
   IFS=/ read -r type uid size <<<"$facts"
   [[ $type == "regular file" && $uid == "$UID" && $size =~ ^[0-9]{1,12}$ ]] || return 1
-  (( size <= appimage_max_bytes )) || return 1
+  (( size <= $2 )) || return 1
   echo "$file"
+}
+
+# The full path of the file the app $1's appImage names, when it is one
+# Omabump reads (home_file, at most appimage_max_bytes). Fails otherwise.
+appimage_file() {
+  local rel
+  rel=$(jq -r '.appImage | strings' <<<"$1")
+  home_path_ok "$rel" || return 1
+  home_file "$rel" "$appimage_max_bytes"
 }
 
 # The version the AppImage $1 says it is: X-AppImage-Version in the
@@ -900,16 +923,56 @@ appimage_installed() {
   echo "$(jq -r .appImage <<<"$1") $version"
 }
 
-# True for an installed name installed_app gives an AppImage: its path as
-# apps.json writes it, ~/<path>, which no package or mise tool name can be.
+# The version the npm package whose package.json is $1 says it is: its
+# "version", read with jq; nothing of the package runs. npm versions have
+# no leading v, and a pre-release (2026.10.9-beta.1) stays as it is, as an
+# AppImage's does. Fails when the file is not one JSON object with such a
+# version.
+npm_package_version() {
+  local v
+  v=$(jq -r 'if type == "object" then .version | strings else empty end' "$1" 2>/dev/null) || return 1
+  skip_version_ok "$v" || return 1
+  echo "$v"
+}
+
+# Prints "<npmPackage as apps.json writes it> <version>" for an app
+# installed as its self-updating npm package, the version empty when its
+# package.json names none, or fails when the app has no such package.json
+# (home_file, at most npm_package_max_bytes). Most apps have no npmPackage,
+# and the text test spares them the jq.
+npm_package_installed() {
+  local rel file version
+  [[ $1 == *'"npmPackage"'* ]] || return 1
+  rel=$(jq -r '.npmPackage | strings' <<<"$1")
+  home_path_ok "$rel" || return 1
+  file=$(home_file "$rel/package.json" "$npm_package_max_bytes") || return 1
+  version=$(npm_package_version "$file") || version=""
+  echo "$rel $version"
+}
+
+# True for an installed name installed_app gives an app that updates
+# itself: its AppImage's or npm package's path as apps.json writes it,
+# ~/<path>, which no package or mise tool name can be.
 # shellcheck disable=SC2088 # the text "~/" as apps.json has it, not your home
 self_updating_name() { [[ $1 == "~/"* ]]; }
 
+# How the app $1, labelled $2, updates itself, for its note, its
+# notification and the installer's refusal: its selfUpdate from apps.json
+# ("run openclaw update"), else "open <label> to update", since an
+# AppImage's own updater runs while the app is open.
+self_update_text() {
+  local text
+  text=$(jq -r '.selfUpdate // "" | strings' <<<"$1")
+  echo "${text:-open $2 to update}"
+}
+
 # Prints "<source> <installed name> <version>" for an app, or fails when it is
-# not installed. The pacman package wins over the app's AppImage: Omarchy's
-# migration removes the package once the AppImage is in place, so both at
-# once is an install half done, or the package put back, and the package is
-# what Update knows.
+# not installed. An npm package that updates itself wins over the pacman
+# package: Omarchy sets that copy up from the package, which stays installed
+# as its seed, and the copy is what runs. The pacman package wins over the
+# app's AppImage: Omarchy's migration removes the package once the AppImage
+# is in place, so both at once is an install half done, or the package put
+# back, and the package is what Update knows.
 installed_app() {
   local app=$1 source line names
   source=$(jq -r '.source // ""' <<<"$app")
@@ -921,7 +984,8 @@ installed_app() {
     line="omabump $line"
   else
     mapfile -t names < <(jq -r '(.installed // [.pkg])[]' <<<"$app")
-    line=$(installed_package "${names[@]}") || line=$(appimage_installed "$app") || return 1
+    line=$(npm_package_installed "$app") || line=$(installed_package "${names[@]}") \
+      || line=$(appimage_installed "$app") || return 1
   fi
   echo "$source $line"
 }

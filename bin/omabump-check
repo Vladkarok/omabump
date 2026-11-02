@@ -12,9 +12,10 @@
 #   mise        `mise outdated`: what `mise up` would reach under the
 #               configured request, and what lies outside it (a pin).
 #
-# An app installed as its self-updating AppImage (apps.json "appImage")
-# rather than its package: the feed in apps.json, against the version the
-# AppImage names, read with 7z; the app updates itself, so no route.
+# An app installed as a copy that updates itself rather than its package
+# (apps.json "appImage" or "npmPackage"): the feed in apps.json, against the
+# version the AppImage names (read with 7z) or the npm package's
+# package.json; the app updates itself, so no route.
 #
 #   omabump-check [--no-notify] [--no-mise] [--wait] [--retry]
 #   omabump-check --local [--no-mise]
@@ -157,26 +158,28 @@ row_switchable() {
     && ! newer "$(upstream_part "$7")" "$6"
 }
 
-# The row of an app installed as its self-updating AppImage (installed_app
-# names it by its path): its own updater replaces the file, so the row has
-# no route, and its note says to open the app. $1 label, $2 the AppImage's
-# version (empty when unknown), $3 the newest known. Sets update, unchecked
+# The row of an app installed as a copy that updates itself (installed_app
+# names it by its path): its own updater replaces it, so the row has no
+# route, and its note says how the app updates (self_update_text). $1 the
+# app, $2 its label, $3 the copy's path as installed_app names it, $4 its
+# version (empty when unknown), $5 the newest known. Sets update, unchecked
 # and note. A release version (version_ok: no "-", and a digit first)
-# compares with the feed's by vercmp as it is, since an AppImage has no
-# pkgrel. A pre-release (0.1.1-nightly.20261019.1) is compared with
-# nothing: a feed's version never has a "-", so it is a release of another
-# channel, and vercmp would take the suffix for a pkgrel and call
+# compares with the feed's by vercmp as it is, since a copy has no pkgrel.
+# A pre-release (0.1.1-nightly.20261019.1) is compared with nothing: a
+# feed's version never has a "-", so it is a release of another channel,
+# and vercmp would take the suffix for a pkgrel and call
 # 0.1.1-nightly.x the same as 0.1.1. Nor is a version with a letter first
 # (continuous, as some CI builds name theirs): vercmp ranks it below every
 # numeric one, an update forever. Such a row, or one whose version is
 # unknown, never claims an update and never reads as current (unchecked),
 # and its note says why first.
-appimage_row() {
-  local label=$1 have=$2 latest=$3 why=""
+self_row() {
+  local app=$1 label=$2 name=$3 have=$4 latest=$5 why=""
   update=false unchecked=false
   if [[ -z $have ]]; then
     unchecked=true
-    if command -v 7z >/dev/null; then why="Version unknown: 7z could not read it from the AppImage"
+    if [[ $name == "$(jq -r '.npmPackage // "" | strings' <<<"$app")" ]]; then why="Version unknown: its package.json names none"
+    elif command -v 7z >/dev/null; then why="Version unknown: 7z could not read it from the AppImage"
     else why="Version unknown: install 7zip to read it (sudo pacman -S --needed 7zip)"; fi
   elif [[ $have != [0-9]* ]]; then
     unchecked=true why="Not a release number, not compared with the feed's"
@@ -185,7 +188,7 @@ appimage_row() {
   elif [[ -n $latest ]] && newer "$latest" "$have"; then
     update=true
   fi
-  note="${why:+$why; }Updates itself: open $label to update"
+  note="${why:+$why; }Updates itself: $(self_update_text "$app" "$label")"
 }
 
 # --- a local refresh (--local) -------------------------------------------------
@@ -194,7 +197,7 @@ appimage_row() {
 # launch, and omarchy update runs pacman and mise up. Until the next check,
 # a row can then offer an Update that is already installed, and a
 # self-updating app's own updater moves it. This reads the installed
-# versions again, from pacman, the apps' AppImages and Omabump's
+# versions again, from pacman, the apps' own copies and Omabump's
 # manifest.json (installed_app) and mise's inventory (mise ls, offline),
 # after discovery has read Omarchy's menu (load_table), and nothing else:
 # no feed, no omarchy-pkgs, no mise outdated, nothing on the network. It
@@ -338,7 +341,7 @@ local_row() {
     return 0
   fi
   # p_unread: a row a local refresh wrote and no check has read since (new,
-  # or moved between package and AppImage). For a self-updating app,
+  # or moved between package and its own copy). For a self-updating app,
   # unchecked alone does not say so: its unknown or pre-release version is
   # unchecked too.
   IFS=$'\x1f' read -r p_source p_name p_installed p_latest p_from p_installable p_held p_unchecked p_self p_unread < <(jq -r '
@@ -351,7 +354,7 @@ local_row() {
   fi
   [[ $name != "$p_name" || $installed != "$p_installed" ]] || return 1
 
-  # From the package to the self-updating AppImage or back: the route, the
+  # From the package to the copy that updates itself or back: the route, the
   # note and what counts as newer all change, and only a check reads them.
   # The newest version stays (the feed is the entry's, whatever is
   # installed); what only the other form had goes, as a new row has it: the
@@ -375,8 +378,8 @@ local_row() {
       return 0
     fi
     # Its version against the newest known, by the rules a check applies
-    # (appimage_row): its own updater moved it.
-    appimage_row "$(jq -r '.label // .pkg' <<<"$app")" "$installed" "$p_latest"
+    # (self_row): its own updater moved it.
+    self_row "$app" "$(jq -r '.label // .pkg' <<<"$app")" "$name" "$installed" "$p_latest"
     # Past the newest version known: a release no check has seen, which only
     # a check can compare with the feed's newest. Unread until one does.
     if [[ $unchecked == false && -n $p_latest ]] && newer "$installed" "$p_latest"; then
@@ -426,9 +429,10 @@ local_row() {
     | if $update then . else .skipped = false end
     | if $unhold then .note = (.note | strings // "" | sub($re; "")) else . end' <<<"$prev")
   if [[ -n $p_latest ]] && newer "$have" "$p_latest"; then
-    # A release no check has seen, as for an AppImage above. What the check
-    # knew about the route (installable, omarchy update's AUR route) stays:
-    # a check that finds the omarchy-pkgs clone busy keeps it from here.
+    # A release no check has seen, as for a self-updating copy above. What
+    # the check knew about the route (installable, omarchy update's AUR
+    # route) stays: a check that finds the omarchy-pkgs clone busy keeps it
+    # from here.
     row=$(jq -c '. + {updateAvailable: false, switchable: false, skipped: false, unchecked: true, note: "Not checked yet"}' <<<"$row")
     why="$pkg $installed is past the last known $p_latest"
   elif [[ $name != "$p_name" ]]; then
@@ -595,8 +599,8 @@ while IFS= read -r app; do
   route_error="" feed_error="" recipe="" recipe_commit="" mise_update=false request="" unchecked=false
   hold=0 held=false omarchy_update=false self_updating=false
 
-  # Installed as its self-updating AppImage: no route of its source applies,
-  # and nothing of omarchy-pkgs is read for it. appimage_row words the row
+  # Installed as a copy that updates itself: no route of its source applies,
+  # and nothing of omarchy-pkgs is read for it. self_row words the row
   # once the newest version is known.
   route=$source
   if self_updating_name "$installed_name"; then self_updating=true route=self-updating; fi
@@ -700,18 +704,17 @@ while IFS= read -r app; do
   # installed one less epoch and pkgrel. The installer compares full versions.
   update=$mise_update
   if [[ $self_updating == true ]]; then
-    appimage_row "$label" "$installed" "$latest"
+    self_row "$app" "$label" "$installed_name" "$installed" "$latest"
   elif [[ -n $latest && $source != mise ]]; then
     have=$installed
     [[ $from == feed ]] && have=$(upstream_part "$installed")
     newer "$latest" "$have" && update=true
   fi
 
-  # The recipe holds a release for its min_release_age (openclaw and
-  # voxtype-bin: 24 h), and Update could not reach it before then. Until the
-  # window has passed the row has no Update and does not notify. Once the
-  # release is installed, a local refresh takes the clause off again
-  # (hold_clause_re).
+  # The recipe holds a release for its min_release_age (voxtype-bin: 24 h),
+  # and Update could not reach it before then. Until the window has passed
+  # the row has no Update and does not notify. Once the release is
+  # installed, a local refresh takes the clause off again (hold_clause_re).
   if [[ $update == true && $installable == true ]] && (( hold > 0 )); then
     hold_until=$(( $(seen_since "$pkg" "$latest" "$now") + hold ))
     if (( now < hold_until )); then
@@ -740,7 +743,7 @@ while IFS= read -r app; do
   elif [[ $action == send ]]; then
     body="Installed: $installed. Open the Omabump panel to update."
     [[ $installable == true ]] || body="Installed: $installed. ${note^}."
-    [[ $self_updating == false ]] || body="Installed: $installed. $label updates itself: open it to update."
+    [[ $self_updating == false ]] || body="Installed: $installed. Updates itself: $(self_update_text "$app" "$label")."
     if notify-send -a Omabump "$(clean_text "$label $latest available")" "$(clean_text "$body")" 2>/dev/null; then
       notified=$(jq -c --arg pkg "$pkg" --arg v "$latest" '.[$pkg] = $v' <<<"$notified")
       save_notified
