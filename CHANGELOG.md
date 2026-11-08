@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.9 (2026-11-08)
+
+- A GitHub release feed (T3 Code, Hermes, voxtype, Omabump itself) no longer fails the check when github.com's release pages fail. On 2026-11-08 they answered 504 for minutes, cached at GitHub's edge, while the REST API answered: a feed now asks the API's latest release when the `/releases/latest` page gives no answer, a 5xx, a 403 or a 429, one unauthenticated call. The error no longer reads "has no latest release (504)" for a page that failed: it names what github.com and the API answered.
+
 ## 0.1.8 (2026-11-02)
 
 - Update works for voxtype-bin again. The omarchy-pkgs pin moves from eba2a95 (2026-10-13) to c1f46a3 (2026-11-01), which has omarchy-pkgs#937: the recipe's install script hands the active backend from `pre_upgrade` to `post_upgrade` through `/run/voxtype-backend-upgrade`, which only root can write, and installs only a binary from `/usr/lib/voxtype`. The `updateBlocked` entry from 0.1.5 is gone.

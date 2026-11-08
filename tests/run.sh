@@ -20,11 +20,16 @@ source "$root/bin/omabump-common"
 # The real mise_run, kept under another name before the stub replaces it.
 eval "$(declare -f mise_run | sed '1s/^mise_run/real_mise_run/')"
 
-# Stubs. fetch serves $scratch/served/<basename of the last argument>.
+# Stubs. fetch serves $scratch/served/<basename of the last argument>, or
+# api-<basename> for a URL on api.github.com, and leaves its arguments in
+# $scratch/fetched.
 fetch() {
-  local url=${*: -1}
-  [[ -f $scratch/served/${url##*/} ]] || return 22
-  cat "$scratch/served/${url##*/}"
+  local url=${*: -1} name
+  printf '%s\n' "$*" >"$scratch/fetched"
+  name=${url##*/}
+  [[ $url != https://api.github.com/* ]] || name=api-$name
+  [[ -f $scratch/served/$name ]] || return 22
+  cat "$scratch/served/$name"
 }
 # shellcheck disable=SC2329 # stubs, called from omabump-common
 mise_run() { echo "mise_run called in a test" >&2; return 1; }
@@ -847,8 +852,56 @@ rm -f "$user_apps"
 same "installed_app: the self row reads manifest.json" "self omabump $(jq -r .version "$root/manifest.json")" "$(installed_app "$self_app")"
 echo '302 https://github.com/vladkarok/omabump/releases/tag/v0.2.0' >"$scratch/served/latest"
 same "the self row's newest version from the release redirect" 0.2.0 "$(feed_version "$self_app")"
+# What the API would answer if it were asked: a 404 or a 302 elsewhere on
+# github.com means no release, and the API is not asked.
+printf '{"tag_name": "v0.3.0"}\n200' >"$scratch/served/api-latest"
 echo '404 ' >"$scratch/served/latest"
 refuse "the self row: no release is a feed error" feed_version "$self_app"
+same "the self row: no release, and says so; the API is not asked" 'github.com/vladkarok/omabump has no latest release' \
+  "$(feed_version "$self_app" 2>&1 >/dev/null)"
+echo '302 https://github.com/vladkarok/omabump/releases' >"$scratch/served/latest"
+same "the self row: a redirect to the releases page is no release either" 'github.com/vladkarok/omabump has no latest release' \
+  "$(feed_version "$self_app" 2>&1 >/dev/null)"
+# github.com's pages failing (a 5xx, a rate limit, a move, no answer): the
+# API's latest release.
+for web in '504 ' '500 ' '403 ' '429 ' ''; do
+  if [[ -n $web ]]; then echo "$web" >"$scratch/served/latest"; else rm -f "$scratch/served/latest"; fi
+  same "github-release: github.com's answer ${web:-(none)}, the API's tag" 0.3.0 "$(feed_version "$self_app")"
+done
+# The API's answer is read whatever its status: no -f, and its status after
+# the body.
+feed_version "$self_app" >/dev/null
+same "github-release: the API is asked for its JSON, without -f" \
+  "-sS -H Accept: application/vnd.github+json -w \n%{http_code} https://api.github.com/repos/vladkarok/omabump/releases/latest" \
+  "$(cat "$scratch/fetched")"
+# Any other answer from github.com is an error that names it, without the
+# API: a repo that moved, a page that no longer redirects.
+for web in '301 https://github.com/other/omabump/releases/latest' '200 ' '400 '; do
+  echo "$web" >"$scratch/served/latest"
+  same "github-release: github.com's answer ${web%% *} is an error, the API not asked" \
+    "github.com answered ${web%% *} for vladkarok/omabump's latest release" "$(feed_version "$self_app" 2>&1 >/dev/null)"
+done
+echo '504 ' >"$scratch/served/latest"
+printf '{"message": "API rate limit exceeded"}\n403' >"$scratch/served/api-latest"
+same "github-release: both failing, the error names both answers" \
+  "github.com answered 504 and api.github.com answered 403 for vladkarok/omabump's latest release" \
+  "$(feed_version "$self_app" 2>&1 >/dev/null)"
+printf '{"message": "Not Found"}\n404' >"$scratch/served/api-latest"
+same "github-release: the API's 404 is no release" 'github.com/vladkarok/omabump has no latest release' \
+  "$(feed_version "$self_app" 2>&1 >/dev/null)"
+for doc in '{"name": "v0.3.0"}' '{"tag_name": 3}' '["v0.3.0"]' 'not json' ''; do
+  printf '%s\n200' "$doc" >"$scratch/served/api-latest"
+  same "github-release: no tag from the API's $(jq -Rsc . <<<"$doc")" \
+    "github.com answered 504 and api.github.com named no tag for vladkarok/omabump's latest release" \
+    "$(feed_version "$self_app" 2>&1 >/dev/null)"
+done
+printf '{"tag_name": "v0.3.0\\nv0.4.0"}\n200' >"$scratch/served/api-latest"
+same "github-release: a tag on two lines is no version" "feed returned an odd version '0.3.0 v0.4.0'" \
+  "$(feed_version "$self_app" 2>&1 >/dev/null)"
+rm -f "$scratch/served/api-latest"
+same "github-release: no answer from the API either" \
+  "github.com answered 504 and api.github.com could not be reached (curl exit 22) for vladkarok/omabump's latest release" \
+  "$(feed_version "$self_app" 2>&1 >/dev/null)"
 rm -f "$scratch/served/latest"
 real_plugins=$plugins_dir real_plugin_dir=$plugin_dir
 plugins_dir=$scratch/plugins

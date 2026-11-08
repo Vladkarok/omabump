@@ -1128,6 +1128,58 @@ user_command_version() {
   head -1 <<<"$body"
 }
 
+# The tag of the latest release of the GitHub repo $1 (owner/repo). The
+# /releases/latest redirect names it without the REST API's 60
+# unauthenticated calls an hour. A 404 there, or a 302 elsewhere (to the
+# releases page), means the repo has no release. No answer, a 5xx, a 403 or
+# a 429 is github.com's pages failing, which happens for minutes at a time
+# while the API keeps answering (2026-11-08: 504s, cached at the edge, on
+# every page of releases): then the API's latest release names it, one call
+# per such feed. Any other answer (a repo that moved, a page that no longer
+# redirects) is an error that names it, so that the feed gets fixed rather
+# than costing an API call on every check. Fails with the reason on
+# stderr.
+github_latest_tag() {
+  local repo=$1 out code web rc=0
+  out=$(fetch -sS -o /dev/null -w '%{http_code} %{redirect_url}' "https://github.com/$repo/releases/latest" 2>/dev/null) || rc=$?
+  if (( rc == 0 )); then
+    if [[ $out == 302\ https://github.com/*/releases/tag/* ]]; then
+      echo "${out##*/releases/tag/}"
+      return 0
+    fi
+    code=${out%% *}
+    if [[ $code == 404 || $code == 302 ]]; then
+      echo "github.com/$repo has no latest release" >&2
+      return 1
+    fi
+    if [[ ! $code =~ ^(5[0-9][0-9]|403|429)$ ]]; then
+      echo "github.com answered $code for $repo's latest release" >&2
+      return 1
+    fi
+    web="github.com answered $code"
+  else
+    web="github.com could not be reached (curl exit $rc)"
+  fi
+  # The body, then the status on a line of its own.
+  rc=0
+  out=$(fetch -sS -H 'Accept: application/vnd.github+json' -w '\n%{http_code}' \
+    "https://api.github.com/repos/$repo/releases/latest" 2>/dev/null) || rc=$?
+  if (( rc != 0 )); then
+    echo "$web and api.github.com could not be reached (curl exit $rc) for $repo's latest release" >&2
+    return 1
+  fi
+  code=${out##*$'\n'}
+  case $code in
+    200)
+      jq -er 'if type == "object" then .tag_name | strings else empty end' <<<"${out%$'\n'*}" 2>/dev/null \
+        || { echo "$web and api.github.com named no tag for $repo's latest release" >&2; return 1; } ;;
+    404)
+      echo "github.com/$repo has no latest release" >&2; return 1 ;;
+    *)
+      echo "$web and api.github.com answered $code for $repo's latest release" >&2; return 1 ;;
+  esac
+}
+
 # Prints the newest version the app's own feed advertises. Feeds are data:
 # nothing fetched is ever run (a command feed is the user's own code, see
 # user_command_version). Every fetch is checked on its own: a failed or
@@ -1172,13 +1224,8 @@ feed_version() {
       [[ -n $v ]] || { echo "the AUR has no $want" >&2; return 1; }
       v=$(upstream_part "$v") ;;
     github-release)
-      # The /releases/latest redirect names the tag; the REST API would do the
-      # same but allows only 60 unauthenticated calls an hour.
       repo=$(jq -r '.feed.repo // ""' <<<"$app")
-      body=$(fetch -sS -o /dev/null -w '%{http_code} %{redirect_url}' \
-        "https://github.com/$repo/releases/latest" 2>/dev/null) || { echo "could not reach github.com/$repo (curl exit $?)" >&2; return 1; }
-      [[ $body == 302\ https://github.com/*/releases/tag/* ]] || { echo "github.com/$repo has no latest release (${body%% *})" >&2; return 1; }
-      v=${body##*/releases/tag/}
+      v=$(github_latest_tag "$repo") || return 1
       v=${v#v} ;;
     command)
       v=$(user_command_version "$app") || return 1 ;;

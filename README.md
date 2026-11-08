@@ -180,7 +180,7 @@ Fields:
 - `feed`: where the newest version comes from. `url` may be a string or an object keyed by `uname -m`, and must be HTTPS.
   - `apt-index` with `url` and `package`: a Debian `Packages` file.
   - `zcode-manifest` or `latest-yml` with `url`: YAML with `version:`.
-  - `github-release` with `repo`: the tag behind `/releases/latest`.
+  - `github-release` with `repo`: the tag behind `/releases/latest`. When github.com does not answer that page or answers it with a 5xx, 403 or 429, the REST API's latest release names it instead, one unauthenticated call. A 404 or a redirect to the releases page means no release.
   - `json` with `url` and `path`: a jq path into a JSON document. The body must be exactly one JSON document and the path must give one value.
   - `regex` with `url` and `pattern`: a Python regex with one capture group.
   - `aur-rpc` with `name`: the AUR's version, pkgrel stripped.
@@ -262,7 +262,7 @@ The local refresh contacts no host: it fetches nothing, and runs mise with `MISE
 - `persistent.oaistatic.com` (Codex apt index)
 - `packages.perplexity.ai` (Perplexity apt index)
 - `api2.cursor.sh` (Grok's update feed)
-- `github.com` (`/releases/latest` redirects for T3 Code, Hermes, voxtype and Omabump itself; the omarchy-pkgs clone)
+- `github.com` (`/releases/latest` redirects for T3 Code, Hermes, voxtype and Omabump itself; the omarchy-pkgs clone), and `api.github.com` for such a release when github.com's page fails
 - `registry.npmjs.org` (OpenClaw)
 - `lmstudio.ai` (LM Studio download page)
 - `zcode.z.ai` (ZCode update manifest)
