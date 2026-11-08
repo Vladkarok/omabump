@@ -3,10 +3,14 @@
 # Compares the omarchy-pkgs commit pins.json pins with master and prints, as
 # Markdown, what an Update would run differently after a pin bump:
 #
-#   - bin/sync-upstream and helpers/, the code Update runs from that repo;
+#   - the code Update runs from that repo: bin/sync-upstream and the files
+#     under bin/ and helpers/ that it or a shipped app's hook names
+#     (update_code); the rest of helpers/ is omarchy-pkgs' own build and
+#     publish tooling, so its changes are listed but are not news;
 #   - the recipes of the omarchy apps in apps.json, less pkgver, pkgrel and
-#     checksum arrays: sync-upstream rewrites those itself on every Update,
-#     so a routine "sync upstream releases" commit is not news;
+#     checksum arrays, which sync-upstream rewrites itself on every Update,
+#     and less what the recipe's own hook rewrites (hook_writes), so a
+#     routine "sync upstream releases" commit is not news;
 #   - for an app pinned to a recipeCommit, whether master's own recipe now
 #     has an upstream watch, so the entry can go.
 #
@@ -16,6 +20,7 @@
 #
 #   .github/scripts/pin-watch [--repo URL] [--plugin-dir DIR] [--age DAYS]
 set -euo pipefail
+shopt -s inherit_errexit
 
 repo=https://github.com/omacom/omarchy-pkgs.git
 plugin_dir=$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)
@@ -52,27 +57,84 @@ g merge-base --is-ancestor "$pin" "$tip" \
   || { echo "pin-watch: the pinned commit ${pin:0:12} is not on $branch" >&2; exit 1; }
 [[ $tip != "$pin" ]] || exit 0
 
+# Assignments a recipe's own hook rewrites on every Update, as sync-upstream
+# rewrites pkgver: "<app> <name>...". grok-bot's hook points _commit, which
+# its source URLs depend on, at the build Cursor's feed names. A name counts
+# only while the pinned hook still assigns it in code, "<name>=" not part of
+# a longer name (current_commit=) and not on a comment line, so the changes
+# of a hook that stops writing it show again. A hook that starts writing
+# another one shows up in the report (the hook's own diff, and the
+# assignment changing with each sync); add it here once it has been read.
+hook_writes=("grok-bot _commit")
+
+# The file $2 at commit $1 on stdout: nothing when the tree has no such
+# file, an error when it has one that cannot be read (a blob the blob-less
+# clone could not fetch), never the one taken for the other. Trees are all
+# in the clone; ls-tree fetches nothing.
+blob_at() {
+  [[ -n $(g ls-tree --name-only "$1" -- "$2") ]] || return 0
+  g show "$1:$2" || { echo "pin-watch: cannot read $2 at ${1:0:12}" >&2; exit 1; }
+}
+
+# Whether the file $2 matches the extended regular expression $1. grep
+# failing (not merely finding nothing) is an error.
+file_has() {
+  local rc=0
+  grep -qE -e "$1" -- "$2" || rc=$?
+  (( rc < 2 )) || { echo "pin-watch: grep failed on $2" >&2; exit 1; }
+  return "$rc"
+}
+
+# $1 without its comment lines, into $2.
+code_only() {
+  local rc=0
+  grep -v '^[[:space:]]*#' -- "$1" >"$2" || rc=$?
+  (( rc < 2 )) || { echo "pin-watch: grep failed on $1" >&2; exit 1; }
+}
+
+# The names of $1's hook_writes entry that its hook at the pin still writes,
+# on one line.
+hook_names() {
+  local entry name hook=pkgbuilds/$1/.omarchy/upstream.sh out=()
+  for entry in "${hook_writes[@]}"; do
+    [[ ${entry%% *} == "$1" ]] || continue
+    blob_at "$pin" "$hook" >"$work/hook" || exit 1
+    code_only "$work/hook" "$work/hook.code"
+    for name in ${entry#* }; do
+      [[ $name =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || { echo "pin-watch: bad hook_writes name '$name'" >&2; exit 1; }
+      file_has "(^|[^A-Za-z0-9_])$name=" "$work/hook.code" && out+=("$name")
+    done
+  done
+  echo "${out[*]}"
+}
+
 # A recipe file as sync-upstream would leave it alone: no pkgver or pkgrel
-# line, no checksum array, however many lines the array spans.
+# line, no checksum array, however many lines the array spans, and none of
+# the assignments named in $@ (hook_names).
 routine_free() {
-  awk '
+  local extra
+  extra=$(printf '%s|' "$@")
+  awk -v extra="${extra%|}" '
     /^[[:space:]]*(pkgver|pkgrel)=/ { next }
     /^[[:space:]]*(ck|md5|sha1|sha224|sha256|sha384|sha512|b2)sums(_[A-Za-z0-9_]+)?=\(/ { skip = ($0 !~ /\)/); next }
+    extra != "" && $0 ~ ("^[[:space:]]*(" extra ")=") { skip = ($0 ~ /=\(/ && $0 !~ /\)/); next }
     skip { if ($0 ~ /\)/) skip = 0; next }
     { print }'
 }
 
-# Files of a recipe that changed beyond what sync-upstream rewrites.
+# Files of $1's recipe that changed beyond what a sync rewrites.
 recipe_changes() {
-  local dir=$1 file before after
+  local app=$1 file before after list names
+  list=$(hook_names "$app") || exit 1
+  read -ra names <<<"$list"
   while IFS= read -r file; do
     if [[ ${file##*/} == PKGBUILD ]]; then
-      before=$(g show "$pin:$file" 2>/dev/null | routine_free) || before=""
-      after=$(g show "$tip:$file" 2>/dev/null | routine_free) || after=""
+      before=$(blob_at "$pin" "$file" | routine_free "${names[@]}") || exit 1
+      after=$(blob_at "$tip" "$file" | routine_free "${names[@]}") || exit 1
       [[ $before == "$after" ]] && continue
     fi
     printf '%s\n' "$file"
-  done < <(g diff --no-renames --name-only "$pin" "$tip" -- "$dir")
+  done < <(g diff --no-renames --name-only "$pin" "$tip" -- "pkgbuilds/$app")
 }
 
 # Standard input in a fenced diff block, cut at $1 lines.
@@ -87,15 +149,18 @@ fenced() {
 }
 
 # The changes of a recipe's files. A PKGBUILD is compared without the lines
-# sync-upstream rewrites, so only the change that matters shows; git diff
-# --no-index needs no diffutils.
+# sync-upstream or the recipe's hook rewrites, so only the change that
+# matters shows; git diff --no-index needs no diffutils.
 recipe_diff() {
-  local file
+  local file app list names
   for file; do
     if [[ ${file##*/} == PKGBUILD ]]; then
+      app=${file#pkgbuilds/} app=${app%%/*}
+      list=$(hook_names "$app") || exit 1
+      read -ra names <<<"$list"
       mkdir -p "$work/old/${file%/*}" "$work/new/${file%/*}"
-      { g show "$pin:$file" 2>/dev/null || true; } | routine_free >"$work/old/$file"
-      { g show "$tip:$file" 2>/dev/null || true; } | routine_free >"$work/new/$file"
+      blob_at "$pin" "$file" | routine_free "${names[@]}" >"$work/old/$file" || exit 1
+      blob_at "$tip" "$file" | routine_free "${names[@]}" >"$work/new/$file" || exit 1
       (cd "$work" && git diff --no-index --no-color "old/$file" "new/$file") || true
     else
       g diff --no-renames --no-color "$pin" "$tip" -- "$file"
@@ -107,17 +172,97 @@ recipe_diff() {
 # sync-upstream would follow.
 watched_at_head() {
   local meta
-  meta=$(g show "$tip:pkgbuilds/$1/.omarchy/package.json" 2>/dev/null) || meta='{}'
+  meta=$(blob_at "$tip" "pkgbuilds/$1/.omarchy/package.json") || exit 1
+  [[ -n $meta ]] || meta='{}'
   jq -e '.sync == false' >/dev/null 2>&1 <<<"$meta" && return 1
-  g cat-file -e "$tip:pkgbuilds/$1/.omarchy/upstream.sh" 2>/dev/null && return 0
+  [[ -n $(g ls-tree --name-only "$tip" -- "pkgbuilds/$1/.omarchy/upstream.sh") ]] && return 0
   jq -e '.upstream' >/dev/null 2>&1 <<<"$meta"
 }
 
-runner=$(g diff --no-renames --name-only "$pin" "$tip" -- bin/sync-upstream helpers)
+# An extended regular expression that matches $1 as it is.
+# shellcheck disable=SC2001 # one bracket expression for every metacharacter
+ere_quote() { sed 's/[][\.*^$()+?{}|]/\\&/g' <<<"$1"; }
+
+# The files under bin/ and helpers/ an Update runs, one per line:
+# bin/sync-upstream and what it or a shipped app's hook names, followed
+# through the files named, at the pin and at $tip. Only code names a file;
+# comment lines are left out, as they name other tools to describe them
+# (package-metadata.sh: "bin/sync-rebuilds writes rebuilt_against"). A
+# helper is named as a path ("$BUILD_ROOT/helpers/paths.sh",
+# "${BASH_SOURCE[0]%/*}/upstream-watch.py") or, by a Python file, imported
+# (a module helpers/<name>.py, or every file of a package helpers/<name>/);
+# another bin/ file as "/bin/<name>", or by a file beside it as "}/<name>"
+# or ")/<name>". What nothing names that way is code Update never runs
+# (helpers/artifact-helpers.sh, which omarchy-pkgs' publish workflow
+# sources). A name this cannot see, one computed in code, makes every file
+# in helpers/ count: a path into helpers/ or beside the file whose last part
+# holds a $ or a *, or a Python file finding files from __file__, importlib,
+# __import__, runpy or a relative import. The files that did are written to
+# $work/computed. Not seen: a computed name under a directory held in a
+# variable ("$dir/$name"), which sync-upstream also uses for recipes. A file
+# that cannot be read is an error, not a file nobody names.
+update_code() {
+  local rev f h base sub queue helpers bins subs
+  local -A seen=() code=()
+  : >"$work/computed"
+  for rev in "$pin" "$tip"; do
+    mapfile -t helpers < <(g ls-tree -r --name-only "$rev" -- helpers)
+    mapfile -t bins < <(g ls-tree -r --name-only "$rev" -- bin)
+    mapfile -t subs < <(printf '%s\n' "${helpers[@]}" | sed -n 's|^helpers/\([^/]*\)/.*|\1|p' | sort -u)
+    queue=(bin/sync-upstream)
+    for app in "${apps[@]}"; do queue+=("pkgbuilds/$app/.omarchy/upstream.sh"); done
+    while (( ${#queue[@]} )); do
+      f=${queue[0]}
+      queue=("${queue[@]:1}")
+      [[ -z ${seen["$rev $f"]:-} ]] || continue
+      seen["$rev $f"]=1
+      [[ -n $(g ls-tree --name-only "$rev" -- "$f") ]] || continue
+      blob_at "$rev" "$f" >"$work/file" || exit 1
+      code_only "$work/file" "$work/code"
+      [[ $f == pkgbuilds/* ]] || code[$f]=1
+      if file_has '(helpers|%/[*][}]|[)])/[^/[:space:]"'"'"']*[$*]' "$work/code" \
+        || { [[ $f == *.py ]] && file_has '__file__|importlib|__import__|runpy|^[[:space:]]*from[[:space:]]+\.' "$work/code"; }; then
+        printf '%s\n' "$f" >>"$work/computed"
+        queue+=("${helpers[@]}")
+        continue
+      fi
+      for h in "${helpers[@]}"; do
+        base=$(ere_quote "${h##*/}")
+        if file_has "/$base([^A-Za-z0-9_.-]|\$)" "$work/code" \
+          || { [[ $f == *.py && $h == *.py && $h != helpers/*/* ]] \
+            && file_has "^[[:space:]]*(from|import)[[:space:]]+${base%\\.py}([^A-Za-z0-9_]|\$)" "$work/code"; }; then
+          queue+=("$h")
+        fi
+      done
+      if [[ $f == *.py ]]; then
+        for sub in "${subs[@]}"; do
+          file_has "^[[:space:]]*(from|import)[[:space:]]+$(ere_quote "$sub")([^A-Za-z0-9_]|\$)" "$work/code" || continue
+          for h in "${helpers[@]}"; do [[ $h != "helpers/$sub/"* ]] || queue+=("$h"); done
+        done
+      fi
+      for h in "${bins[@]}"; do
+        base=$(ere_quote "${h#bin/}")
+        if file_has "/bin/$base([^A-Za-z0-9_.-]|\$)" "$work/code" \
+          || { [[ $f == bin/* ]] && file_has "[})]/$base([^A-Za-z0-9_.-]|\$)" "$work/code"; }; then
+          queue+=("$h")
+        fi
+      done
+    done
+  done
+  (( ${#code[@]} )) || { echo "pin-watch: no bin/sync-upstream at the pin or on $branch" >&2; exit 1; }
+  printf '%s\n' "${!code[@]}" | LC_ALL=C sort
+}
+
+code_list=$(update_code)
+mapfile -t code <<<"$code_list"
+runner=$(g diff --no-renames --name-only "$pin" "$tip" -- "${code[@]}")
+helpers_changed=$(g diff --no-renames --name-only "$pin" "$tip" -- helpers)
+unrun=$(grep -vxF -f <(printf '%s\n' "${code[@]}") <<<"$helpers_changed" || true)
 changed=() changed_files=()
 for app in "${apps[@]}"; do
-  mapfile -t files < <(recipe_changes "pkgbuilds/$app")
-  (( ${#files[@]} )) || continue
+  list=$(recipe_changes "$app")
+  [[ -n $list ]] || continue
+  mapfile -t files <<<"$list"
   changed+=("$app")
   changed_files+=("${files[@]}")
 done
@@ -136,18 +281,42 @@ printf '<!-- pin-watch -->\n'
 printf 'pins.json pins omarchy-pkgs %s (%s). %s is %s (%s), %d commits ahead' \
   "$(link "$pin")" "$(day "$pin")" "$branch" "$(link "$tip")" "$(day "$tip")" "$(g rev-list --count "$pin..$tip")"
 if [[ -n $web ]]; then printf ': [compare](%s/compare/%s...%s).\n\n' "$web" "$pin" "$tip"; else printf '.\n\n'; fi
-printf 'Routine syncs (pkgver, pkgrel and checksums of a recipe) are left out: sync-upstream makes those on every Update anyway.\n'
+hooked=()
+for app in "${apps[@]}"; do
+  list=$(hook_names "$app")
+  read -ra names <<<"$list"
+  (( ${#names[@]} )) && hooked+=("$(printf '`%s` ' "${names[@]}")of $app")
+done
+printf 'Routine syncs are left out: a recipe'"'"'s pkgver, pkgrel and checksums, which sync-upstream rewrites on every Update anyway'
+if (( ${#hooked[@]} )); then printf ', and what the recipe'"'"'s own hook rewrites (%s)' "$(printf '%s, ' "${hooked[@]}" | sed 's/ *, $//')"; fi
+printf '.\n'
+if [[ -n $unrun ]]; then
+  # shellcheck disable=SC2086 # one path per line, none with blanks
+  printf '\nSo are changes to files in `helpers/` that nothing Update runs names, omarchy-pkgs'"'"' own build and publish tooling: %s.\n' \
+    "$(printf '`%s`, ' $unrun | sed 's/, $//')"
+fi
 
 if [[ -n $runner ]]; then
   printf '\n### Code Update runs\n\n'
-  printf 'Update runs `bin/sync-upstream` and its `helpers/` from the pinned commit. Changed since the pin:\n\n'
+  named=()
+  for f in "${code[@]}"; do [[ $f == bin/sync-upstream ]] || named+=("$f"); done
+  printf 'Update runs `bin/sync-upstream` from the pinned commit'
+  if (( ${#named[@]} )); then
+    printf ', with what it and the shipped apps'"'"' hooks name there or on %s: %s' "$branch" "$(printf '`%s`, ' "${named[@]}" | sed 's/, $//')"
+  fi
+  printf '.'
+  if [[ -s $work/computed ]]; then
+    printf ' Every file in `helpers/` counts, as %s finds files by a name computed in code.' \
+      "$(LC_ALL=C sort -u "$work/computed" | sed 's/.*/`&`/' | paste -sd, - | sed 's/,/, /g')"
+  fi
+  printf ' Changed since the pin:\n\n'
   # shellcheck disable=SC2086 # one path per line, none with blanks
   g diff --no-renames --no-color "$pin" "$tip" -- $runner | fenced 200
 fi
 
 if (( ${#changed[@]} )); then
   printf '\n### Recipes of the shipped apps\n\n'
-  printf 'Changed beyond a routine sync: %s. PKGBUILDs are shown without their pkgver, pkgrel and checksum lines.\n\n' \
+  printf 'Changed beyond a routine sync: %s. PKGBUILDs are shown without the lines a sync rewrites.\n\n' \
     "$(printf '`%s`, ' "${changed[@]}" | sed 's/, $//')"
   recipe_diff "${changed_files[@]}" | fenced 300
 fi
