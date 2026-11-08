@@ -1139,8 +1139,15 @@ user_command_version() {
 # redirects) is an error that names it, so that the feed gets fixed rather
 # than costing an API call on every check. Fails with the reason on
 # stderr.
+#
+# Without a token the API allows 60 calls an hour per IP address, shared by
+# everything here that calls it without one, mise in your terminal
+# included. So the fallback first asks /rate_limit, which GitHub does not
+# count against that limit, and leaves the last github_api_reserve calls
+# alone; when it cannot tell, it does not call.
+github_api_reserve=20
 github_latest_tag() {
-  local repo=$1 out code web rc=0
+  local repo=$1 out code web left rc=0
   out=$(fetch -sS -o /dev/null -w '%{http_code} %{redirect_url}' "https://github.com/$repo/releases/latest" 2>/dev/null) || rc=$?
   if (( rc == 0 )); then
     if [[ $out == 302\ https://github.com/*/releases/tag/* ]]; then
@@ -1160,7 +1167,23 @@ github_latest_tag() {
   else
     web="github.com could not be reached (curl exit $rc)"
   fi
-  # The body, then the status on a line of its own.
+  # Not the last of the API's calls (github_api_reserve). Each answer here
+  # is the body, then the status on a line of its own.
+  rc=0 left=""
+  out=$(fetch -sS -H 'Accept: application/vnd.github+json' -w '\n%{http_code}' \
+    "https://api.github.com/rate_limit" 2>/dev/null) || rc=$?
+  if (( rc == 0 )) && [[ ${out##*$'\n'} == 200 ]]; then
+    left=$(jq -r '.resources.core | objects | select((.remaining | type) == "number" and (.limit | type) == "number")
+      | "\(.remaining) \(.limit)"' <<<"${out%$'\n'*}" 2>/dev/null)
+  fi
+  if [[ ! $left =~ ^([0-9]+)\ ([0-9]+)$ ]]; then
+    echo "$web for $repo's latest release, and api.github.com did not say how many calls it has left, so Omabump did not ask it" >&2
+    return 1
+  fi
+  if (( BASH_REMATCH[1] < github_api_reserve )); then
+    echo "$web for $repo's latest release; api.github.com has ${BASH_REMATCH[1]} of its ${BASH_REMATCH[2]} calls an hour left here, which Omabump leaves to you" >&2
+    return 1
+  fi
   rc=0
   out=$(fetch -sS -H 'Accept: application/vnd.github+json' -w '\n%{http_code}' \
     "https://api.github.com/repos/$repo/releases/latest" 2>/dev/null) || rc=$?

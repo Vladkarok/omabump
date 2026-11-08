@@ -2,7 +2,8 @@
 
 ## 0.1.9 (2026-11-08)
 
-- A GitHub release feed (T3 Code, Hermes, voxtype, Omabump itself) no longer fails the check when github.com's release pages fail. On 2026-11-08 they answered 504 for minutes, cached at GitHub's edge, while the REST API answered: a feed now asks the API's latest release when the `/releases/latest` page gives no answer, a 5xx, a 403 or a 429, one unauthenticated call. The error no longer reads "has no latest release (504)" for a page that failed: it names what github.com and the API answered.
+- A GitHub release feed (T3 Code, Hermes, voxtype, Omabump itself) no longer fails the check when github.com's release pages fail. On 2026-11-08 they answered 504 for minutes, cached at GitHub's edge, while the REST API answered: a feed now asks the API's latest release when the `/releases/latest` page gives no answer, a 5xx, a 403 or a 429, one unauthenticated call. Those 60 calls an hour per address are shared with everything else here that calls the API without a token, mise in your terminal included, so the fallback first reads `/rate_limit` (not counted) and leaves the last 20 alone. The error no longer reads "has no latest release (504)" for a page that failed: it names what github.com and the API answered.
+- The README's new "GitHub API calls" section lists every call Omabump makes to GitHub's API and when.
 
 ## 0.1.8 (2026-11-02)
 

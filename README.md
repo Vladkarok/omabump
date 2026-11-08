@@ -279,6 +279,16 @@ Update additionally contacts:
 
 No other host, no telemetry.
 
+### GitHub API calls
+
+Without a token GitHub's REST API allows 60 calls an hour per IP address, shared by everything on the machine (and behind the same NAT) that calls it without one, mise in your terminal included; calls with a token count against your account's own 5,000 an hour instead. Omabump sends no token of its own: mise sends the one you gave it, and `bin/sync-upstream` sends `UPSTREAM_GITHUB_TOKEN` when your environment has it. What it calls:
+
+- mise rows: the check's `mise outdated` asks the API for the newest release of each installed tool whose versions come from GitHub (aqua and github backends, such as Claude Code, Codex, Crush and herdr), and mise caches each answer for an hour: about one call per such tool an hour, however often the panel checks. Tools from npm (OpenCode) or a vendor's site ask those instead. If you gave mise a token (`github.credential_command` or `GITHUB_TOKEN`), its calls count against your account. Update installs through mise's versions host, which needs no call while it answers; it calls the API when that host fails, when you turned the host off (`use_versions_host = false`), and when a lockfile keeps the old version and Update runs `mise up`.
+- GitHub release feeds (T3 Code, Hermes, voxtype, Omabump itself): none, since the `/releases/latest` page is not the API. Only when github.com does not answer that page, or answers it with a 5xx, 403 or 429, does a feed ask the API: one call, and only while at least 20 of the hour's calls are left, which it reads first from `/rate_limit` (GitHub does not count that against the limit). With fewer left, or no answer about them, the row says so and the check tries again later.
+- Update of voxtype-bin: `bin/sync-upstream` asks the API for the release list, one call, when you press Update.
+
+When the limit runs out, GitHub answers 403 or 429 until the hour is over. Omabump then shows the check as failed and tries once more five minutes later, not again until the next check.
+
 ## Remove
 
 ```sh

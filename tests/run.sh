@@ -852,8 +852,11 @@ rm -f "$user_apps"
 same "installed_app: the self row reads manifest.json" "self omabump $(jq -r .version "$root/manifest.json")" "$(installed_app "$self_app")"
 echo '302 https://github.com/vladkarok/omabump/releases/tag/v0.2.0' >"$scratch/served/latest"
 same "the self row's newest version from the release redirect" 0.2.0 "$(feed_version "$self_app")"
-# What the API would answer if it were asked: a 404 or a 302 elsewhere on
-# github.com means no release, and the API is not asked.
+# What the API would answer if it were asked, with 47 of its 60 calls an
+# hour left: a 404 or a 302 elsewhere on github.com means no release, and
+# the API is not asked.
+api_left() { printf '{"resources": {"core": {"limit": 60, "remaining": %s, "used": 0}}}\n200' "$1" >"$scratch/served/api-rate_limit"; }
+api_left 47
 printf '{"tag_name": "v0.3.0"}\n200' >"$scratch/served/api-latest"
 echo '404 ' >"$scratch/served/latest"
 refuse "the self row: no release is a feed error" feed_version "$self_app"
@@ -874,6 +877,24 @@ feed_version "$self_app" >/dev/null
 same "github-release: the API is asked for its JSON, without -f" \
   "-sS -H Accept: application/vnd.github+json -w \n%{http_code} https://api.github.com/repos/vladkarok/omabump/releases/latest" \
   "$(cat "$scratch/fetched")"
+# The fallback leaves the API's last github_api_reserve calls alone, and
+# does not call when it cannot tell how many are left.
+echo '504 ' >"$scratch/served/latest"
+api_left "$github_api_reserve"
+same "github-release: with $github_api_reserve calls left, the API is asked" 0.3.0 "$(feed_version "$self_app")"
+api_left $(( github_api_reserve - 1 ))
+same "github-release: with fewer, it is not, and the error says why" \
+  "github.com answered 504 for vladkarok/omabump's latest release; api.github.com has $(( github_api_reserve - 1 )) of its 60 calls an hour left here, which Omabump leaves to you|https://api.github.com/rate_limit" \
+  "$(feed_version "$self_app" 2>&1 >/dev/null)|$(awk '{print $NF}' "$scratch/fetched")"
+for doc in '{"resources": {"core": {"limit": 60}}}\n200' '{"resources": {"core": {"limit": 60, "remaining": "47"}}}\n200' \
+  '{"resources": {"core": {"limit": 60, "remaining": -1}}}\n200' '{"resources": null}\n200' '[]\n200' 'not json\n200' \
+  '{"resources": {"core": {"limit": 60, "remaining": 47}}}\n403' ''; do
+  if [[ -n $doc ]]; then printf %b "$doc" >"$scratch/served/api-rate_limit"; else rm -f "$scratch/served/api-rate_limit"; fi
+  same "github-release: no count from /rate_limit's $(jq -Rsc . <<<"$doc"), the API is not asked" \
+    "github.com answered 504 for vladkarok/omabump's latest release, and api.github.com did not say how many calls it has left, so Omabump did not ask it|https://api.github.com/rate_limit" \
+    "$(feed_version "$self_app" 2>&1 >/dev/null)|$(awk '{print $NF}' "$scratch/fetched")"
+done
+api_left 47
 # Any other answer from github.com is an error that names it, without the
 # API: a repo that moved, a page that no longer redirects.
 for web in '301 https://github.com/other/omabump/releases/latest' '200 ' '400 '; do
@@ -902,7 +923,7 @@ rm -f "$scratch/served/api-latest"
 same "github-release: no answer from the API either" \
   "github.com answered 504 and api.github.com could not be reached (curl exit 22) for vladkarok/omabump's latest release" \
   "$(feed_version "$self_app" 2>&1 >/dev/null)"
-rm -f "$scratch/served/latest"
+rm -f "$scratch/served/latest" "$scratch/served/api-rate_limit"
 real_plugins=$plugins_dir real_plugin_dir=$plugin_dir
 plugins_dir=$scratch/plugins
 mkdir -p "$plugins_dir"
