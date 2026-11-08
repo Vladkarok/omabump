@@ -202,6 +202,8 @@ mise_key_load() {
         *) return 1 ;;
       esac
     }
+    # GitHub's API with all its calls left: mise_github_reserve keeps both.
+    github_api_left() { echo '60 60'; }
     app_table='[{"pkg": "mise:a", "source": "mise", "tool": "a"}, {"pkg": "mise:b", "source": "mise", "tool": "b"}]'
     mise_load 1 "$@" )
   grep '^outdated' "$mise_log"
@@ -210,6 +212,75 @@ same "mise_load: every selected key for the check" $'outdated --json -- a b\nout
 same "mise_load: only the given key for an Update" $'outdated --json -- b\noutdated --bump --json -- b' "$(mise_key_load b)"
 same "mise_load: a key no row selected asks nothing" '' "$(mise_key_load c)"
 check "the installer's Update loads mise for its tool only" grep -q '^  mise_load 1 "$tool"$' "$root/bin/omabump-install"
+
+# A check leaves GitHub's last API calls to you (mise_github_reserve). b's
+# versions come from GitHub and a's do not, unless reserve_gh says what
+# mise lists on GitHub's backends ("fail": it cannot list them). GitHub's
+# API has reserve_left of its calls left ("" when it does not say), mise's
+# settings are reserve_settings, reserve_only is the key an Update asks
+# about, and reserve_env sets the environment. Prints the outdated calls
+# and "rate" for each read of /rate_limit, then each row's error.
+mkdir -p "$scratch/gh"
+reserve_load() {
+  : >"$mise_log"
+  ( unset MISE_GITHUB_TOKEN GITHUB_API_TOKEN GITHUB_TOKEN
+    export GH_CONFIG_DIR=$scratch/gh
+    [[ -z ${reserve_env:-} ]] || export "${reserve_env?}"
+    mise() { :; }
+    mise_run() {
+      printf '%s\n' "$*" >>"$mise_log"
+      case $* in
+        "ls --json") echo '{"a": [{"version": "1", "active": true}], "b": [{"version": "2", "active": true}]}' ;;
+        "ls --json --backend aqua --backend github --backend ubi")
+          [[ $reserve_gh != fail ]] || return 1
+          echo "$reserve_gh" ;;
+        "ls --json --backend"*) echo '{"a": [], "b": []}' ;;
+        "settings ls --all --json") echo "$reserve_settings" ;;
+        outdated*) echo '{}' ;;
+        *) return 1 ;;
+      esac
+    }
+    github_api_left() { echo rate >>"$mise_log"; [[ -n $reserve_left ]] && echo "$reserve_left"; }
+    app_table='[{"pkg": "mise:a", "source": "mise", "tool": "a"}, {"pkg": "mise:b", "source": "mise", "tool": "b"}]'
+    # shellcheck disable=SC2086 # no key, or one
+    mise_load 1 ${reserve_only:-}
+    grep -x 'rate\|outdated --json -- .*' "$mise_log" | paste -sd'|' -
+    for key in a b; do mise_row "$key" 1; echo "$key: $feed_error"; done | paste -sd'|' - )
+}
+reserve_case() { reserve_left=$1 reserve_settings=${2:-'{}'} reserve_gh=${3:-'{"b": []}'} reserve_only=${4:-} reserve_env=${5:-} reserve_load; }
+held_b="b: GitHub's API has 19 of its 60 calls an hour left here, which Omabump leaves to you, so mise was not asked about b"
+held_a="a: GitHub's API has 19 of its 60 calls an hour left here, which Omabump leaves to you, so mise was not asked about a"
+same "mise_load: with enough of GitHub's calls left, every key" $'rate|outdated --json -- a b\na: |b: ' "$(reserve_case '20 60')"
+same "mise_load: with fewer, not the key whose versions come from GitHub, and its row says why" \
+  $'rate|outdated --json -- a\na: |'"$held_b" "$(reserve_case '19 60')"
+same "mise_load: when GitHub does not say, not that key either" \
+  $'rate|outdated --json -- a\na: |b: GitHub\'s API did not say how many calls it has left here, so mise was not asked about b' \
+  "$(reserve_case '')"
+same "mise_load: with every key on GitHub's backends held, no outdated call at all" $'rate\n'"$held_a|$held_b" \
+  "$(reserve_case '19 60' '{}' '{"a": [], "b": []}')"
+same "mise_load: when mise cannot list GitHub's backends, every key counts as GitHub's" 'rate' \
+  "$(reserve_case '19 60' '{}' fail | head -1)"
+same "mise_load: no key on GitHub's backends, /rate_limit not read" $'outdated --json -- a b\na: |b: ' "$(reserve_case '19 60' '{}' '{}')"
+same "mise_load: an Update asks about its own key, whatever is left" $'outdated --json -- b\na: |b: ' "$(reserve_case '19 60' '{}' '{"b": []}' b)"
+same "mise_row: a held key says why, even when outdated failed for the rest" "$held_b" \
+  "$( (set -euo pipefail; mise_safe_json='{"b": true}' mise_error="mise outdated failed: boom" mise_bump_error=""
+      mise_outdated_json='{}' mise_bump_json='{}' mise_fetch_failed=()
+      mise_held=([b]="GitHub's API has 19 of its 60 calls an hour left here, which Omabump leaves to you, so mise was not asked about b")
+      mise_row b 1; echo "b: $feed_error") )"
+for token in MISE_GITHUB_TOKEN=x GITHUB_API_TOKEN=x GITHUB_TOKEN=x; do
+  same "mise_load: mise sends your token ($token): every key, /rate_limit not read" $'outdated --json -- a b\na: |b: ' \
+    "$(reserve_case '19 60' '{}' '{"b": []}' '' "$token")"
+done
+for settings in '{"github": {"credential_command": "gh auth token"}}' '{"github": {"use_git_credentials": true}}'; do
+  same "mise_load: mise has a token from $settings: every key" $'outdated --json -- a b\na: |b: ' "$(reserve_case '19 60' "$settings")"
+done
+printf 'github.com:\n    oauth_token: x\n    user: u\n' >"$scratch/gh/hosts.yml"
+same "mise_load: gh keeps its token in hosts.yml, which mise reads: every key" $'outdated --json -- a b\na: |b: ' "$(reserve_case '19 60')"
+same "mise_load: unless mise does not read gh's (gh_cli_tokens false)" $'rate|outdated --json -- a\na: |'"$held_b" \
+  "$(reserve_case '19 60' '{"github": {"gh_cli_tokens": false}}')"
+printf 'github.com:\n    git_protocol: https\n    user: u\n' >"$scratch/gh/hosts.yml"
+same "mise_load: gh's token in the keyring, which mise does not read: held" $'rate|outdated --json -- a\na: |'"$held_b" "$(reserve_case '19 60')"
+rm -rf "$scratch/gh"
 
 # --- the backends mise is told to disable -------------------------------------------
 

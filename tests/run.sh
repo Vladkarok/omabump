@@ -22,10 +22,11 @@ eval "$(declare -f mise_run | sed '1s/^mise_run/real_mise_run/')"
 
 # Stubs. fetch serves $scratch/served/<basename of the last argument>, or
 # api-<basename> for a URL on api.github.com, and leaves its arguments in
-# $scratch/fetched.
+# $scratch/fetched and adds them to $scratch/fetch.log.
 fetch() {
   local url=${*: -1} name
   printf '%s\n' "$*" >"$scratch/fetched"
+  printf '%s\n' "$*" >>"$scratch/fetch.log"
   name=${url##*/}
   [[ $url != https://api.github.com/* ]] || name=api-$name
   [[ -f $scratch/served/$name ]] || return 22
@@ -634,6 +635,7 @@ mise_run() {
       "d":[{"version":"4.0","installed":false,"active":true}],"e":[{"version":"5.0","installed":true,"active":true}]}' ;;
     "ls --json --backend aqua --backend github --backend gitlab --backend forgejo --backend npm --backend http --backend ubi --backend pipx --backend cargo")
       [[ -z ${mise_fail_backend:-} ]] || return 1; echo '{"a":[],"npm:a":[],"b":[],"e":[]}' ;;
+    "ls --json --backend aqua --backend github --backend ubi") echo '{"a":[],"b":[]}' ;;
     "outdated --json -- "*) [[ -z ${mise_fail_outdated:-} ]] || { echo "boom" >&2; return 1; }
       [[ -z ${mise_fail_silent:-} ]] || return 124
       # Offline, mise warns per tool and answers {} with exit 0.
@@ -648,12 +650,24 @@ mise_run() {
 }
 # shellcheck disable=SC2329 # mise_load checks for it with command -v
 mise() { :; }
+# GitHub's API with all its calls left, so that mise_github_reserve keeps a
+# (the github-release tests below set their own).
+printf '{"resources": {"core": {"limit": 60, "remaining": 60}}}\n200' >"$scratch/served/api-rate_limit"
 reset_mise() { : >"$mise_calls"; mise_ls_json='{}' mise_safe_json='{}' mise_outdated_json='{}' mise_bump_json='{}' mise_error="" mise_bump_error="" mise_backend_error=""; }
 load_table; reset_mise
 mise_load 1
 same "mise: outdated and bump name only the selected keys on safe backends, after --" \
   $'outdated --json -- a e\noutdated --bump --json -- a e' "$(grep '^outdated' "$mise_calls")"
-same "mise: one ls for all allowed backends plus the inventory" 2 "$(grep -c '^ls' "$mise_calls")"
+same "mise: one ls for all allowed backends, one for GitHub's, plus the inventory" 3 "$(grep -c '^ls' "$mise_calls")"
+# In a check's run, what mise may spend is counted against the run's
+# /rate_limit answer: one key on GitHub's backends (a) of the two asked.
+run_tmp=$scratch/mise-run
+mkdir -p "$run_tmp"
+reset_mise
+mise_load 1
+same "mise: a check counts its GitHub-backed keys against the calls left" '59 60' "$(cat "$run_tmp/github-api-left")"
+rm -rf "$run_tmp"
+run_tmp=""
 row() { mise_row "$1" "$2"; echo "${latest}|${installable}|${mise_update}|${note}|${feed_error}"; }
 same "mise_row: a checked key is not unchecked" false "$(mise_row e 5.0; echo "$unchecked")"
 same "mise_row: a key on no allowed backend is unchecked" true "$(mise_row asdf:c 3.0; echo "$unchecked")"
@@ -923,7 +937,29 @@ rm -f "$scratch/served/api-latest"
 same "github-release: no answer from the API either" \
   "github.com answered 504 and api.github.com could not be reached (curl exit 22) for vladkarok/omabump's latest release" \
   "$(feed_version "$self_app" 2>&1 >/dev/null)"
-rm -f "$scratch/served/latest" "$scratch/served/api-rate_limit"
+# One check reads /rate_limit once (github_api_left keeps the answer in the
+# run's scratch directory, whose feeds run in subshells) and counts each
+# fallback against it.
+run_tmp=$scratch/feed-run
+mkdir -p "$run_tmp"
+echo '504 ' >"$scratch/served/latest"
+api_left 47
+printf '{"tag_name": "v0.3.0"}\n200' >"$scratch/served/api-latest"
+: >"$scratch/fetch.log"
+same "github-release: one check reads /rate_limit once and counts each fallback" '0.3.0|0.3.0|1|45 60' \
+  "$(feed_version "$self_app")|$(feed_version "$self_app")|$(grep -c 'rate_limit$' "$scratch/fetch.log")|$(cat "$run_tmp/github-api-left")"
+api_left 20
+rm -f "$run_tmp/github-api-left"
+same "github-release: with 20 left, one fallback, then the reserve" \
+  "0.3.0|github.com answered 504 for vladkarok/omabump's latest release; api.github.com has 19 of its 60 calls an hour left here, which Omabump leaves to you" \
+  "$(feed_version "$self_app")|$(feed_version "$self_app" 2>&1 >/dev/null)"
+rm -f "$run_tmp/github-api-left" "$scratch/served/api-rate_limit"
+: >"$scratch/fetch.log"
+same "github-release: no answer from /rate_limit is kept too: asked once" 1 \
+  "$(feed_version "$self_app" 2>/dev/null; feed_version "$self_app" 2>/dev/null; grep -c 'rate_limit$' "$scratch/fetch.log")"
+rm -rf "$run_tmp"
+run_tmp=""
+rm -f "$scratch/served/latest" "$scratch/served/api-rate_limit" "$scratch/fetch.log"
 real_plugins=$plugins_dir real_plugin_dir=$plugin_dir
 plugins_dir=$scratch/plugins
 mkdir -p "$plugins_dir"

@@ -548,17 +548,35 @@ mise_run() {
 # mise's own settings, as `mise settings ls --all --json` gives them, your
 # environment's MISE_* included, read once per run by mise_load:
 # disable_backends and disable_tools (lists) into mise_user_backends and
-# mise_user_tools, and use_versions_host into mise_user_host (false only
-# when you turned it off). A mise that cannot answer leaves them out.
-mise_user_host=true
+# mise_user_tools, use_versions_host into mise_user_host (false only when
+# you turned it off), and for mise_github_token whether a
+# github.credential_command or github.use_git_credentials gives it a token
+# (mise_user_github_auth) and whether it reads gh's (github.gh_cli_tokens,
+# on by default: mise_user_gh_tokens). A mise that cannot answer leaves
+# them out.
+mise_user_host=true mise_user_github_auth=false mise_user_gh_tokens=true
 mise_backends_load() {
   local out
-  mise_user_backends="" mise_user_tools="" mise_user_host=true
+  mise_user_backends="" mise_user_tools="" mise_user_host=true mise_user_github_auth=false mise_user_gh_tokens=true
   out=$(mise_run settings ls --all --json 2>/dev/null) || return 0
-  IFS=$'\x1f' read -r mise_user_backends mise_user_tools mise_user_host < <(jq -r '
+  IFS=$'\x1f' read -r mise_user_backends mise_user_tools mise_user_host mise_user_github_auth mise_user_gh_tokens < <(jq -r '
     def names: if type == "array" then map(strings) | join(",") else strings // "" end;
-    [(.disable_backends | names), (.disable_tools | names), (.use_versions_host != false | tostring)]
-    | join("\u001f")' <<<"$out" 2>/dev/null) || mise_user_host=true
+    [(.disable_backends | names), (.disable_tools | names), (.use_versions_host != false | tostring),
+     ((.github.credential_command? | strings // "") != "" or .github.use_git_credentials? == true | tostring),
+     (.github.gh_cli_tokens? != false | tostring)]
+    | join("\u001f")' <<<"$out" 2>/dev/null) || { mise_user_host=true mise_user_github_auth=false mise_user_gh_tokens=true; }
+}
+
+# True when mise sends GitHub a token of yours, so that its calls count
+# against your account's 5,000 an hour rather than this address's 60: one
+# in its environment (MISE_GITHUB_TOKEN, GITHUB_API_TOKEN, GITHUB_TOKEN), a
+# credential command or git's credentials (mise_user_github_auth), or gh's
+# where gh keeps it in its hosts.yml; gh's default is the keyring, which
+# mise does not read.
+mise_github_token() {
+  [[ -n ${MISE_GITHUB_TOKEN:-}${GITHUB_API_TOKEN:-}${GITHUB_TOKEN:-} || $mise_user_github_auth == true ]] && return 0
+  [[ $mise_user_gh_tokens == true ]] \
+    && grep -qs '^[[:space:]]*oauth_token:' "${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh}/hosts.yml"
 }
 
 # The tools your mise config names that are not installed, into
@@ -606,6 +624,9 @@ mise_error="" mise_bump_error="" mise_backend_error="" mise_inventory_error="" m
 # rate limited) and still exits 0; only a warning on stderr names the tool.
 # Those keys, with mise's reason, so such a row never reads as current.
 declare -gA mise_fetch_failed=()
+# The keys a check did not ask about, to leave GitHub's last API calls to
+# you (mise_github_reserve), with the reason.
+declare -gA mise_held=()
 
 # The first line of a mise error, colours and warnings dropped. mise can
 # fail with nothing on stderr (killed by its timeout), so this never fails:
@@ -719,11 +740,47 @@ mise_backend_name() {
   echo "${full#*:}"
 }
 
+# Leaves GitHub's last API calls to you (github_api_reserve): unless mise
+# sends a token of yours (mise_github_token), the check does not ask mise
+# about its tools whose versions come from GitHub (the aqua, github and ubi
+# backends, read offline) while GitHub's API has fewer than that many
+# unauthenticated calls left for this address, or does not say. Those keys
+# leave mise_query for mise_held, and their rows keep what the last check
+# found and say why (mise_row). When the backends cannot be read, every
+# key counts as GitHub's.
+mise_github_reserve() {
+  local out key why left n limit gh=() rest=()
+  mise_github_token && return 0
+  if ! out=$(mise_offline=1 mise_run ls --json --backend aqua --backend github --backend ubi 2>/dev/null) \
+    || ! out=$(jq -r 'if type == "object" then keys[] else error("not an object") end' <<<"$out" 2>/dev/null); then
+    out=$(printf '%s\n' "${mise_query[@]}")
+  fi
+  for key in "${mise_query[@]}"; do
+    if grep -qxF -- "$key" <<<"$out"; then gh+=("$key"); else rest+=("$key"); fi
+  done
+  (( ${#gh[@]} )) || return 0
+  if left=$(github_api_left); then
+    read -r n limit <<<"$left"
+    # One call per key for a `latest` request, cached by mise for an hour;
+    # a pinned or ranged one lists the tool's releases, a few calls more,
+    # which the reserve takes up.
+    if (( n >= github_api_reserve )); then
+      github_api_spend "${#gh[@]}"
+      return 0
+    fi
+    why="GitHub's API has $n of its $limit calls an hour left here, which Omabump leaves to you"
+  else
+    why="GitHub's API did not say how many calls it has left here"
+  fi
+  for key in "${gh[@]}"; do mise_held[$key]="$why, so mise was not asked about $key"; done
+  mise_query=("${rest[@]}")
+}
+
 # $2, when given, is the one key to ask outdated about (an Update asks about
 # its own tool only); it must still be one mise_select chose.
 mise_load() {
   local out err only=${2:-} key all
-  mise_fetch_failed=()
+  mise_fetch_failed=() mise_held=()
   command -v mise >/dev/null || return 0
   mise_backends_load
   mise_inventory
@@ -735,6 +792,9 @@ mise_load() {
     all=("${mise_query[@]}") mise_query=()
     for key in "${all[@]}"; do [[ $key != "$only" ]] || mise_query=("$key"); done
   fi
+  (( ${#mise_query[@]} )) || return 0
+  # An Update you asked for may spend GitHub's last calls; a check may not.
+  [[ -n $only ]] || mise_github_reserve
   (( ${#mise_query[@]} )) || return 0
   mkdir -p "$cache_dir"
   err=$(mktemp "${run_tmp:-$cache_dir}/.mise.XXXXXX")
@@ -800,6 +860,8 @@ mise_row() {
   if ! mise_key_safe "$key"; then
     installable=false from="" unchecked=true
     note=$(mise_skip_note "$key")
+  elif [[ -n ${mise_held[$key]:-} ]]; then
+    feed_error=${mise_held[$key]}
   elif [[ -n $mise_error ]]; then
     feed_error=$mise_error
   elif [[ -n ${mise_fetch_failed[$key]:-} ]]; then
@@ -1146,6 +1208,42 @@ user_command_version() {
 # count against that limit, and leaves the last github_api_reserve calls
 # alone; when it cannot tell, it does not call.
 github_api_reserve=20
+
+# How many of its unauthenticated calls an hour GitHub's REST API has left
+# for this address, and that limit, as "<left> <limit>", from /rate_limit,
+# which GitHub does not count against the limit. Fails when GitHub does not
+# say. A check asks once: its feeds run in subshells, so the answer, or
+# that there was none, waits in the run's scratch directory for the next
+# caller, and an API that times out costs the run one wait, not one per
+# feed.
+github_api_left() {
+  local out left="" rc=0 memo=${run_tmp:+$run_tmp/github-api-left}
+  if [[ -n $memo && -f $memo ]]; then
+    left=$(<"$memo")
+  else
+    out=$(fetch -sS -H 'Accept: application/vnd.github+json' -w '\n%{http_code}' \
+      "https://api.github.com/rate_limit" 2>/dev/null) || rc=$?
+    if (( rc == 0 )) && [[ ${out##*$'\n'} == 200 ]]; then
+      left=$(jq -r '.resources.core | objects | select((.remaining | type) == "number" and (.limit | type) == "number")
+        | "\(.remaining) \(.limit)"' <<<"${out%$'\n'*}" 2>/dev/null)
+    fi
+    [[ $left =~ ^[0-9]+\ [0-9]+$ ]] || left=""
+    [[ -z $memo ]] || printf '%s\n' "$left" >"$memo"
+  fi
+  [[ -n $left ]] || return 1
+  echo "$left"
+}
+
+# Counts $1 calls about to be spent against what github_api_left keeps for
+# the run, so that the next caller in it sees them gone.
+github_api_spend() {
+  local memo=${run_tmp:+$run_tmp/github-api-left} n="" limit=""
+  [[ -n $memo && -s $memo ]] || return 0
+  read -r n limit <"$memo" || true
+  [[ $n =~ ^[0-9]+$ && $limit =~ ^[0-9]+$ ]] || return 0
+  printf '%s %s\n' "$(( n > $1 ? n - $1 : 0 ))" "$limit" >"$memo"
+}
+
 github_latest_tag() {
   local repo=$1 out code web left rc=0
   out=$(fetch -sS -o /dev/null -w '%{http_code} %{redirect_url}' "https://github.com/$repo/releases/latest" 2>/dev/null) || rc=$?
@@ -1167,23 +1265,17 @@ github_latest_tag() {
   else
     web="github.com could not be reached (curl exit $rc)"
   fi
-  # Not the last of the API's calls (github_api_reserve). Each answer here
-  # is the body, then the status on a line of its own.
-  rc=0 left=""
-  out=$(fetch -sS -H 'Accept: application/vnd.github+json' -w '\n%{http_code}' \
-    "https://api.github.com/rate_limit" 2>/dev/null) || rc=$?
-  if (( rc == 0 )) && [[ ${out##*$'\n'} == 200 ]]; then
-    left=$(jq -r '.resources.core | objects | select((.remaining | type) == "number" and (.limit | type) == "number")
-      | "\(.remaining) \(.limit)"' <<<"${out%$'\n'*}" 2>/dev/null)
-  fi
-  if [[ ! $left =~ ^([0-9]+)\ ([0-9]+)$ ]]; then
+  # Not the last of the API's calls (github_api_reserve).
+  if ! left=$(github_api_left); then
     echo "$web for $repo's latest release, and api.github.com did not say how many calls it has left, so Omabump did not ask it" >&2
     return 1
   fi
-  if (( BASH_REMATCH[1] < github_api_reserve )); then
-    echo "$web for $repo's latest release; api.github.com has ${BASH_REMATCH[1]} of its ${BASH_REMATCH[2]} calls an hour left here, which Omabump leaves to you" >&2
+  if (( ${left%% *} < github_api_reserve )); then
+    echo "$web for $repo's latest release; api.github.com has ${left%% *} of its ${left#* } calls an hour left here, which Omabump leaves to you" >&2
     return 1
   fi
+  github_api_spend 1
+  # The body, then the status on a line of its own.
   rc=0
   out=$(fetch -sS -H 'Accept: application/vnd.github+json' -w '\n%{http_code}' \
     "https://api.github.com/repos/$repo/releases/latest" 2>/dev/null) || rc=$?
