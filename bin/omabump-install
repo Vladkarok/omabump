@@ -503,15 +503,59 @@ check_target() {
   refuse "$msg; nothing to do"
 }
 
+# pacman installs each file with the numeric owner its package records and
+# looks up no names. makepkg records whatever package() left under fakeroot,
+# so a vendor archive unpacked there without --no-same-owner keeps the IDs
+# of the machine that made it, and so does a vendor's own package built that
+# way. On your machine uid 1001 is the second account, which could then
+# replace those files. So every file must be owned by root, in root's group
+# or in one Arch's own packages use with a fixed ID: tty (5), ftp (11),
+# games (50). omarchy-pkgs' builds refuse packages that break this rule since
+# 98353c6b (helpers/package-owners.sh), but Update builds a newer release
+# than theirs, on your machine. Prints up to 3 entries that break the rule as
+# "<uid>:<gid> <path>", then how many more; fails with 1 when one does, with
+# 2 when the package cannot be listed. The listing goes through a pipe, never
+# a temporary file: one bash could not write would read as no entry at all.
+package_owner_gids="0 5 11 50"
+foreign_owners() {
+  local bad
+  # bsdtar -tv prints one line per entry (it escapes a newline in a name):
+  # mode, links, uid, gid, size, three date fields, path.
+  bad=$(set -o pipefail
+    bsdtar -tvf "$1" --numeric-owner 2>/dev/null | awk -v gids="$package_owner_gids" '
+      BEGIN { n = split(gids, l, " "); for (i = 1; i <= n; i++) ok[l[i]] = 1 }
+      $3 != "0" || !($4 in ok) {
+        if (++bad <= 3) { path = $0; for (i = 1; i <= 8; i++) sub(/^ *[^ ]+ +/, "", path); print $3 ":" $4 " " path }
+      }
+      END { if (bad > 3) print "and " bad - 3 " more" }') || return 2
+  [[ -z $bad ]] && return 0
+  printf '%s\n' "$bad" | term_safe
+  return 1
+}
+
+# Refuses package $1 ("<name> <full version>" $2) when foreign_owners finds
+# an entry it does not take; $3 says where the package stays. $4, when set,
+# is a staged copy to remove first.
+require_root_owners() {
+  local owners rc=0
+  owners=$(foreign_owners "$1") || rc=$?
+  (( rc == 0 )) && return 0
+  [[ -z ${4:-} ]] || unstage "$4"
+  (( rc == 1 )) || die "could not list the files of $1 to check who owns them; not installing"
+  refuse "$2 has files that pacman would install with an owner other than root:"$'\n'"  ${owners//$'\n'/$'\n'  }"$'\n'"On this machine those IDs can belong to another account, which could then replace the files. Not installing (omarchy-pkgs refuses such packages too); $3"
+}
+
 # pacman -U reads the package from a root-owned copy: the verified file in
 # the user's cache could otherwise be swapped by any process running as the
 # user between the last check and the moment pacman opens it. The copy is
-# checked again (digest when $3/$4 give one, name and full version always),
-# and pacman asks before it installs. Once pacman is done the copy goes,
-# whether it installed or not (packages can be gigabytes), and so does one
-# a stopped run leaves (on_exit, or, when it cannot or sudo or pacman was
-# still running, the next Update: clear_staged_left); only a copy that
-# fails its check stays, and the message says where. Nothing is staged
+# checked again (digest when $3/$4 give one, name and full version always,
+# and who owns its files: foreign_owners), and pacman asks before it
+# installs. Once pacman is done the copy goes, whether it installed or not
+# (packages can be gigabytes), and so does one a stopped run leaves (on_exit,
+# or, when it cannot or sudo or pacman was still running, the next Update:
+# clear_staged_left), and one require_root_owners refuses (the copy is
+# faithful, the package is what is refused); only a copy that fails its
+# digest or version check stays, and the message says where. Nothing is staged
 # while pacman's lock file is there: pacman -U could not take the lock, and
 # the pacman holding it may be one an earlier run left at its prompt, about
 # to read a copy of the same name that this run would overwrite and then
@@ -526,6 +570,7 @@ stage_and_install() {
     echo "Would run: sudo install -o root -g root -m 0644 -D /dev/stdin $staged <$file"
     [[ -z $algo ]] || echo "Would check: ${algo}sum of $staged is $want"
     echo "Would check: pacman -Qp $staged is $expect"
+    echo "Would check: every file in $staged is owned by root, in group root, tty, ftp or games"
     echo "Would run: sudo pacman -U -- $staged (pacman asks before it installs)"
     echo "Would run: sudo rm -f -- $staged (whether pacman installed it or not)"
     return 0
@@ -552,6 +597,7 @@ stage_and_install() {
   fi
   line=$(pacman -Qp -- "$staged") || { staged_copy=""; die "cannot read $staged; not installing (the copy stays there)"; }
   [[ $line == "$expect" ]] || { staged_copy=""; die "the staged copy is '$line', expected '$expect'; not installing (the copy stays in $staged)"; }
+  require_root_owners "$staged" "$expect" "the package stays in $file" "$staged"
   echo "Staged copy checked: $staged"
   # pacman asks "Proceed with installation?": that prompt is where you can
   # still stop. sudo need not ask for a password, makepkg -s may have used it.
@@ -795,6 +841,8 @@ install_vendor_pkg() {
   # The feed knows no epoch or pkgrel; the file does. Compare its full
   # version with what is installed right now.
   msg=$(guard_version "$ver") || refuse "vendor package: $msg; not installing"
+  # Before sudo, and under --prepare too; the staged copy is checked again.
+  require_root_owners "$file" "$line" "the download stays in $file"
   echo "Package file: $file ($line)"
   show_switch "$file"
   stage_and_install "$file" "$line" "$algo" "$want"

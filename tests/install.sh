@@ -24,7 +24,9 @@
 #             is what a run whose terminal was closed gets (or one whose
 #             password timed out)
 #   curl      serves files from a local directory
-#   makepkg   reads the test recipe's PKGBUILD and "builds" a plain tar;
+#   makepkg   reads the test recipe's PKGBUILD and "builds" a plain tar,
+#             its files owned by root as under fakeroot, or by
+#             $STUB_MAKEPKG_OWNER ("<uid>:<gid>");
 #             with $STUB_MAKEPKG_INSTALLS ("<name> <version>") set, that is
 #             what pacman has installed once the build is done, as when
 #             omarchy update installs it meanwhile
@@ -158,7 +160,8 @@ case " $* " in
       for v in "${conflicts[@]}"; do echo "conflict = $v"; done
       for v in "${provides[@]}"; do echo "provides = $v"; done; } >"$d/.PKGINFO"
     [[ -z $install ]] || { cp "$install" "$d/.INSTALL"; files+=(.INSTALL); }
-    bsdtar -cf "$file" -C "$d" "${files[@]}"
+    owner=${STUB_MAKEPKG_OWNER:-0:0}
+    bsdtar -cf "$file" --uid "${owner%:*}" --gid "${owner#*:}" -C "$d" "${files[@]}"
     [[ -z ${STUB_MAKEPKG_INSTALLS:-} ]] || printf '%s\n' "$STUB_MAKEPKG_INSTALLS" >"$STUB_DB/installed" ;;
   *) echo "makepkg stub: unexpected $*" >&2; exit 99 ;;
 esac
@@ -249,14 +252,15 @@ shown() {
 }
 
 # A package file as the pacman stub reads it: a tar with these .PKGINFO
-# lines and, with $install_text set, an .INSTALL.
+# lines and, with $install_text set, an .INSTALL, owned by root as makepkg
+# packs them, or by $pkg_owner ("<uid>:<gid>").
 make_pkg() {
-  local file=$1 d=$it/pkgtmp parts=(.PKGINFO)
+  local file=$1 d=$it/pkgtmp parts=(.PKGINFO) owner=${pkg_owner:-0:0}
   shift
   rm -rf "$d" && mkdir -p "$d"
   printf '%s\n' "$@" >"$d/.PKGINFO"
   if [[ -n ${install_text:-} ]]; then printf '%s\n' "$install_text" >"$d/.INSTALL"; parts+=(.INSTALL); fi
-  bsdtar -cf "$file" -C "$d" "${parts[@]}"
+  bsdtar -cf "$file" --uid "${owner%:*}" --gid "${owner#*:}" -C "$d" "${parts[@]}"
   rm -rf "$d"
 }
 sha512_b64() { python3 -I -c 'import base64, hashlib, sys; print(base64.b64encode(hashlib.sha512(open(sys.argv[1], "rb").read()).digest()).decode())' "$1"; }
@@ -383,6 +387,8 @@ same "install --prepare (vendor): succeeds" 0 "$irc"
 says "install --prepare (vendor): checks the download" 'sha512 matches.'
 says "install --prepare (vendor): the staged copy goes whether pacman installed it or not" \
   "Would run: sudo rm -f -- $vstaged (whether pacman installed it or not)"
+says "install --prepare (vendor): who owns the staged copy's files is checked" \
+  "Would check: every file in $vstaged is owned by root, in group root, tty, ftp or games"
 no_call "install --prepare (vendor): never calls sudo" 'sudo '
 same "install --prepare (vendor): the download is for the real run, not a stopped one" '' "$(grep -F 'the build and download files stay' <<<"$iout")"
 
@@ -645,6 +651,41 @@ says "install, a hook fails after pacman installed: the install is checked" 'Ins
 check "install, a hook fails after pacman installed: no staged copy left" test ! -e "$vstaged"
 calls "install, a hook fails after pacman installed: the panel is refreshed" 'omabump-check --no-notify --wait'
 
+# Files that keep the IDs of the machine that packed them: on this one those
+# can be another account. The download is refused before sudo, and by
+# --prepare; root's group and the fixed groups Arch uses pass.
+vowned() {
+  pkg_owner=$1 install_text='post_install() { echo hello; }' make_pkg "$iserved/$vpkg" 'pkgname = testapp' 'pkgver = 2.0.0-1' 'conflict = testapp-bin'
+  printf 'version: 2.0.0\nfiles:\n  - url: https://example.invalid/%s\n    sha512: %s\n' "$vpkg" "$(sha512_b64 "$iserved/$vpkg")" >"$iserved/latest.yml"
+  rm -f "$vcached"
+  fresh 'testapp 1.0.0-1'
+}
+vowned 1001:1001
+STUB_PACMAN_U=ok inst testapp
+same "install (vendor), files owned by uid 1001: refused" 1 "$irc"
+says "install (vendor), files owned by uid 1001: names the package" \
+  'omabump: testapp 2.0.0-1 has files that pacman would install with an owner other than root:'
+says "install (vendor), files owned by uid 1001: and the files, with their owner" '  1001:1001 .PKGINFO'
+says "install (vendor), files owned by uid 1001: says why" 'On this machine those IDs can belong to another account'
+says "install (vendor), files owned by uid 1001: names where the download stays" "the download stays in $vcached"
+no_call "install (vendor), files owned by uid 1001: before sudo" 'sudo '
+check "install (vendor), files owned by uid 1001: no staged copy" test ! -e "$vstaged"
+check "install (vendor), files owned by uid 1001: the download stays" test -f "$vcached"
+same "install (vendor), files owned by uid 1001: nothing installed" 'testapp 1.0.0-1' "$(<"$idb/installed")"
+inst --prepare testapp
+same "install --prepare (vendor), files owned by uid 1001: succeeds" 0 "$irc"
+says "install --prepare (vendor), files owned by uid 1001: says it would refuse" \
+  'Would refuse: testapp 2.0.0-1 has files that pacman would install with an owner other than root:'
+refuse "install --prepare (vendor), files owned by uid 1001: and stops there, as the run would" grep -qF 'Would run: sudo' <<<"$iout"
+vowned 0:1001
+STUB_PACMAN_U=ok inst testapp
+same "install (vendor), root's files in group 1001: refused" 1 "$irc"
+says "install (vendor), root's files in group 1001: names them" '  0:1001 .PKGINFO'
+vowned 0:50
+STUB_PACMAN_U=ok inst testapp
+same "install (vendor), root's files in group games (50): installed" 0 "$irc"
+vowned 0:0
+
 fresh 'testapp 1.0.0-1'
 STUB_PACMAN_U=ok inst testapp
 same "install (vendor): a success" 0 "$irc"
@@ -861,6 +902,36 @@ T_PKG=$it/new.pkg.tar inst_src 'rc=0; switch_conflicts "$T_PKG" || rc=$?; echo "
 same "switch_conflicts: a package pacman cannot read is not 'no conflict'" 2 "$iout"
 rm -f "$it/new.pkg.tar" "$idb/qi/testapp-bin"
 
+# foreign_owners: the entries a uid or gid other than root's breaks, the
+# first 3 as "<uid>:<gid> <path>", then a count; 2 for a file bsdtar cannot list.
+fo=$it/owners
+rm -rf "$fo" && mkdir -p "$fo/d/opt/a b"
+for fo_i in 1 2 3 4; do : >"$fo/d/opt/a b/f$fo_i"; done
+: >"$fo/d/.PKGINFO" && : >"$fo/d/tty" && : >"$fo/d/ftp" && : >"$fo/d/games" && : >"$fo/d/x"$'\e'"[31m"
+bsdtar -cf "$fo/ok.tar" --uid 0 --gid 0 -C "$fo/d" .PKGINFO
+bsdtar -rf "$fo/ok.tar" --uid 0 --gid 5 -C "$fo/d" tty
+bsdtar -rf "$fo/ok.tar" --uid 0 --gid 11 -C "$fo/d" ftp
+bsdtar -rf "$fo/ok.tar" --uid 0 --gid 50 -C "$fo/d" games
+cp "$fo/ok.tar" "$fo/bad.tar"
+bsdtar -rf "$fo/bad.tar" -n --uid 1001 --gid 1001 -C "$fo/d" opt "opt/a b" "opt/a b/f1" "opt/a b/f2" "opt/a b/f3" "opt/a b/f4"
+cp "$fo/ok.tar" "$fo/esc.tar"
+bsdtar -rf "$fo/esc.tar" --uid 1000 --gid 0 -C "$fo/d" "x"$'\e'"[31m"
+printf 'not a package' >"$fo/junk.tar"
+# shellcheck disable=SC2016 # expanded by the child bash
+T_FO=$fo inst_src 'for f in ok bad esc junk; do rc=0; out=$(foreign_owners "$T_FO/$f.tar") || rc=$?; echo "$f $rc"; [[ -z $out ]] || printf "%s\n" "$out"; done' testapp
+same "foreign_owners: root, and groups root, tty, ftp and games pass; 3 others shown, then a count; escapes; junk" \
+  $'ok 0\nbad 1\n1001:1001 opt/\n1001:1001 opt/a b/\n1001:1001 opt/a b/f1\nand 3 more\nesc 1\n1000:0 x\\033[31m\njunk 2' "$iout"
+# A listing past what a pipe holds at once (bash sends a here-string that
+# big through a temporary file) still reaches awk when no file can be
+# written: the check fails closed, never open.
+mkdir -p "$fo/big"
+for fo_i in $(seq 3000); do : >"$fo/big/file-with-a-long-name-$fo_i"; done
+bsdtar -cf "$fo/big.tar" --uid 1001 --gid 1001 -C "$fo" big
+# shellcheck disable=SC2016 # expanded by the child bash
+T_FO=$fo inst_src 'ulimit -S -f 8; rc=0; out=$(foreign_owners "$T_FO/big.tar") || rc=$?; echo "$rc"; tail -1 <<<"$out"' testapp
+same "foreign_owners: a listing of 3000 entries, with no file writable: still refused" $'1\nand 2998 more' "$iout"
+rm -rf "$fo"
+
 # Before a build, from the recipe: per-architecture fields count for this
 # machine's architecture only, as in the package makepkg would build here.
 fresh 'testpkg-bin 1.5.0-1'
@@ -939,6 +1010,17 @@ STUB_PACMAN_U=ok STUB_TAMPER=1 inst testpkg
 same "install (omarchy): a staged copy that is not the built file is refused" 1 "$irc"
 says "install (omarchy): by the sha256 taken after the build" 'sha256 of the staged copy is'
 no_call "install (omarchy): pacman -U never runs then" 'pacman -U'
+
+fresh 'testpkg-bin 1.5.0-1'
+STUB_PACMAN_U=ok STUB_MAKEPKG_OWNER=1001:1001 inst testpkg
+same "install (omarchy), a build with files owned by uid 1001: refused" 1 "$irc"
+says "install (omarchy), a build with files owned by uid 1001: names the files" '  1001:1001 .PKGINFO'
+says "install (omarchy), a build with files owned by uid 1001: names where the package stays" \
+  "the package stays in $it/cache/omabump/packages/$opkg"
+no_call "install (omarchy), a build with files owned by uid 1001: pacman -U never runs" 'pacman -U'
+calls "install (omarchy), a build with files owned by uid 1001: the staged copy is checked, then removed" "sudo rm -f -- $ostaged"
+check "install (omarchy), a build with files owned by uid 1001: no staged copy left" test ! -e "$ostaged"
+rm -rf "$it/cache/omabump/packages/$opkg" "$it/cache/omabump/build/testpkg"
 
 fresh 'testpkg-bin 1.5.0-1'
 STUB_PACMAN_U=ok inst testpkg

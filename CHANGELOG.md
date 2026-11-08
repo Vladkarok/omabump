@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.10 (2026-11-08)
+
+- Update refuses a package whose files pacman would install with an owner other than root. pacman installs each file with the numeric owner its package records, and a vendor archive unpacked without `--no-same-owner` keeps the IDs of the machine that packed it: omarchy-pkgs found 222 files of bitwarden's aarch64 build owned by 1001:1001, which on your machine is the second account, able to replace them. Every file must be root's, in group root, tty, ftp or games, the rule omarchy-pkgs' own builds follow since 98353c6b. Update builds newer releases than theirs, here, so it checks for itself: a vendor download before sudo (and under `--prepare`), and every staged copy, built or downloaded, again. The message names the first entries and their owners, and the package stays in `~/.cache/omabump/packages`. omarchy-pkgs' builds of all its other packages pass.
+
 ## 0.1.9 (2026-11-08)
 
 - A GitHub release feed (T3 Code, Hermes, voxtype, Omabump itself) no longer fails the check when github.com's release pages fail. On 2026-11-08 they answered 504 for minutes, cached at GitHub's edge, while the REST API answered: a feed now asks the API's latest release when the `/releases/latest` page gives no answer, a 5xx, a 403 or a 429, one unauthenticated call. Those 60 calls an hour per address are shared with everything else here that calls the API without a token, mise in your terminal included, so the fallback first reads `/rate_limit` (not counted) and leaves the last 20 alone.
