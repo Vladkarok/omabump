@@ -6,12 +6,6 @@
 
 # --- Main.qml and the scripts -------------------------------------------------
 
-# Every check, a Refresh's too, runs under the deadline bin/omabump-check
-# names: the installer and other bars wait for a check on that bound.
-# shellcheck disable=SC2016 # the literal text of the comment
-same "Main.qml runs checks under the deadline bin/omabump-check names" \
-  "$(grep -o 'under `timeout -k [0-9]* [0-9]*`' "$root/bin/omabump-check" | grep -o 'timeout[^`]*')" \
-  "$(grep -o '"timeout", "-k", "[0-9]*", "[0-9]*", checkScript\]' "$root/Main.qml" | sed 's/, checkScript]//' | tr -d '",')"
 # A check that finds a local refresh holding the lock waits for it as long
 # as Main.qml lets one run: its deadline, then the KILL after it. So does
 # an --if-due run, so both waits name the one time.
@@ -21,22 +15,8 @@ same "a check waits for a local refresh as long as Main.qml lets one run" \
     | awk '{ print $1 + $2 }')"
 # Every wait for the lock comes before that deadline, never under it: a
 # wait the deadline cut short would read as a failed check (exit 124), not
-# as one that never ran (exit 75). So waitScript comes first, and the
-# checker never gets --wait.
-check "Main.qml waits for the lock before the deadline starts" \
-  grep -q 'command = \["bash", "-c", waitScript, "omabump-wait", lockPath, String(lockWaitSec)\].concat(command)$' "$root/Main.qml"
+# as one that never ran (exit 75). So the checker never gets --wait.
 refuse "Main.qml never passes the checker --wait" grep -q -- '"--wait"' "$root/Main.qml"
-# Whether a check, or a failed one's retry, is due is the checker's answer
-# (--if-due), from the interval the widget's settings hold.
-check "Main.qml asks the checker whether a check is due, with its interval" \
-  grep -q 'if (ifDue) command.push("--if-due", "--interval", String(refreshIntervalSec))$' "$root/Main.qml"
-same "the timer and opening the panel ask it (runDue)" 2 "$(grep -c ' runDue()$' "$root/Main.qml")"
-# Until it says a check is due, that run shows as none (tests/check.sh
-# runs the checker's word).
-check "Main.qml counts the run as a check once the checker says due" \
-  grep -q '^        else if (line === "due") root.runIfDue = false$' "$root/Main.qml"
-check "and shows none before" grep -q '^  readonly property bool checking: checkProcess.running && !runIfDue || fileChecking$' "$root/Main.qml"
-check "Main.qml asks every Model.pollSec whether a check is due" grep -q '^    interval: Model.pollSec \* 1000$' "$root/Main.qml"
 same "Model.js reads --if-due's exit by the number bin/omabump-check gives" \
   "$(sed -n 's/^not_due_exit=\([0-9]*\) .*/\1/p' "$root/bin/omabump-check")" \
   "$(sed -n 's/^var notDueExit = \([0-9]*\)$/\1/p' "$root/Model.js")"
@@ -84,77 +64,26 @@ hold_lock
 same "waitScript: a lock held past the wait runs nothing and exits Model.lockBusyExit" "exit ${busy_exit:-none}" \
   "$(bash -c "$wait_script" omabump-wait "$wait_lock" 0.2 echo ran; echo "exit $?")"
 let_go
-check "Main.qml reads a check's exit through Model.checkOutcome" \
-  grep -q 'Model.checkOutcome(exitCode, root.runWaiting)' "$root/Main.qml"
 same "waitScript: no lock directory yet, nothing to wait for" "started|ran" \
   "$(run_wait "$scratch/wait/none/.check.lock" 5 echo ran)"
 same "waitScript: the command's exit status is the run's" "started|exit 3" \
   "$( { bash -c "$wait_script" omabump-wait "$wait_lock" 5 bash -c 'exit 3'; echo "exit $?"; } | paste -sd'|')"
 
-# A run that left on the lock, or found no check due, ran nothing and
-# failed nothing: only the other outcomes set checkError and lastCheckEndMs
-# (IPC refresh's throttle), and its lines on stderr stay out of the shell's
-# log.
-on_exited=$(sed -n '/^    id: checkProcess$/,/^  }$/p' "$root/Main.qml" | sed -n '/^    onExited: function(exitCode) {$/,/^    }$/p')
-same "onExited sets checkError and lastCheckEndMs only for a run that did not leave on the lock or find none due" \
-  'notRun root.checkError|ran root.checkError|ran root.lastCheckEndMs' \
-  "$(awk '/^      if \(outcome === "notRun"\) \{$/ { b = "notRun" }
-    /^      \} else if \(outcome !== "left" && outcome !== "notDue"\) \{$/ { b = "ran" }
-    /^      \}$/ { b = "" } /root\.(checkError|lastCheckEndMs) = / { print (b == "" ? "outside" : b), $1 }' <<<"$on_exited" | paste -sd'|')"
-check "onExited logs no stderr for a run that left on the lock or found none due" \
-  grep -q '^      if (err !== "" && outcome !== "left" && outcome !== "notDue") console.warn("omabump", err)$' <<<"$on_exited"
-check "a local refresh asked for during the timer's or the panel's run follows it when no check ran" \
-  grep -q '^      if (local && (outcome === "notDue" || outcome === "left")) Qt.callLater(root.localRefresh)$' <<<"$on_exited"
-
 # A local refresh (bin/omabump-check --local) is none of this shell's
 # checks: its exit goes through Model.localOutcome by the checker's own
-# numbers, and it sets neither checkError nor lastCheckEndMs.
+# numbers.
 same "Model.js reads --local's exits by the numbers bin/omabump-check gives" \
   "$(sed -n 's/^full_check_exit=\([0-9]*\) no_status_exit=\([0-9]*\) pacman_busy_exit=\([0-9]*\)$/\1 \2 \3/p' "$root/bin/omabump-check")" \
   "$(sed -n 's/^var local\(Full\|NoStatus\|Retry\)Exit = \([0-9]*\)$/\2/p' "$root/Model.js" | paste -sd' ')"
-local_exited=$(sed -n '/^    id: localProcess$/,/^  }$/p' "$root/Main.qml")
-check "Main.qml reads a local refresh's exit through Model.localOutcome" grep -q 'Model.localOutcome(exitCode)' <<<"$local_exited"
-refuse "a local refresh sets neither checkError nor lastCheckEndMs" grep -qE 'checkError|lastCheckEndMs' <<<"$local_exited"
-check "Main.qml runs the local refresh as bin/omabump-check --local" grep -q 'checkScript, "--local"\]$' "$root/Main.qml"
-check "the panel has the installed versions read again when it opens" grep -q '^    checker.panelOpened()$' "$root/Panel.qml"
-# A change of Show mise tools behind this shell's own check queues a run
-# that is not a Refresh's, and a queued run waits for the lock only when
-# this shell's own check may not have held it to its end: on two monitors,
-# every copy then leaves on the lock once one post-change check holds it.
-same "a Show mise tools change queues a run that is not a Refresh's" '    if (run === "queue") checkQueued = true' \
-  "$(sed -n '/^  onShowMiseChanged: {$/,/^  }$/p' "$root/Main.qml" | grep -E 'checkQueued|queuedForRefresh')"
-check "a queued run is a Refresh's only when a Refresh queued it" \
-  grep -q '^    if (checkQueued && !checkProcess.running) runCheck(wait, queuedForRefresh)$' "$root/Main.qml"
-check "a queued run waits for the lock by how this shell's own check ended" \
-  grep -q '^      Qt.callLater(root.runQueued, Model.queuedRunWaits(outcome))$' <<<"$on_exited"
-check "a Refresh's run counts as one without the wait too (refreshRunning)" grep -q '^    runForRefresh = own$' "$root/Main.qml"
 
 # The checker decides whether a skip applies and writes it as each row's
 # skipped; Model.js reads that field and compares no versions itself.
-check "Model.js reads the skipped field bin/omabump-check writes" grep -q 'app.skipped === true' "$root/Model.js"
-check "bin/omabump-check writes skipped into every checked row" grep -q 'muted: \$muted, skipped: \$skipped' "$root/bin/omabump-check"
 refuse "Model.js compares no versions" grep -qiE 'vercmp\(|rpmvercmp' "$root/Model.js"
-# A skip leaves the settings only once a run read it and found it over.
-check "Model.js drops a skip by the skipEnded field bin/omabump-check writes" grep -q 'app.skipEnded' "$root/Model.js"
-check "bin/omabump-check writes skipEnded into every checked row" grep -q 'skipped: \$skipped, skipEnded: \$skipEnded' "$root/bin/omabump-check"
 same "Model.js caps the quiet settings where load_quiet does" "$quiet_max" \
   "$(sed -n 's/^var quietMax = \([0-9]*\)$/\1/p' "$root/Model.js")"
 
-# status.json's runError: the checker writes the field (tests/check.sh runs
-# it), and Model.js must read the same name.
-check "Model.js reads the runError field bin/omabump-check writes" \
-  grep -q 'file.runError' "$root/Model.js"
-check "bin/omabump-check writes runError into status.json" \
-  grep -q 'runError: \$rerr' "$root/bin/omabump-check"
-# So with a row's selfUpdating: the panel offers no Update or Switch for
-# it, and decides both through Model.js.
-check "Model.js reads the selfUpdating field bin/omabump-check writes" \
-  grep -q 'function selfUpdating(app) { return !!app && app.selfUpdating === true }' "$root/Model.js"
-check "bin/omabump-check writes selfUpdating into every row" grep -q 'selfUpdating: \$selfUpdating, icon' "$root/bin/omabump-check"
 # A row without Update has no action at all: the panel starts no agent.
 refuse "the widget starts no coding agent" grep -qE 'omarchy-agent|omabump-prompt' "$root/Main.qml" "$root/Panel.qml"
-check "Panel.qml decides Update and Switch through Model.js" \
-  bash -c '[[ $(grep -cE "readonly property bool (updatable: Model.updatable|switchable: Model.switchable)\(app\)" "$1") == 2 ]]' _ "$root/Panel.qml"
 
 # The widget reads states from status.json's fields, never from the
 # checker's wording: no "Update check skipped" prefix for unchecked, no

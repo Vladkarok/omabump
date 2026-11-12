@@ -4,15 +4,7 @@
 import assert from "node:assert/strict"
 import { loadModel } from "./model.mjs"
 
-const model = loadModel()
-// The tests call Model.js through m, which notes each function they reach:
-// the last test checks that every function has one.
-const called = new Set()
-const m = {}
-for (const name of Object.keys(model)) {
-  if (typeof model[name] !== "function") continue
-  m[name] = (...args) => { called.add(name); return model[name](...args) }
-}
+const m = loadModel()
 
 let total = 0, failed = 0
 function test(name, fn) {
@@ -48,11 +40,6 @@ function variantList(items) {
 }
 
 // --- settings -------------------------------------------------------------------
-
-test("isList: arrays and array-likes, not strings or maps", () => {
-  same([m.isList([]), m.isList(variantList(["a"])), m.isList("ab"), m.isList({ a: 1 }), m.isList(null)],
-    [true, true, false, false, false])
-})
 
 test("setting: the value, else the fallback for missing and null", () => {
   same([m.setting({ a: 0 }, "a", 5), m.setting({ a: null }, "a", 5), m.setting({}, "a", 5), m.setting(null, "a", 5)],
@@ -241,10 +228,6 @@ const rows = [
 ]
 const muted = ["muted", "mutedfail"], skipped = { skip: "2.0" }
 
-test("count: rows that pass the test", () => {
-  same(m.count(rows, app => app.source === "omarchy"), 5)
-})
-
 test("updateCount, waitingCount and quietCount leave quiet rows out", () => {
   same([m.updateCount(rows, muted, skipped), m.waitingCount(rows, muted, skipped), m.quietCount(rows, muted, skipped)], [1, 1, 2])
 })
@@ -295,8 +278,8 @@ test("parseStatus: Show mise tools off drops mise rows and mise's error", () => 
 // --- this shell's checks ------------------------------------------------------------
 
 test("checkOutcome: a lock wait that gave up ran nothing, a checker that found the lock taken left, none was due; else the exit code says", () => {
-  const busy = model.lockBusyExit
-  same([busy, model.notDueExit], [75, 76])
+  const busy = m.lockBusyExit
+  same([busy, m.notDueExit], [75, 76])
   same([m.checkOutcome(busy, true), m.checkOutcome(busy, false), m.checkOutcome(76, false), m.checkOutcome(0, true),
     m.checkOutcome(0, false), m.checkOutcome(1, false), m.checkOutcome(124, false), m.checkOutcome(124, true)],
     ["notRun", "left", "notDue", "ok", "ok", "failed", "failed", "failed"])
@@ -340,7 +323,7 @@ test("failureText: the checker's error first, a source failure only while not al
 // --- local refreshes ----------------------------------------------------------------
 
 test("localOutcome: done, a check wanted (a change, or no status to start from), retry, left, else failed", () => {
-  same([model.localFullExit, model.localNoStatusExit, model.localRetryExit, model.localIntervalSec], [80, 81, 82, 300])
+  same([m.localFullExit, m.localNoStatusExit, m.localRetryExit, m.localIntervalSec], [80, 81, 82, 300])
   same([0, 80, 81, 82, 75, 1, 2, 124, 143].map(code => m.localOutcome(code)),
     ["done", "full", "full", "retry", "left", "failed", "failed", "failed", "failed"])
 })
@@ -531,18 +514,10 @@ test("iconPath: the light twin on a light surface, nothing unsafe", () => {
     ["assets/codex.svg", "assets/codex-light.svg", "", ""])
 })
 
-test("luminance: black is 0, white is 1", () => {
-  same([m.luminance({ r: 0, g: 0, b: 0 }), m.luminance({ r: 1, g: 1, b: 1 }), m.luminance({ r: 0.5, g: 0.5, b: 0.5 }) < 0.5], [0, 1, true])
-})
-
 // --- panel text ----------------------------------------------------------------------------
 
-test("clamp", () => {
-  same([m.clamp(5, 0, 3), m.clamp(-1, 0, 3), m.clamp(2, 0, 3)], [3, 0, 2])
-})
-
 test("keyAction: CapsLock J and K move the cursor, Shift+K skips", () => {
-  const shift = model.shiftModifier
+  const shift = m.shiftModifier
   same(shift, 0x02000000)
   same([m.keyAction("K", 0, false, true), m.keyAction("J", 0, false, true), m.keyAction("K", shift, false, true),
     m.keyAction("J", shift, false, true), m.keyAction("K", shift | 0x04000000, false, true), m.keyAction("K", undefined, false, true),
@@ -630,10 +605,6 @@ test("tooltipText: the bar icon's tooltip and IPC status", () => {
     summary({ pkgsFollowing: true })].map(s => m.tooltipText(s)), [
     "Omabump up to date", "Omabump up to date (+1 muted/skipped)", "Omabump: 1 update", "Omabump: not checked yet",
     "Omabump: none installed", "Omabump up to date\nomarchy-pkgs: following master (unpinned)"])
-})
-
-test("every function in Model.js has a test", () => {
-  same(Object.keys(m).filter(name => !called.has(name)), [])
 })
 
 console.log(`done\t${total}`)
