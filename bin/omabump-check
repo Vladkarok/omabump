@@ -112,8 +112,10 @@ elif ! flock -n 9; then
 fi
 # Muted rows (the panel's mutedApps setting) and rows at a version the user
 # skipped (skippedVersions) never notify; status.json still says the truth
-# about them, plus "muted" and "skipped". They and the notify and showMise
-# settings are read under the lock, so a run that waited for it checks with
+# about them, plus "muted" and "skipped": the panel compares no versions
+# and takes skipped as the answer to whether a skip still applies. They and
+# the notify and showMise settings are read under the lock, so a run that
+# waited for it checks with
 # the settings as they are when it starts: the widget counts on a check
 # that took the lock after a change of Show mise tools to honour it.
 load_quiet

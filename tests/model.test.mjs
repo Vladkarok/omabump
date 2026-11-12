@@ -2,9 +2,7 @@
 // installed: one line per test, "ok<TAB>name" or "not ok<TAB>name<TAB>why",
 // then "done<TAB>count". Exits non-zero when any test fails.
 import assert from "node:assert/strict"
-import fs from "node:fs"
-import path from "node:path"
-import { loadModel, root } from "./model.mjs"
+import { loadModel } from "./model.mjs"
 
 const model = loadModel()
 // The tests call Model.js through m, which notes each function they reach:
@@ -78,19 +76,7 @@ test("refreshIntervalSec: between five minutes and a day, 3600 for anything unus
     [3600, 300, 86400, 900, 3600, 3600])
 })
 
-// --- ids and versions ----------------------------------------------------------------
-
-test("pkgNameOk: Arch package names, no leading dot or dash", () => {
-  same(["claude-desktop", "z-code-bin", "@x", "_x", "+x", "a.b+c_d@e", "-x", ".x", "A", "a b", "a/b", "a\n", "", 5]
-    .map(n => m.pkgNameOk(n)),
-    [true, true, true, true, true, true, false, false, false, false, false, false, false, false])
-})
-
-test("appIdOk: a package name, mise:<name>, or Omabump's own id", () => {
-  same(["claude-desktop", "mise:claude", "mise:", "mise:-x", "self:omabump", "self:other", "github:x", null]
-    .map(n => m.appIdOk(n)),
-    [true, true, false, false, true, false, false, false])
-})
+// --- mute and skip settings ------------------------------------------------------------
 
 test("skipVersionOk: what skip_version_ok allows", () => {
   same(["1.0.0-beta.1", "v1", "1.0~rc1", "1+2_3", "1".repeat(64), "1".repeat(65), "-1", ".1", "1..2", "1:2",
@@ -98,8 +84,8 @@ test("skipVersionOk: what skip_version_ok allows", () => {
     [true, true, true, true, true, false, false, false, false, false, false, false, false, false])
 })
 
-test("mutedApps: valid ids only, once each, from a QVariantList too", () => {
-  const list = ["a", 1, "Bad", "mise:x", "", "a", "self:omabump", "x y", null]
+test("mutedApps: strings only, once each, from a QVariantList too", () => {
+  const list = ["a", 1, "mise:x", "a", "self:omabump", null]
   same(m.mutedApps({ mutedApps: list }), ["a", "mise:x", "self:omabump"])
   same(m.mutedApps({ mutedApps: variantList(list) }), ["a", "mise:x", "self:omabump"])
 })
@@ -108,63 +94,14 @@ test("mutedApps: a setting that is not a list is nothing", () => {
   same([m.mutedApps({ mutedApps: "a,b" }), m.mutedApps({ mutedApps: { a: 1 } }), m.mutedApps({})], [[], [], []])
 })
 
-test("mutedApps: only the first quietMax strings count, refused ones included", () => {
-  const list = []
-  for (let i = 0; i < 150; i++) list.push("Bad" + i, i)
-  for (let i = 0; i < 100; i++) list.push("ok" + i)
-  same(m.mutedApps({ mutedApps: list }).length, model.quietMax - 150)
-  same(model.quietMax, 200)
-})
-
-test("skippedVersions: string versions for valid ids, versions skip_version_ok allows", () => {
-  same(m.skippedVersions({ skippedVersions: { a: "1.0", "mise:b": "2.0-beta.1", Bad: "1.0", c: "1..2", d: 3, e: "", f: "1.0" } }),
-    { a: "1.0", "mise:b": "2.0-beta.1", f: "1.0" })
+test("skippedVersions: string versions only", () => {
+  same(m.skippedVersions({ skippedVersions: { a: "1.0", "mise:b": "2.0-beta.1", d: 3, e: null } }),
+    { a: "1.0", "mise:b": "2.0-beta.1" })
 })
 
 test("skippedVersions: a list or a string is nothing", () => {
   same([m.skippedVersions({ skippedVersions: ["x"] }), m.skippedVersions({ skippedVersions: variantList(["x"]) }),
     m.skippedVersions({ skippedVersions: "x" }), m.skippedVersions({})], [{}, {}, {}, {}])
-})
-
-test("skippedVersions: only the first quietMax string entries count", () => {
-  const map = {}
-  for (let i = 0; i < 150; i++) { map["bad-" + i] = "1..2"; map["num-" + i] = 1 }
-  for (let i = 0; i < 100; i++) map["ok-" + i] = "1.0"
-  same(Object.keys(m.skippedVersions({ skippedVersions: map })).length, 50)
-})
-
-// --- vercmp ------------------------------------------------------------------------------
-
-test("vercmp agrees with /usr/bin/vercmp on every pair in tests/vercmp.tsv", () => {
-  const lines = fs.readFileSync(path.join(root, "tests", "vercmp.tsv"), "utf8").split("\n")
-    .filter(line => line !== "" && !line.startsWith("#"))
-  assert.ok(lines.length >= 300, `only ${lines.length} pairs`)
-  const wrong = []
-  for (const line of lines) {
-    const [a, b, want] = line.split("\t")
-    const got = Math.sign(m.vercmp(a, b))
-    if (got !== Number(want)) wrong.push(`${a} ${b}: ${got}, vercmp says ${want}`)
-  }
-  same(wrong, [])
-})
-
-test("splitEvr: epoch, version and release", () => {
-  same([m.splitEvr("1:2.0-3"), m.splitEvr("2.0"), m.splitEvr(":1"), m.splitEvr("a:1-2-3")], [
-    { epoch: "1", version: "2.0", release: "3" }, { epoch: "0", version: "2.0", release: null },
-    { epoch: "0", version: "1", release: null }, { epoch: "0", version: "a:1-2", release: "3" }])
-})
-
-test("rpmvercmp: runs of digits and letters, separators between", () => {
-  same([m.rpmvercmp("1.0", "1.0"), m.rpmvercmp("1.0a", "1.0"), m.rpmvercmp("1.10", "1.9"), m.rpmvercmp("1..0", "1.0")],
-    [0, -1, 1, 1])
-})
-
-test("upstreamPart: the installed version less epoch and pkgrel", () => {
-  same(["1:2.0-3", "2.0-1", "2.0", "1.0-beta-1"].map(v => m.upstreamPart(v)), ["2.0", "2.0", "2.0", "1.0-beta"])
-})
-
-test("stringVersions: mise and self compare as strings", () => {
-  same(["mise", "self", "omarchy", "vendor-pkg", "indicator"].map(s => m.stringVersions(s)), [true, true, false, false, false])
 })
 
 // --- mute and skip -------------------------------------------------------------------
@@ -185,34 +122,47 @@ test("isMuted and skippedVersion: by pkg", () => {
     ["1.1.0", "", ""])
 })
 
-test("skipHolds: mise and self rows while their update is exactly the skipped version", () => {
-  same([m.skipHolds(miseUpdate, "2.0.1"), m.skipHolds(miseUpdate, "2.0.0"), m.skipHolds(row({ source: "self", latest: "0.2.0", updateAvailable: true }), "0.2.0"),
-    m.skipHolds(Object.assign({}, miseUpdate, { updateAvailable: false }), "2.0.1")], [true, false, true, false])
+test("skipHolds: the checker's skipped, or before a check has read the skip, the newest version being it", () => {
+  // A pacman rollback below the skip: only the checker can tell, and says so.
+  const rolledBack = Object.assign({}, update, { latest: "1.0.9", skipped: true })
+  same([m.skipHolds(update, "1.1.0"), m.skipHolds(miseUpdate, "2.0.1"), m.skipHolds(rolledBack, "1.1.0"),
+    m.skipHolds(update, "1.2.0"), m.skipHolds(update, ""), m.skipHolds(Object.assign({}, rolledBack, { updateAvailable: false }), "1.1.0")],
+    [true, true, true, false, false, false])
 })
 
-test("skipHolds: vercmp rows while the newest is not newer and the installed is older", () => {
-  same([m.skipHolds(update, "1.1.0"), m.skipHolds(update, "1.2.0"), m.skipHolds(update, "1.0.5"),
-    m.skipHolds(row({ installed: "1:1.1.0-2", latest: "1.1.0" }), "1.1.0"), m.skipHolds(update, ""), m.skipHolds(row({ latest: "" }), "1.0")],
-    [true, true, false, false, false, false])
+test("isSkipped: K shows at once, unskipping ends it at once, a newer release ends it", () => {
+  // K stores the row's newest version: skipped before any check reads it.
+  const k = m.skipToggled({}, update).skips
+  same(m.isSkipped(k, update), true)
+  // The check that read it says skipped; unskipping still ends it at once.
+  const checked = Object.assign({}, update, { skipped: true })
+  same([m.isSkipped(k, checked), m.isSkipped(m.skipToggled(k, checked).skips, checked)], [true, false])
+  // A newer release: the checker writes skipped false and another newest.
+  same(m.isSkipped(k, Object.assign({}, update, { latest: "1.2.0", skipped: false })), false)
+  // That version installed: no update, so no skip.
+  same(m.isSkipped(k, row({ pkg: "claude-desktop", installed: "1.1.0-1", latest: "1.1.0" })), false)
 })
 
 test("isSkipped and isQuiet: a skip counts only on a row with an update", () => {
   const skipped = { "claude-desktop": "1.1.0", app: "1.0.0" }
-  same([m.isSkipped(skipped, update), m.isSkipped(skipped, row({ installed: "0.9-1", latest: "1.0.0" })), m.isSkipped(skipped, null)],
-    [true, false, false])
+  same([m.isSkipped(skipped, update), m.isSkipped(skipped, row({ installed: "0.9-1", latest: "1.0.0" })), m.isSkipped(skipped, null),
+    m.isSkipped({}, Object.assign({}, update, { skipped: true }))], [true, false, false, false])
   same([m.isQuiet([], skipped, update), m.isQuiet(["mise:claude"], {}, miseUpdate), m.isQuiet([], {}, update)], [true, true, false])
 })
 
 test("skipKept: kept while it holds, and while the last check cannot tell", () => {
   const apps = [update, row({ pkg: "failed", error: "boom", latest: "2.0" }), row({ pkg: "stale", stale: true }),
-    row({ pkg: "busy", checking: true }), row({ pkg: "mise:u", source: "mise", unchecked: true, latest: "" }), row({ pkg: "nolatest", latest: "" })]
-  same(["claude-desktop", "failed", "stale", "busy", "mise:u", "nolatest", "unlisted"].map(p => m.skipKept(apps, p, "1.1.0")),
-    [true, true, true, true, true, true, true])
+    row({ pkg: "busy", checking: true }), row({ pkg: "mise:u", source: "mise", unchecked: true, latest: "" }), row({ pkg: "nolatest", latest: "" }),
+    row({ pkg: "rolled", latest: "1.0.9", updateAvailable: true, skipped: true })]
+  same(["claude-desktop", "failed", "stale", "busy", "mise:u", "nolatest", "unlisted", "rolled"].map(p => m.skipKept(apps, p, "1.1.0")),
+    [true, true, true, true, true, true, true, true])
+  // A newer release than the skip, or the skipped version installed.
   same([m.skipKept(apps, "claude-desktop", "1.0.5"), m.skipKept([row({ installed: "1.1.0-1", latest: "1.1.0" })], "app", "1.1.0")], [false, false])
 })
 
 test("liveSkips: drops the skips their row shows are over", () => {
-  same(m.liveSkips([update], { "claude-desktop": "1.0.5", other: "3.0" }), { other: "3.0" })
+  same(m.liveSkips([update, Object.assign({}, miseUpdate, { latest: "2.0.2" })],
+    { "claude-desktop": "1.0.5", "mise:claude": "2.0.1", other: "3.0" }), { other: "3.0" })
 })
 
 test("allMuted: every listed row of the source, and at least one", () => {

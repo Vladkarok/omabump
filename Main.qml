@@ -72,8 +72,8 @@ Item {
   // Rows the user muted (pkg ids): no badge, no count, no notification.
   // Their update stays visible in the panel and installable. And {pkg:
   // version} the user skipped. The checker reads the same two settings from
-  // shell.json itself (load_quiet), by the same rules (Model.mutedApps and
-  // Model.skippedVersions).
+  // shell.json itself (load_quiet) and writes whether each row's skip
+  // applies, which Model.isSkipped reads.
   readonly property var mutedApps: Model.mutedApps(settings)
   readonly property var skippedVersions: Model.skippedVersions(settings)
 

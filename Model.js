@@ -35,137 +35,37 @@ function refreshIntervalSec(settings) {
   return Math.min(86400, Math.max(300, Number(setting(settings, "refreshIntervalSec", 3600)) || 3600))
 }
 
-// --- ids and versions the checker accepts --------------------------------------
+// --- mute and skip settings ----------------------------------------------------
 
-// pkg_name_ok, app_id_ok and skip_version_ok in bin/omabump-common. The
-// checker drops a muted id or a skipped entry these refuse (load_quiet), so
-// the widget must too: else a row the checker notifies about would show as
-// quiet here.
-var selfPkg = "self:omabump"
-
-function pkgNameOk(name) {
-  return typeof name === "string" && /^[a-z0-9@_+][a-z0-9@._+-]*$/.test(name)
-}
-
-function appIdOk(id) {
-  return pkgNameOk(id) || (typeof id === "string" && id.indexOf("mise:") === 0 && pkgNameOk(id.substring(5)))
-    || id === selfPkg
-}
-
-// A version as mise or a feed prints it. skipToggled checks it before a
-// skip is stored.
+// A version as mise or a feed prints it: skip_version_ok in
+// bin/omabump-common, which load_quiet applies to every skip it reads.
+// skipToggled refuses to store one it would drop: the panel would show
+// that skip while the checker never applies it.
 function skipVersionOk(v) {
   return typeof v === "string" && v.length <= 64 && /^[0-9A-Za-z][A-Za-z0-9._+~-]*$/.test(v) && v.indexOf("..") === -1
 }
 
-// load_quiet reads only the first quietMax strings of each setting, and
-// drops the ones the rules above refuse after that cut, not before. The
-// bar may hand the skips over in another key order than shell.json has,
-// so only past the cap could the two keep different ones.
-var quietMax = 200
-
-// Rows the user muted (pkg ids): no badge, no count, no notification.
+// Rows the user muted (pkg ids): no badge, no count, no notification. Only
+// listed rows are looked up in it, and every row's id is one load_quiet
+// accepts, so the strings need no check of their own.
 function mutedApps(settings) {
   var list = setting(settings, "mutedApps", [])
   var out = []
   if (!isList(list)) return out
-  for (var i = 0, kept = 0; i < list.length && kept < quietMax; i++) {
-    if (typeof list[i] !== "string") continue
-    kept++
-    if (appIdOk(list[i]) && out.indexOf(list[i]) === -1) out.push(list[i])
-  }
+  for (var i = 0; i < list.length; i++)
+    if (typeof list[i] === "string" && out.indexOf(list[i]) === -1) out.push(list[i])
   return out
 }
 
-// {pkg: version} the user skipped. While a row's newest version is that
-// one it signals nothing; a newer release lights it up again (skipHolds).
+// {pkg: version} the user skipped. Whether a skip still applies is the
+// checker's answer, the row's skipped (isSkipped).
 function skippedVersions(settings) {
   var map = setting(settings, "skippedVersions", {})
   var out = {}
   if (!map || typeof map !== "object" || isList(map)) return out
-  var kept = 0
-  for (var pkg in map) {
-    if (typeof map[pkg] !== "string") continue
-    if (kept++ >= quietMax) break
-    if (appIdOk(pkg) && skipVersionOk(map[pkg])) out[pkg] = map[pkg]
-  }
+  for (var pkg in map) if (typeof map[pkg] === "string") out[pkg] = map[pkg]
   return out
 }
-
-// --- pacman's vercmp -------------------------------------------------------------
-
-// alpm_pkg_vercmp: below zero, zero or above zero as a is older than, the
-// same as or newer than b. The checker runs vercmp itself; the panel needs
-// the same answer for skips between checks.
-function vercmp(a, b) {
-  a = String(a)
-  b = String(b)
-  if (a === b) return 0
-  var x = splitEvr(a), y = splitEvr(b)
-  var ret = rpmvercmp(x.epoch, y.epoch)
-  if (ret === 0) ret = rpmvercmp(x.version, y.version)
-  // A release counts only when both versions have one.
-  if (ret === 0 && x.release !== null && y.release !== null) ret = rpmvercmp(x.release, y.release)
-  return ret
-}
-
-// [epoch:]version[-release]: no epoch is 0, no release is null.
-function splitEvr(v) {
-  var digits = /^[0-9]*/.exec(v)[0].length
-  var epoch = "0"
-  if (v.charAt(digits) === ":") {
-    if (digits > 0) epoch = v.substring(0, digits)
-    v = v.substring(digits + 1)
-  }
-  var dash = v.lastIndexOf("-")
-  return dash < 0 ? { epoch: epoch, version: v, release: null }
-    : { epoch: epoch, version: v.substring(0, dash), release: v.substring(dash + 1) }
-}
-
-// Compares runs of digits (as numbers) or of letters (as text) in turn;
-// anything else separates them.
-function rpmvercmp(a, b) {
-  if (a === b) return 0
-  var digit = /[0-9]/, alpha = /[A-Za-z]/
-  var one = 0, two = 0
-  while (one < a.length && two < b.length) {
-    var from1 = one, from2 = two
-    while (one < a.length && !digit.test(a.charAt(one)) && !alpha.test(a.charAt(one))) one++
-    while (two < b.length && !digit.test(b.charAt(two)) && !alpha.test(b.charAt(two))) two++
-    if (one >= a.length || two >= b.length) break
-    // The longer separator is newer.
-    if (one - from1 !== two - from2) return one - from1 < two - from2 ? -1 : 1
-    var run = digit.test(a.charAt(one)) ? digit : alpha
-    var end1 = one, end2 = two
-    while (end1 < a.length && run.test(a.charAt(end1))) end1++
-    while (end2 < b.length && run.test(b.charAt(end2))) end2++
-    // Digits against letters: the digits are newer.
-    if (end2 === two) return run === digit ? 1 : -1
-    var s1 = a.substring(one, end1), s2 = b.substring(two, end2)
-    if (run === digit) {
-      s1 = s1.replace(/^0+/, "")
-      s2 = s2.replace(/^0+/, "")
-      if (s1.length !== s2.length) return s1.length > s2.length ? 1 : -1
-    }
-    if (s1 !== s2) return s1 < s2 ? -1 : 1
-    one = end1
-    two = end2
-  }
-  if (one >= a.length && two >= b.length) return 0
-  // What is left decides: letters are older than nothing (1.0a < 1.0),
-  // anything else is newer.
-  return (one >= a.length && !alpha.test(b.charAt(two))) || alpha.test(a.charAt(one)) ? -1 : 1
-}
-
-// The installed version less epoch and pkgrel (upstream_part in
-// bin/omabump-common).
-function upstreamPart(v) { return String(v).replace(/^[^:]*:/, "").replace(/-[^-]*$/, "") }
-
-// string_versions in bin/omabump-common: versions mise or Omabump's
-// release feed print compare as strings, since mise decides what is newer
-// there and vercmp would call 1.0.0 and 1.0.0-beta.1 equal. Every other
-// source compares with vercmp.
-function stringVersions(source) { return source === "mise" || source === "self" }
 
 // --- mute and skip -------------------------------------------------------------
 
@@ -188,25 +88,22 @@ function skippedVersion(skipped, app) {
   return app && Object.prototype.hasOwnProperty.call(skipped, app.pkg) ? skipped[app.pkg] : ""
 }
 
-// Whether a skip of version still applies to the row, by the rule
-// row_skipped in bin/omabump-common applies to an update: mise and
-// Omabump's own rows while their update is exactly that version; the
-// others (vercmp) while their newest version is not newer than it and the
-// installed one is older, so a feed that rolls back below a skip stays
-// skipped and an install of that version or a later one ends it. The
-// installed version loses epoch and pkgrel, as the checker compares it
-// with a feed's.
+// Whether a skip of version still applies to the row. The checker decides
+// (row_skipped in bin/omabump-common, by vercmp or by string) and writes
+// the answer as the row's skipped; the panel compares no versions. Until a
+// check has read a new skip, the row's newest version being the skipped
+// one stands in for that answer: K stores exactly that, so a skip shows at
+// once. A newer release comes with skipped false and another newest
+// version, and an install of the skipped one with no update, so either
+// ends the skip.
 function skipHolds(app, version) {
-  var latest = String(app.latest || "")
   version = String(version || "")
-  if (version === "" || latest === "") return false
-  if (stringVersions(app.source)) return app.updateAvailable === true && latest === version
-  return vercmp(latest, version) <= 0 && vercmp(upstreamPart(String(app.installed || "")), version) < 0
+  return version !== "" && app.updateAvailable === true
+    && (app.skipped === true || version === String(app.latest || ""))
 }
 
-// A row whose update the user skipped. Decided from the settings as they
-// are now, by the checker's rule, so a skip shows at once and a skip
-// changed since the last check does not keep that check's answer.
+// A row whose update the user skipped. There is a skip only while the
+// settings as they are now hold one, so an unskip shows at once too.
 function isSkipped(skipped, app) {
   return !!app && app.updateAvailable === true && skipHolds(app, skippedVersion(skipped, app))
 }
@@ -255,7 +152,8 @@ function mutedToggled(muted, app) {
 }
 
 // skippedVersions after K on app, as { skips }; { note } when its newest
-// version is not one the checker stores; null with nothing to skip.
+// version is not one the checker reads (skipVersionOk); null with nothing
+// to skip.
 function skipToggled(skipped, app) {
   var skips = {}
   for (var pkg in skipped) if (pkg !== app.pkg) skips[pkg] = skipped[pkg]
