@@ -2,9 +2,7 @@
 // installed: one line per test, "ok<TAB>name" or "not ok<TAB>name<TAB>why",
 // then "done<TAB>count". Exits non-zero when any test fails.
 import assert from "node:assert/strict"
-import fs from "node:fs"
-import path from "node:path"
-import { loadModel, root } from "./model.mjs"
+import { loadModel } from "./model.mjs"
 
 const model = loadModel()
 // The tests call Model.js through m, which notes each function they reach:
@@ -38,7 +36,7 @@ function row(fields) {
   return Object.assign({
     pkg: "app", label: "App", source: "omarchy", installedName: "app", installed: "1.0.0-1",
     latest: "1.0.0", versionFrom: "feed", updateAvailable: false, installable: true, error: "", note: "",
-    stale: false, switchable: false, recipe: "", request: "", muted: false, skipped: false,
+    stale: false, switchable: false, recipe: "", request: "", muted: false, skipped: false, skipEnded: "",
     unchecked: false, held: false, omarchyUpdate: false, blocked: false, selfUpdating: false, icon: "", iconLight: ""
   }, fields)
 }
@@ -78,19 +76,7 @@ test("refreshIntervalSec: between five minutes and a day, 3600 for anything unus
     [3600, 300, 86400, 900, 3600, 3600])
 })
 
-// --- ids and versions ----------------------------------------------------------------
-
-test("pkgNameOk: Arch package names, no leading dot or dash", () => {
-  same(["claude-desktop", "z-code-bin", "@x", "_x", "+x", "a.b+c_d@e", "-x", ".x", "A", "a b", "a/b", "a\n", "", 5]
-    .map(n => m.pkgNameOk(n)),
-    [true, true, true, true, true, true, false, false, false, false, false, false, false, false])
-})
-
-test("appIdOk: a package name, mise:<name>, or Omabump's own id", () => {
-  same(["claude-desktop", "mise:claude", "mise:", "mise:-x", "self:omabump", "self:other", "github:x", null]
-    .map(n => m.appIdOk(n)),
-    [true, true, false, false, true, false, false, false])
-})
+// --- mute and skip settings ------------------------------------------------------------
 
 test("skipVersionOk: what skip_version_ok allows", () => {
   same(["1.0.0-beta.1", "v1", "1.0~rc1", "1+2_3", "1".repeat(64), "1".repeat(65), "-1", ".1", "1..2", "1:2",
@@ -98,8 +84,8 @@ test("skipVersionOk: what skip_version_ok allows", () => {
     [true, true, true, true, true, false, false, false, false, false, false, false, false, false])
 })
 
-test("mutedApps: valid ids only, once each, from a QVariantList too", () => {
-  const list = ["a", 1, "Bad", "mise:x", "", "a", "self:omabump", "x y", null]
+test("mutedApps: strings only, once each, from a QVariantList too", () => {
+  const list = ["a", 1, "mise:x", "a", "self:omabump", null]
   same(m.mutedApps({ mutedApps: list }), ["a", "mise:x", "self:omabump"])
   same(m.mutedApps({ mutedApps: variantList(list) }), ["a", "mise:x", "self:omabump"])
 })
@@ -108,63 +94,24 @@ test("mutedApps: a setting that is not a list is nothing", () => {
   same([m.mutedApps({ mutedApps: "a,b" }), m.mutedApps({ mutedApps: { a: 1 } }), m.mutedApps({})], [[], [], []])
 })
 
-test("mutedApps: only the first quietMax strings count, refused ones included", () => {
-  const list = []
-  for (let i = 0; i < 150; i++) list.push("Bad" + i, i)
-  for (let i = 0; i < 100; i++) list.push("ok" + i)
-  same(m.mutedApps({ mutedApps: list }).length, model.quietMax - 150)
-  same(model.quietMax, 200)
+test("skippedVersions: string versions only, and only ones load_quiet keeps", () => {
+  same(m.skippedVersions({ skippedVersions: { a: "1.0", "mise:b": "2.0-beta.1", d: 3, e: null, f: "1:2", g: "1".repeat(65) } }),
+    { a: "1.0", "mise:b": "2.0-beta.1" })
 })
 
-test("skippedVersions: string versions for valid ids, versions skip_version_ok allows", () => {
-  same(m.skippedVersions({ skippedVersions: { a: "1.0", "mise:b": "2.0-beta.1", Bad: "1.0", c: "1..2", d: 3, e: "", f: "1.0" } }),
-    { a: "1.0", "mise:b": "2.0-beta.1", f: "1.0" })
+test("mutedApps and skippedVersions: only the first quietMax strings count", () => {
+  const ids = Array.from({ length: 250 }, (_, i) => "app" + i)
+  same(m.mutedApps({ mutedApps: [7].concat(ids) }).length, 200)
+  same(m.mutedApps({ mutedApps: ids }).indexOf("app200"), -1)
+  const skips = {}
+  ids.forEach((id, i) => { skips[id] = i < 10 ? "1..2" : "1.0" })
+  const kept = m.skippedVersions({ skippedVersions: skips })
+  same([Object.keys(kept).length, kept.app10, kept.app199, "app200" in kept], [190, "1.0", "1.0", false])
 })
 
 test("skippedVersions: a list or a string is nothing", () => {
   same([m.skippedVersions({ skippedVersions: ["x"] }), m.skippedVersions({ skippedVersions: variantList(["x"]) }),
     m.skippedVersions({ skippedVersions: "x" }), m.skippedVersions({})], [{}, {}, {}, {}])
-})
-
-test("skippedVersions: only the first quietMax string entries count", () => {
-  const map = {}
-  for (let i = 0; i < 150; i++) { map["bad-" + i] = "1..2"; map["num-" + i] = 1 }
-  for (let i = 0; i < 100; i++) map["ok-" + i] = "1.0"
-  same(Object.keys(m.skippedVersions({ skippedVersions: map })).length, 50)
-})
-
-// --- vercmp ------------------------------------------------------------------------------
-
-test("vercmp agrees with /usr/bin/vercmp on every pair in tests/vercmp.tsv", () => {
-  const lines = fs.readFileSync(path.join(root, "tests", "vercmp.tsv"), "utf8").split("\n")
-    .filter(line => line !== "" && !line.startsWith("#"))
-  assert.ok(lines.length >= 300, `only ${lines.length} pairs`)
-  const wrong = []
-  for (const line of lines) {
-    const [a, b, want] = line.split("\t")
-    const got = Math.sign(m.vercmp(a, b))
-    if (got !== Number(want)) wrong.push(`${a} ${b}: ${got}, vercmp says ${want}`)
-  }
-  same(wrong, [])
-})
-
-test("splitEvr: epoch, version and release", () => {
-  same([m.splitEvr("1:2.0-3"), m.splitEvr("2.0"), m.splitEvr(":1"), m.splitEvr("a:1-2-3")], [
-    { epoch: "1", version: "2.0", release: "3" }, { epoch: "0", version: "2.0", release: null },
-    { epoch: "0", version: "1", release: null }, { epoch: "0", version: "a:1-2", release: "3" }])
-})
-
-test("rpmvercmp: runs of digits and letters, separators between", () => {
-  same([m.rpmvercmp("1.0", "1.0"), m.rpmvercmp("1.0a", "1.0"), m.rpmvercmp("1.10", "1.9"), m.rpmvercmp("1..0", "1.0")],
-    [0, -1, 1, 1])
-})
-
-test("upstreamPart: the installed version less epoch and pkgrel", () => {
-  same(["1:2.0-3", "2.0-1", "2.0", "1.0-beta-1"].map(v => m.upstreamPart(v)), ["2.0", "2.0", "2.0", "1.0-beta"])
-})
-
-test("stringVersions: mise and self compare as strings", () => {
-  same(["mise", "self", "omarchy", "vendor-pkg", "indicator"].map(s => m.stringVersions(s)), [true, true, false, false, false])
 })
 
 // --- mute and skip -------------------------------------------------------------------
@@ -185,34 +132,57 @@ test("isMuted and skippedVersion: by pkg", () => {
     ["1.1.0", "", ""])
 })
 
-test("skipHolds: mise and self rows while their update is exactly the skipped version", () => {
-  same([m.skipHolds(miseUpdate, "2.0.1"), m.skipHolds(miseUpdate, "2.0.0"), m.skipHolds(row({ source: "self", latest: "0.2.0", updateAvailable: true }), "0.2.0"),
-    m.skipHolds(Object.assign({}, miseUpdate, { updateAvailable: false }), "2.0.1")], [true, false, true, false])
+test("skipHolds: the checker's skipped, or before a check has read the skip, the newest version being it", () => {
+  // A pacman rollback below the skip: only the checker can tell, and says so.
+  const rolledBack = Object.assign({}, update, { latest: "1.0.9", skipped: true })
+  same([m.skipHolds(update, "1.1.0"), m.skipHolds(miseUpdate, "2.0.1"), m.skipHolds(rolledBack, "1.1.0"),
+    m.skipHolds(update, "1.2.0"), m.skipHolds(update, ""), m.skipHolds(Object.assign({}, rolledBack, { updateAvailable: false }), "1.1.0")],
+    [true, true, true, false, false, false])
 })
 
-test("skipHolds: vercmp rows while the newest is not newer and the installed is older", () => {
-  same([m.skipHolds(update, "1.1.0"), m.skipHolds(update, "1.2.0"), m.skipHolds(update, "1.0.5"),
-    m.skipHolds(row({ installed: "1:1.1.0-2", latest: "1.1.0" }), "1.1.0"), m.skipHolds(update, ""), m.skipHolds(row({ latest: "" }), "1.0")],
-    [true, true, false, false, false, false])
+test("isSkipped: K shows at once, unskipping ends it at once, a newer release ends it", () => {
+  // K stores the row's newest version: skipped before any check reads it.
+  const k = m.skipToggled({}, update).skips
+  same(m.isSkipped(k, update), true)
+  // The check that read it says skipped; unskipping still ends it at once.
+  const checked = Object.assign({}, update, { skipped: true })
+  same([m.isSkipped(k, checked), m.isSkipped(m.skipToggled(k, checked).skips, checked)], [true, false])
+  // A newer release: the checker writes skipped false and another newest.
+  same(m.isSkipped(k, Object.assign({}, update, { latest: "1.2.0", skipped: false })), false)
+  // That version installed: no update, so no skip.
+  same(m.isSkipped(k, row({ pkg: "claude-desktop", installed: "1.1.0-1", latest: "1.1.0" })), false)
 })
 
 test("isSkipped and isQuiet: a skip counts only on a row with an update", () => {
   const skipped = { "claude-desktop": "1.1.0", app: "1.0.0" }
-  same([m.isSkipped(skipped, update), m.isSkipped(skipped, row({ installed: "0.9-1", latest: "1.0.0" })), m.isSkipped(skipped, null)],
-    [true, false, false])
+  same([m.isSkipped(skipped, update), m.isSkipped(skipped, row({ installed: "0.9-1", latest: "1.0.0" })), m.isSkipped(skipped, null),
+    m.isSkipped({}, Object.assign({}, update, { skipped: true }))], [true, false, false, false])
   same([m.isQuiet([], skipped, update), m.isQuiet(["mise:claude"], {}, miseUpdate), m.isQuiet([], {}, update)], [true, true, false])
 })
 
-test("skipKept: kept while it holds, and while the last check cannot tell", () => {
-  const apps = [update, row({ pkg: "failed", error: "boom", latest: "2.0" }), row({ pkg: "stale", stale: true }),
-    row({ pkg: "busy", checking: true }), row({ pkg: "mise:u", source: "mise", unchecked: true, latest: "" }), row({ pkg: "nolatest", latest: "" })]
-  same(["claude-desktop", "failed", "stale", "busy", "mise:u", "nolatest", "unlisted"].map(p => m.skipKept(apps, p, "1.1.0")),
-    [true, true, true, true, true, true, true])
-  same([m.skipKept(apps, "claude-desktop", "1.0.5"), m.skipKept([row({ installed: "1.1.0-1", latest: "1.1.0" })], "app", "1.1.0")], [false, false])
+test("skipKept: kept until a run found that very skip over, and while the last check cannot tell", () => {
+  const ended = { skipEnded: "1.1.0" }
+  const apps = [update, row(Object.assign({ pkg: "failed", error: "boom", latest: "2.0" }, ended)), row(Object.assign({ pkg: "stale", stale: true }, ended)),
+    row(Object.assign({ pkg: "busy", checking: true }, ended)), row(Object.assign({ pkg: "mise:u", source: "mise", unchecked: true, latest: "" }, ended)),
+    row(Object.assign({ pkg: "nolatest", latest: "" }, ended)), row({ pkg: "rolled", latest: "1.0.9", updateAvailable: true, skipped: true })]
+  same(["claude-desktop", "failed", "stale", "busy", "mise:u", "nolatest", "unlisted", "rolled"].map(p => m.skipKept(apps, p, "1.1.0")),
+    [true, true, true, true, true, true, true, true])
+  // A newer release than the skip, or the skipped version installed: the
+  // run that read the skip says so.
+  same([m.skipKept([Object.assign({}, update, { skipEnded: "1.0.5" })], "claude-desktop", "1.0.5"),
+    m.skipKept([row({ installed: "1.1.0-1", latest: "1.1.0", skipEnded: "1.1.0" })], "app", "1.1.0")], [false, false])
+  // A skip set by hand that no run has read yet stays, whatever its
+  // version: one vercmp calls equal to the newest, or one still to come.
+  // So does one set after the run that ended another.
+  const feed = row({ pkg: "grok-bot", installed: "0.65-1", latest: "0.66", updateAvailable: true })
+  same([m.skipKept([feed], "grok-bot", "0.66.0"), m.skipKept([row({ pkg: "grok-bot", installed: "0.65.0-1", latest: "0.65.0" })], "grok-bot", "0.66.0"),
+    m.skipKept([Object.assign({}, feed, { skipEnded: "0.65" })], "grok-bot", "0.66.0")], [true, true, true])
 })
 
-test("liveSkips: drops the skips their row shows are over", () => {
-  same(m.liveSkips([update], { "claude-desktop": "1.0.5", other: "3.0" }), { other: "3.0" })
+test("liveSkips: drops the skips a run found over", () => {
+  same(m.liveSkips([Object.assign({}, update, { skipEnded: "1.0.5" }), Object.assign({}, miseUpdate, { latest: "2.0.2", skipEnded: "2.0.1" })],
+    { "claude-desktop": "1.0.5", "mise:claude": "2.0.1", other: "3.0" }), { other: "3.0" })
+  same(m.liveSkips([update], { "claude-desktop": "1.2.0" }), { "claude-desktop": "1.2.0" })
 })
 
 test("allMuted: every listed row of the source, and at least one", () => {
@@ -236,7 +206,7 @@ test("skipToggled: nothing without an update, a note for a version Omabump does 
 })
 
 test("quietText: listed rows only, and skips the settings keep", () => {
-  const apps = [update, miseUpdate, row({ pkg: "old", installed: "2.0-1", latest: "2.0", label: "Old" })]
+  const apps = [update, miseUpdate, row({ pkg: "old", installed: "2.0-1", latest: "2.0", label: "Old", skipEnded: "1.5" })]
   same(m.quietText(apps, ["mise:claude", "unlisted"], { "claude-desktop": "1.1.0", old: "1.5", gone: "1.0" }),
     "Muted: Claude Code · Skipped: Claude 1.1.0")
   same(m.quietText(apps, [], {}), "")
@@ -248,8 +218,11 @@ test("quietCleared: Clear keeps what the line leaves out", () => {
 })
 
 test("settingsEntry: the whole entry, id first, changes merged, dead skips dropped", () => {
-  same(m.settingsEntry("w", { id: "w", notify: true, skippedVersions: { "claude-desktop": "1.0.5" } }, { notify: false }, [update],
-    { "claude-desktop": "1.0.5" }), { id: "w", notify: false, skippedVersions: {} })
+  same(m.settingsEntry("w", { id: "w", notify: true, skippedVersions: { "claude-desktop": "1.0.5" } }, { notify: false },
+    [Object.assign({}, update, { skipEnded: "1.0.5" })], { "claude-desktop": "1.0.5" }), { id: "w", notify: false, skippedVersions: {} })
+  // A hand-set skip no check has read survives a write of another setting.
+  same(m.settingsEntry("w", { skippedVersions: { "claude-desktop": "1.2.0" } }, { mutedApps: ["a"] }, [update],
+    { "claude-desktop": "1.2.0" }), { id: "w", skippedVersions: { "claude-desktop": "1.2.0" }, mutedApps: ["a"] })
   same(m.settingsEntry("w", { showMise: true }, { mutedApps: ["a"] }, [update], {}), { id: "w", showMise: true, mutedApps: ["a"] })
   same(m.settingsEntry("w", {}, { skippedVersions: { "claude-desktop": "1.1.0" } }, [update], {}),
     { id: "w", skippedVersions: { "claude-desktop": "1.1.0" } })
@@ -305,10 +278,8 @@ test("parseStatus: the fields the widget reads", () => {
   same(status, {
     apps: [row({}), row({ pkg: "mise:x", source: "mise" })], checkedAt: "2026-10-07T10:00:00+00:00",
     checking: true, startedMs: Date.parse("2026-10-07T09:59:00+00:00"), inventoryMs: Date.parse("2026-10-07T10:04:00+00:00"),
-    pkgsCommit: "abc", pkgsFollowing: true, pkgsError: "e", pkgsNote: "n", miseError: "m", runError: "r",
-    retry: false
+    pkgsCommit: "abc", pkgsFollowing: true, pkgsError: "e", pkgsNote: "n", miseError: "m", runError: "r"
   })
-  same([m.parseStatus('{"retry": true}', true).retry, m.parseStatus('{"retry": "yes"}', true).retry], [true, false])
 })
 
 test("parseStatus: no inventoryAt (a file from before it), or one that is no time, is 0", () => {
@@ -321,97 +292,14 @@ test("parseStatus: Show mise tools off drops mise rows and mise's error", () => 
   same([status.apps.length, status.miseError, status.checkedAt, status.startedMs], [1, "", "", 0])
 })
 
-test("checkDue: due with no check, not within the interval less 30 s", () => {
-  const now = Date.parse("2026-10-07T12:00:00Z")
-  same([m.checkDue(now, "", 0, 3600), m.checkDue(now, "2026-10-07T11:30:00Z", 0, 3600),
-    m.checkDue(now, "2026-10-07T11:00:20Z", 0, 3600), m.checkDue(now, "2026-10-07T11:00:40Z", 0, 3600)], [true, false, true, false])
-})
-
-test("checkDue: counts from the last start, of a run that died half way too; a future time proves nothing", () => {
-  const now = Date.parse("2026-10-07T12:00:00Z")
-  same([m.checkDue(now, "2026-10-07T11:30:00Z", Date.parse("2026-10-07T10:55:00Z"), 3600),
-    m.checkDue(now, "2026-10-07T11:30:00Z", Date.parse("2026-10-07T11:45:00Z"), 3600),
-    m.checkDue(now, "2026-10-07T10:30:00Z", Date.parse("2026-10-07T11:45:00Z"), 3600),
-    m.checkDue(now, "2026-10-07T13:00:00Z", 0, 3600)], [true, false, false, true])
-})
-
-test("lastRunMs: the last start, finished or not, else the end of a file without starts", () => {
-  same([m.lastRunMs("2026-10-07T11:30:00Z", 5), m.lastRunMs("2026-10-07T11:30:00Z", 0), Number.isNaN(m.lastRunMs("", 0))],
-    [5, Date.parse("2026-10-07T11:30:00Z"), true])
-})
-
-test("dueRun: the check when due; after one that failed, once, its retry five minutes after it started", () => {
-  const now = Date.parse("2026-10-07T12:00:00Z")
-  same(model.retrySec, 300)
-  const at = (t) => [now, "2026-10-07T" + t + "Z", 0, 3600]
-  same([m.dueRun(...at("10:59:00"), false, false), m.dueRun(...at("11:55:00"), false, false),
-    m.dueRun(...at("11:55:00"), true, false), m.dueRun(...at("11:55:00"), true, true),
-    m.dueRun(...at("11:55:00"), false, true), m.dueRun(...at("11:56:00"), true, false),
-    m.dueRun(...at("10:59:00"), true, true)], ["check", "", "retry", "", "", "", "check"])
-  // An interval shorter than the retry's wait: the retry after an interval.
-  same([m.dueRun(now, "2026-10-07T11:58:00Z", 0, 120, true, false), m.dueRun(now, "2026-10-07T11:59:00Z", 0, 120, true, false)],
-    ["retry", ""])
-})
-
-test("dueRun: a run that died half way (start past the end) gets its retry, flagged, once, and no check piles up behind it", () => {
-  const now = Date.parse("2026-10-07T12:00:00Z")
-  const died = (start) => [now, "2026-10-07T10:01:00Z", Date.parse("2026-10-07T" + start + "Z"), 3600]
-  // The last good check ended two hours ago: still the retry, not a check.
-  same([m.dueRun(...died("11:55:00"), true, false), m.dueRun(...died("11:58:00"), true, false),
-    m.dueRun(...died("11:55:00"), true, true), m.dueRun(...died("11:00:00"), true, true)], ["retry", "", "", "check"])
-})
-
-// One bar over four hours, asking every pollSec what to start as Main.qml
-// does, with every run ending one way: "ok", "fail" (it completes with
-// failing rows), "die" (stopped early: runError, the new start, the old
-// end) or "silent" (it writes nothing; checkError only). The answer is the
-// minute and kind of each run, C for a check, R for a retry.
-function runsOver(outcome) {
-  const t0 = Date.parse("2026-10-07T10:00:00Z")
-  let file = { checkedAt: new Date(t0 + 60e3).toISOString(), startedMs: t0, runError: "", rowsFail: false, retry: false }
-  let checkError = "", retryAskedMs = NaN, askedMs = 0
-  const runs = []
-  for (let now = t0 + 60e3; now < t0 + 4 * 3600e3; now += model.pollSec * 1000) {
-    const failed = checkError !== "" || file.runError !== "" || file.rowsFail
-    const run = m.barDueRun(now, file.checkedAt, file.startedMs, askedMs, 3600, failed, file.retry, retryAskedMs)
-    if (run === "") continue
-    if (run === "retry") retryAskedMs = model.lastRunMs(file.checkedAt, file.startedMs)
-    askedMs = now
-    const how = outcome(runs.length)
-    runs.push(new Date(now).toISOString().slice(11, 16) + (run === "retry" ? "R" : "C"))
-    const retry = run === "retry"
-    if (how === "ok" || how === "fail") {
-      file = { checkedAt: new Date(now + 60e3).toISOString(), startedMs: now, runError: "", rowsFail: how === "fail", retry }
-      checkError = ""
-    } else if (how === "die") {
-      file = { ...file, startedMs: now, runError: "The check stopped early", retry }
-      checkError = "exit 1"
-    } else {
-      checkError = "exit 137"
-    }
-  }
-  return runs.join(" ")
-}
-
-test("barDueRun: one check an hour, and after a failure one retry five minutes on, however runs fail", () => {
-  same([runsOver(() => "ok"), runsOver((n) => n === 0 ? "fail" : "ok"), runsOver(() => "fail"), runsOver(() => "die"),
-    runsOver(() => "silent"), runsOver((n) => n === 0 ? "silent" : "ok")], [
-    "11:00C 12:00C 13:00C",
-    "11:00C 11:05R 12:05C 13:05C",
-    "11:00C 11:05R 12:05C 12:10R 13:10C 13:15R",
-    "11:00C 11:05R 12:05C 12:10R 13:10C 13:15R",
-    "11:00C 11:05R 12:05C 13:05C",
-    "11:00C 11:05R 12:05C 13:05C"])
-})
-
 // --- this shell's checks ------------------------------------------------------------
 
-test("checkOutcome: a lock wait that gave up ran nothing, a checker that found the lock taken left; else the exit code says", () => {
+test("checkOutcome: a lock wait that gave up ran nothing, a checker that found the lock taken left, none was due; else the exit code says", () => {
   const busy = model.lockBusyExit
-  same(busy, 75)
-  same([m.checkOutcome(busy, true), m.checkOutcome(busy, false), m.checkOutcome(0, true), m.checkOutcome(0, false),
-    m.checkOutcome(1, false), m.checkOutcome(124, false), m.checkOutcome(124, true)],
-    ["notRun", "left", "ok", "ok", "failed", "failed", "failed"])
+  same([busy, model.notDueExit], [75, 76])
+  same([m.checkOutcome(busy, true), m.checkOutcome(busy, false), m.checkOutcome(76, false), m.checkOutcome(0, true),
+    m.checkOutcome(0, false), m.checkOutcome(1, false), m.checkOutcome(124, false), m.checkOutcome(124, true)],
+    ["notRun", "left", "notDue", "ok", "ok", "failed", "failed", "failed"])
 })
 
 test("queuedRunWaits: not behind a check that completed, behind any other end", () => {
@@ -470,11 +358,6 @@ test("localDue: due with no inventory, not within the interval less 30 s, and a 
     m.localDue(now, Date.parse("2026-10-07T12:01:00Z"), 300)], [true, false, true, false, true])
 })
 
-test("openedRun: nothing while a check runs, the check when due, else a local refresh", () => {
-  same([m.openedRun(true, true), m.openedRun(true, false), m.openedRun(false, true), m.openedRun(false, false)],
-    ["", "", "full", "local"])
-})
-
 // --- rows -----------------------------------------------------------------------------------
 
 const indicator = row({ pkg: "kimi", installedName: "kimi", source: "indicator", installable: false, latest: "2.0", updateAvailable: true })
@@ -485,22 +368,22 @@ test("updatable: an update the plugin installs", () => {
   same([m.updatable(update), m.updatable(indicator), m.updatable(row({})), m.updatable(null)], [true, false, false, false])
 })
 
-test("askable: an update with no install path, or a mise tool held below a newer release", () => {
-  same([m.askable(indicator), m.askable(update), m.askable(pinnedNoRoute), m.askable(Object.assign({}, pinnedNoRoute, { error: "x" })),
-    m.askable(row({ source: "self", installable: false, updateAvailable: true })), m.askable(Object.assign({}, indicator, { held: true })),
-    m.askable(Object.assign({}, indicator, { omarchyUpdate: true })), m.askable(Object.assign({}, indicator, { blocked: true })), m.askable(null)],
+test("noRoute: an update with no install path, or a mise tool held below a newer release", () => {
+  same([m.noRoute(indicator), m.noRoute(update), m.noRoute(pinnedNoRoute), m.noRoute(Object.assign({}, pinnedNoRoute, { error: "x" })),
+    m.noRoute(row({ source: "self", installable: false, updateAvailable: true })), m.noRoute(Object.assign({}, indicator, { held: true })),
+    m.noRoute(Object.assign({}, indicator, { omarchyUpdate: true })), m.noRoute(Object.assign({}, indicator, { blocked: true })), m.noRoute(null)],
     [true, false, true, false, false, false, false, false, false])
 })
 
-test("askable: not a mise row a local refresh found at another version, with no check of it yet", () => {
-  same([m.askable(Object.assign({}, pinnedNoRoute, { installed: "1.1", unchecked: true })),
-    m.askable(Object.assign({}, pinnedNoRoute, { installed: "1.1" }))], [false, true])
+test("noRoute: not a mise row a local refresh found at another version, with no check of it yet", () => {
+  same([m.noRoute(Object.assign({}, pinnedNoRoute, { installed: "1.1", unchecked: true })),
+    m.noRoute(Object.assign({}, pinnedNoRoute, { installed: "1.1" }))], [false, true])
 })
 
-test("hasAction and primaryAction: Update, Ask agent or Switch", () => {
+test("hasAction and primaryAction: Update or Switch; a row with no install route has none", () => {
   const sw = row({ installedName: "app-bin", switchable: true })
-  same([update, indicator, sw, row({})].map(a => m.hasAction(a)), [true, true, true, false])
-  same([update, indicator, sw, null].map(a => m.primaryAction(a)), ["update", "ask", "", ""])
+  same([update, indicator, pinnedNoRoute, sw, row({})].map(a => m.hasAction(a)), [true, false, false, true, false])
+  same([update, indicator, sw, null].map(a => m.primaryAction(a)), ["update", "", "", ""])
 })
 
 // An app installed as its self-updating AppImage, as the checker writes it:
@@ -518,10 +401,10 @@ test("switchable: the checker's switchable, never for a self-updating app", () =
     m.switchable(Object.assign({}, appImage, { switchable: true })), m.switchable(null)], [true, false, false, false])
 })
 
-test("a self-updating app: no Update, Switch or Ask agent, whatever else the row says", () => {
+test("a self-updating app: no Update or Switch, whatever else the row says", () => {
   const odd = Object.assign({}, appImage, { installable: true, switchable: true })
   same([appImage, odd, Object.assign({}, appImage, { updateAvailable: false, latest: "0.1.0" })]
-    .map(a => [m.updatable(a), m.askable(a), m.hasAction(a), m.primaryAction(a)]),
+    .map(a => [m.updatable(a), m.noRoute(a), m.hasAction(a), m.primaryAction(a)]),
     [[false, false, false, ""], [false, false, false, ""], [false, false, false, ""]])
   same(m.firstActionIndex([appImage, update], [], {}), 1)
 })
@@ -559,14 +442,17 @@ test("allMuted: a self-updating app takes no route of its source, so it never ke
 })
 
 test("firstActionIndex: the first row with something to do that is not quiet", () => {
-  same([m.firstActionIndex([row({}), update, indicator], [], {}), m.firstActionIndex([row({}), update, indicator], ["claude-desktop"], {}),
+  const sw = row({ pkg: "sw", installedName: "sw-bin", switchable: true })
+  same([m.firstActionIndex([row({}), update, sw], [], {}), m.firstActionIndex([row({}), update, sw], ["claude-desktop"], {}),
     m.firstActionIndex([row({})], [], {}), m.firstActionIndex([], [], {})], [1, 2, 0, 0])
+  // A row with no install route has nothing to do.
+  same([m.firstActionIndex([indicator, update], [], {}), m.firstActionIndex([row({}), indicator], [], {})], [1, 0])
 })
 
 test("cursorIndex: the app moved to by hand while listed, else the first row with something to do", () => {
   const plain = row({ pkg: "a" }), moved = [update, plain, indicator]
-  same([m.cursorIndex(moved, "a", true, [], {}), m.cursorIndex([plain, indicator], "claude-desktop", true, [], {}),
-    m.cursorIndex([plain, update], "a", false, [], {}), m.cursorIndex([], "a", true, [], {})], [1, 1, 1, 0])
+  same([m.cursorIndex(moved, "a", true, [], {}), m.cursorIndex([plain, indicator, update], "gone", true, [], {}),
+    m.cursorIndex([plain, update], "a", false, [], {}), m.cursorIndex([], "a", true, [], {})], [1, 2, 1, 0])
 })
 
 const renamed = row({ pkg: "chatgpt", installedName: "chatgpt-desktop", installed: "1.0.0-1", latest: "1.1.0", updateAvailable: true, note: "Recipe at abc" })
@@ -599,10 +485,10 @@ test("installedText: no pkgrel, unless it is the only difference; mise as is", (
 })
 
 test("extraLine: the row's exception, in order", () => {
-  same([m.extraLine(row({ checking: true, error: "e" }), "n"), m.extraLine(row({ error: "e" }), "Prompt copied"),
+  same([m.extraLine(row({ checking: true, error: "e" }), "n"), m.extraLine(row({ error: "e" }), "Cannot skip 1..2: not a version Omabump stores"),
     m.extraLine(row({ error: "e", note: "x" }), ""), m.extraLine(renamed, undefined), m.extraLine(indicator, ""),
     m.extraLine(row({ stale: true }), ""), m.extraLine(row({}), ""), m.extraLine(null, "")],
-    ["Checking…", "Prompt copied", "Check failed: e", "Installed as chatgpt-desktop", "No install route", "Last known version", "", ""])
+    ["Checking…", "Cannot skip 1..2: not a version Omabump stores", "Check failed: e", "Installed as chatgpt-desktop", "No install route", "Last known version", "", ""])
 })
 
 test("sourceLabel: where the newest version came from", () => {
@@ -649,13 +535,6 @@ test("luminance: black is 0, white is 1", () => {
   same([m.luminance({ r: 0, g: 0, b: 0 }), m.luminance({ r: 1, g: 1, b: 1 }), m.luminance({ r: 0.5, g: 0.5, b: 0.5 }) < 0.5], [0, 1, true])
 })
 
-test("promptOutcome: the wrapper's first line says what happened", () => {
-  same([m.promptOutcome("agent\nplan this\nplease"), m.promptOutcome("copied\n"), m.promptOutcome("noagent"),
-    m.promptOutcome("error\nno check has run yet\n"), m.promptOutcome("error\n"), m.promptOutcome("")], [
-    { prompt: "plan this\nplease" }, { note: "Prompt copied" }, { note: "No default agent set, prompt copied" },
-    { note: "Prompt failed: no check has run yet" }, { note: "Prompt failed: error" }, { note: "Prompt failed: no output" }])
-})
-
 // --- panel text ----------------------------------------------------------------------------
 
 test("clamp", () => {
@@ -674,7 +553,7 @@ test("keyAction: CapsLock J and K move the cursor, Shift+K skips", () => {
 test("keyAction: the panel's letter keys, in the settings view and without a cursor", () => {
   const keys = ["s", "S", "\b", "r", "R", "c", "C", "w", "W", "m", "M", "x", "k"]
   same(keys.map(k => m.keyAction(k, 0, false, true)),
-    ["settings", "settings", "", "refresh", "refresh", "copy", "copy", "switch", "switch", "mute", "mute", "", ""])
+    ["settings", "settings", "", "refresh", "refresh", "", "", "switch", "switch", "mute", "mute", "", ""])
   same(keys.map(k => m.keyAction(k, 0, true, true)), ["settings", "settings", "back", "", "", "", "", "", "", "", "", "", ""])
   same(keys.map(k => m.keyAction(k, 0, false, false)), ["settings", "settings", "", "refresh", "refresh", "", "", "", "", "", "", "", ""])
 })
@@ -684,7 +563,7 @@ test("hintText: the keys the cursor's row takes", () => {
     m.hintText(false, indicator, 3, [], {}), m.hintText(false, sameVersion, 3, [], {}), m.hintText(false, row({}), 3, [], {}),
     m.hintText(false, null, 3, [], {}), m.hintText(false, null, 0, [], {})], [
     "Space change · Esc back", "Enter update · K skip · m mute · Esc close", "Enter update · K unskip · m unmute · Esc close",
-    "Enter ask agent · c copy prompt · K skip · m mute", "w switch package · m mute · Esc close",
+    "↑↓ select · r refresh · s settings · K skip · m mute", "w switch package · m mute · Esc close",
     "↑↓ select · r refresh · s settings · m mute", "↑↓ select · r refresh · s settings", "r refresh · s settings"])
 })
 

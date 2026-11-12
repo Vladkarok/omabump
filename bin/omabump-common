@@ -205,6 +205,29 @@ row_skipped() {
   if string_versions "$1"; then [[ $3 == "$4" ]]; else ! newer "$3" "$4"; fi
 }
 
+# True when a skip is over and may leave the settings: a newer release than
+# the skipped version, or that version or a later one installed (vercmp
+# sources); a mise or self row no longer at it. A skip of a version still
+# to come stays. The panel compares no versions, so it drops a skip only on
+# this answer (the row's skipEnded), never one no run has read yet.
+# $1 source, $2 update (true/false), $3 latest, $4 skipped version,
+# $5 installed version.
+skip_over() {
+  [[ -n $4 && -n $3 ]] || return 1
+  if string_versions "$1"; then ! row_skipped "$1" "$2" "$3" "$4"
+  else newer "$3" "$4" || ! newer "$4" "$(upstream_part "$5")"; fi
+}
+
+# A row's skipEnded: the version of its skip in the settings (load_quiet)
+# when skip_over says it is over, else "". $1 the row.
+skip_ended() {
+  local pkg source update latest installed skip
+  IFS=$'\x1f' read -r pkg source update latest installed < <(jq -r '
+    [.pkg, .source // "", .updateAvailable == true, .latest // "", .installed // ""] | map(tostring) | join("\u001f")' <<<"$1")
+  skip=$(jq -r --arg pkg "$pkg" '.[$pkg] // ""' <<<"$skipped_json")
+  if skip_over "$source" "$update" "$latest" "$skip" "$installed"; then echo "$skip"; fi
+}
+
 # What to do about a row's newer version once per version: "send" a
 # notification, "record" it as announced without one (a quiet row: muted, or
 # at a skipped version; undoing either does not announce it late), or

@@ -30,7 +30,6 @@ Item {
     .replace(/^file:\/\//, "").replace(/[?#].*$/, ""))
   readonly property string checkScript: binDir + "/omabump-check"
   readonly property string installScript: binDir + "/omabump-install"
-  readonly property string promptScript: binDir + "/omabump-prompt"
   // A run that waits for the lock runs this before the checker's deadline
   // (runCheck): $1 the checker's lock, $2 how long to wait for it
   // (lockWaitSec), then the command. It takes the lock and lets go at once,
@@ -72,8 +71,8 @@ Item {
   // Rows the user muted (pkg ids): no badge, no count, no notification.
   // Their update stays visible in the panel and installable. And {pkg:
   // version} the user skipped. The checker reads the same two settings from
-  // shell.json itself (load_quiet), by the same rules (Model.mutedApps and
-  // Model.skippedVersions).
+  // shell.json itself (load_quiet) and writes whether each row's skip
+  // applies, which Model.isSkipped reads.
   readonly property var mutedApps: Model.mutedApps(settings)
   readonly property var skippedVersions: Model.skippedVersions(settings)
 
@@ -131,22 +130,28 @@ Item {
   // status.json's inventoryAt: when the installed versions were last read,
   // by a check or a local refresh (localRefresh); 0 when it does not say.
   property double inventoryMs: 0
-  // status.json's retry: the last check was the retry of one that failed.
-  property bool fileRetry: false
-  // When the last run status.json shows had started (Model.lastRunMs) as
-  // this bar started its retry: until a run writes the file again, that
-  // failure has had its retry, even when the retry wrote nothing.
-  property double retryAskedMs: NaN
+  // This shell's running check is the timer's or the panel's (runDue), and
+  // the checker has not said "due" yet. It may find none due and run
+  // nothing, so until then it is no check: the panel shows no "Checking…"
+  // every minute.
+  property bool runIfDue: false
+  // A local refresh asked for while that run decides: it runs after it when
+  // no check read the installed versions (checkProcess's onExited).
+  property bool localAfterDue: false
+  // A check a local refresh asked for while that run decides: it runs after
+  // it only when none was due. A check that was due took the lock after the
+  // refresh, so it read what the refresh asked about.
+  property bool checkAfterDue: false
   // A local refresh asked for while one ran: one more runs after it.
   property bool localPending: false
-  // status.json has been read, or found missing. The timer's first check
-  // waits for it, or it could not tell that another one just ran.
+  // status.json has been read, or found missing. The timer, the panel and
+  // the local refresh wait for it.
   property bool statusRead: false
   // The timer has ticked once, with the settings the bar handed over.
   property bool timerTicked: false
   property double nowMs: Date.now()
   readonly property bool fileChecking: fileCheckingRaw && nowMs - fileStartedMs < staleMs
-  readonly property bool checking: checkProcess.running || fileChecking
+  readonly property bool checking: checkProcess.running && !runIfDue || fileChecking
   // Why no summary may read as up to date, for the line under the panel's
   // header; checkFailed while there is one.
   readonly property string failureText: Model.failureText({ checkError: checkError, runError: runError,
@@ -158,9 +163,6 @@ Item {
   readonly property int errorCount: Model.errorCount(apps, mutedApps)
   readonly property int mutedErrorCount: Model.mutedErrorCount(apps, mutedApps)
   readonly property int uncheckedCount: Model.uncheckedCount(apps)
-  // What the summary calls "Check failed", or a run killed with no word
-  // (its "checking" mark gone stale), which earns one retry (Model.dueRun).
-  readonly property bool lastCheckFailed: checkFailed || errorCount > 0 || fileCheckingRaw && !fileChecking
   readonly property int staleCount: Model.staleCount(apps, mutedApps)
   // What the hero, the bar tooltip and IPC status summarise (Model.heroMeta,
   // Model.tooltipText).
@@ -209,13 +211,14 @@ Item {
   // (or to another bar's waitScript, whose check starts next), and leaves
   // the answer to that one (Model.checkOutcome's "left"). A local refresh
   // holding the lock is no check: the checker waits for it to end.
-  // retry: the one retry of a check that failed (Model.dueRun), which
-  // status.json then says.
-  function runCheck(wait, own, retry) {
+  // ifDue: the timer's or the panel's (runDue), which the checker runs only
+  // when it is due.
+  function runCheck(wait, own, ifDue) {
     checkQueued = false
     queuedForRefresh = false
     runForRefresh = own
     runWaiting = wait
+    runIfDue = !!ifDue
     runAskedMs = Date.now()
     // An overall deadline: ten minutes, then TERM, then KILL ten seconds
     // later; other waiters (the installer, another bar) count on a check
@@ -225,35 +228,28 @@ Item {
     var command = ["timeout", "-k", "10", "600", checkScript]
     if (!notify) command.push("--no-notify")
     if (!showMise) command.push("--no-mise")
-    if (retry) command.push("--retry")
+    if (ifDue) command.push("--if-due", "--interval", String(refreshIntervalSec))
     if (wait)
       command = ["bash", "-c", waitScript, "omabump-wait", lockPath, String(lockWaitSec)].concat(command)
     checkProcess.command = command
     checkProcess.running = true
   }
 
-  // The check the timer or opening the panel may start (Model.barDueRun):
-  // "check", "retry" or "".
-  function dueCheck() {
-    return Model.barDueRun(nowMs, checkedAt, fileStartedMs, runAskedMs, refreshIntervalSec, lastCheckFailed,
-      fileRetry, retryAskedMs)
+  // The timer's check, or the retry of one that failed, when one is due:
+  // bin/omabump-check --if-due decides, under its lock, from status.json's
+  // times, which every bar shares, and exits Model.notDueExit otherwise. A
+  // check holding the lock is the one that was due, and this one leaves on
+  // it.
+  function runDue() {
+    runCheck(false, false, true)
   }
 
-  // Starts the check dueCheck answered, noting a retry.
-  function startDue(run) {
-    if (run === "retry") retryAskedMs = Model.lastRunMs(checkedAt, fileStartedMs)
-    runCheck(false, false, run === "retry")
-  }
-
-  // The timer's check, or the retry of one that failed. This one stays out
-  // while a check runs (its own, or one status.json shows) or the last one
-  // started recently (dueCheck). Refresh (click, r, IPC) always checks.
+  // The timer's tick. It stays out while this shell's own check runs.
+  // Refresh (click, r, IPC) always checks.
   function scheduledRefresh() {
     timerTicked = true
     nowMs = Date.now()
-    if (checkProcess.running || fileChecking) return
-    var run = dueCheck()
-    if (run !== "") startDue(run)
+    if (!checkProcess.running) runDue()
   }
 
   // A local refresh (bin/omabump-check --local) reads the installed
@@ -276,6 +272,12 @@ Item {
     }
     // A check reads the installed versions too.
     if (checking) return
+    // This shell's runDue run holds the lock or is about to: the refresh
+    // follows it, unless it ran a check.
+    if (checkProcess.running) {
+      localAfterDue = true
+      return
+    }
     var command = ["timeout", "-k", "10", "120", checkScript, "--local"]
     if (!showMise) command.push("--no-mise")
     localProcess.command = command
@@ -290,14 +292,14 @@ Item {
   }
 
   // The panel opened: it shows what is installed now, by the timer's check
-  // when one is due, else by a local refresh (Model.openedRun).
+  // when one is due, else by a local refresh after it (localAfterDue).
+  // Nothing while a check runs, which reads the installed versions too.
   function panelOpened() {
     if (!settingsReady || !statusRead) return
     nowMs = Date.now()
-    var due = dueCheck()
-    var run = Model.openedRun(checking, due !== "")
-    if (run === "full") startDue(due)
-    else if (run === "local") localRefresh()
+    if (checking) return
+    if (!checkProcess.running) runDue()
+    localAfterDue = true
   }
 
   function parse(content) {
@@ -317,7 +319,6 @@ Item {
       fileCheckingRaw = status.checking
       fileStartedMs = status.startedMs
       inventoryMs = status.inventoryMs
-      fileRetry = status.retry
       nowMs = Date.now()
       pkgsCommit = status.pkgsCommit
       pkgsFollowing = status.pkgsFollowing
@@ -353,7 +354,11 @@ Item {
     // old inode can miss; reading it back here covers that.
     onExited: function(exitCode) {
       var outcome = Model.checkOutcome(exitCode, root.runWaiting)
+      var local = root.localAfterDue
+      var check = root.checkAfterDue
       root.runWaiting = false
+      root.localAfterDue = false
+      root.checkAfterDue = false
       if (outcome === "notRun") {
         // Nothing ran: this shell's last check and when it ended stand, and
         // the Refresh says it was not done rather than pass for one that
@@ -361,25 +366,34 @@ Item {
         // for, so only a later one clears that.
         root.checkError = Model.checkErrorText(outcome, exitCode, root.lockWaitSec)
         root.checkErrorAfterMs = root.runAskedMs
-      } else if (outcome !== "left") {
+      } else if (outcome !== "left" && outcome !== "notDue") {
         root.checkError = Model.checkErrorText(outcome, exitCode, root.lockWaitSec)
         root.lastCheckEndMs = Date.now()
         root.checkErrorAfterMs = root.lastCheckEndMs
       }
-      // A run that left on the lock changes neither checkError nor
-      // lastCheckEndMs: the check holding it answers, and clears an error
-      // by the same rule as any other's (parse()). Its line on stderr is
-      // for a terminal; here it is no news (with two bars, one copy leaves
-      // on every tick), so it stays out of the shell's log.
+      // A run that left on the lock, or found no check due, changes neither
+      // checkError nor lastCheckEndMs: the check holding the lock answers,
+      // and clears an error by the same rule as any other's (parse()). Its
+      // lines on stderr are for a terminal; here they are no news (with two
+      // bars, one copy leaves on every tick), so they stay out of the
+      // shell's log.
       var err = checkStderr.text.trim()
-      if (err !== "" && outcome !== "left") console.warn("omabump", err)
+      if (err !== "" && outcome !== "left" && outcome !== "notDue") console.warn("omabump", err)
       statusFile.reload()
+      if (check && outcome === "notDue") root.checkQueued = true
       Qt.callLater(root.runQueued, Model.queuedRunWaits(outcome))
+      // The local refresh asked for meanwhile, when this run read no
+      // versions: none was due, or it left on another bar's run.
+      if (local && (outcome === "notDue" || outcome === "left")) Qt.callLater(root.localRefresh)
     }
 
-    // waitScript's word that the wait is over.
+    // waitScript's word that the wait is over, and the checker's that a
+    // check is due (--if-due).
     stdout: SplitParser {
-      onRead: function(line) { if (line === "started") root.runWaiting = false }
+      onRead: function(line) {
+        if (line === "started") root.runWaiting = false
+        else if (line === "due") root.runIfDue = false
+      }
     }
 
     // Logged by onExited, by the run's outcome: Quickshell ends the stream
@@ -403,7 +417,12 @@ Item {
       if (outcome === "failed")
         console.warn("omabump", "local refresh failed (exit " + exitCode + ")" + (err !== "" ? ": " + err : ""))
       statusFile.reload()
-      if (Model.localWantsCheck(outcome, checkProcess.running)) root.runCheck(false, false)
+      // Behind this shell's runDue run, which may find none due, it waits
+      // for that one's answer (checkAfterDue).
+      if (Model.localWantsCheck(outcome, checkProcess.running && !root.runIfDue)) {
+        if (checkProcess.running) root.checkAfterDue = true
+        else root.runCheck(false, false)
+      }
       if (root.localPending) {
         root.localPending = false
         Qt.callLater(root.localRefresh)
@@ -430,8 +449,8 @@ Item {
     onTriggered: root.settingsReady = true
   }
 
-  // Asks every minute whether a check, or a failed one's retry, is due:
-  // they count from status.json's times, which every bar shares.
+  // Asks every minute whether a check, or a failed one's retry, is due
+  // (runDue).
   Timer {
     interval: Model.pollSec * 1000
     running: root.settingsReady && root.statusRead

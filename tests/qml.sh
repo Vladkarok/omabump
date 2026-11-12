@@ -12,9 +12,10 @@ same "Main.qml runs checks under the deadline bin/omabump-check names" \
   "$(grep -o 'under `timeout -k [0-9]* [0-9]*`' "$root/bin/omabump-check" | grep -o 'timeout[^`]*')" \
   "$(grep -o '"timeout", "-k", "[0-9]*", "[0-9]*", checkScript\]' "$root/Main.qml" | sed 's/, checkScript]//' | tr -d '",')"
 # A check that finds a local refresh holding the lock waits for it as long
-# as Main.qml lets one run: its deadline, then the KILL after it.
+# as Main.qml lets one run: its deadline, then the KILL after it. So does
+# an --if-due run, so both waits name the one time.
 same "a check waits for a local refresh as long as Main.qml lets one run" \
-  "$(sed -n 's/^  flock -w \([0-9]*\) 6 || true$/\1/p' "$root/bin/omabump-check")" \
+  "$(sed -n 's/^  flock -w \([0-9]*\) 6 || true$/\1/p' "$root/bin/omabump-check" | sort -u)" \
   "$(sed -n 's/^    var command = \["timeout", "-k", "\([0-9]*\)", "\([0-9]*\)", checkScript, "--local"\]$/\1 \2/p' "$root/Main.qml" \
     | awk '{ print $1 + $2 }')"
 # Every wait for the lock comes before that deadline, never under it: a
@@ -24,12 +25,20 @@ same "a check waits for a local refresh as long as Main.qml lets one run" \
 check "Main.qml waits for the lock before the deadline starts" \
   grep -q 'command = \["bash", "-c", waitScript, "omabump-wait", lockPath, String(lockWaitSec)\].concat(command)$' "$root/Main.qml"
 refuse "Main.qml never passes the checker --wait" grep -q -- '"--wait"' "$root/Main.qml"
-check "Main.qml passes --retry for the retry of a failed check" grep -q 'if (retry) command.push("--retry")$' "$root/Main.qml"
-same "the timer and opening the panel start what Model.dueRun answers" 2 "$(grep -c '= dueCheck()$' "$root/Main.qml")"
-check "Main.qml asks Model.barDueRun with its own start and retry" \
-  grep -q 'return Model.barDueRun(nowMs, checkedAt, fileStartedMs, runAskedMs, refreshIntervalSec, lastCheckFailed,$' "$root/Main.qml"
-check "and notes the retry it starts" grep -q 'if (run === "retry") retryAskedMs = Model.lastRunMs(checkedAt, fileStartedMs)$' "$root/Main.qml"
+# Whether a check, or a failed one's retry, is due is the checker's answer
+# (--if-due), from the interval the widget's settings hold.
+check "Main.qml asks the checker whether a check is due, with its interval" \
+  grep -q 'if (ifDue) command.push("--if-due", "--interval", String(refreshIntervalSec))$' "$root/Main.qml"
+same "the timer and opening the panel ask it (runDue)" 2 "$(grep -c ' runDue()$' "$root/Main.qml")"
+# Until it says a check is due, that run shows as none (tests/check.sh
+# runs the checker's word).
+check "Main.qml counts the run as a check once the checker says due" \
+  grep -q '^        else if (line === "due") root.runIfDue = false$' "$root/Main.qml"
+check "and shows none before" grep -q '^  readonly property bool checking: checkProcess.running && !runIfDue || fileChecking$' "$root/Main.qml"
 check "Main.qml asks every Model.pollSec whether a check is due" grep -q '^    interval: Model.pollSec \* 1000$' "$root/Main.qml"
+same "Model.js reads --if-due's exit by the number bin/omabump-check gives" \
+  "$(sed -n 's/^not_due_exit=\([0-9]*\) .*/\1/p' "$root/bin/omabump-check")" \
+  "$(sed -n 's/^var notDueExit = \([0-9]*\)$/\1/p' "$root/Model.js")"
 
 # A Refresh waits for a running check on the checker's lock, as long as the
 # checker's own --wait would.
@@ -81,16 +90,20 @@ same "waitScript: no lock directory yet, nothing to wait for" "started|ran" \
 same "waitScript: the command's exit status is the run's" "started|exit 3" \
   "$( { bash -c "$wait_script" omabump-wait "$wait_lock" 5 bash -c 'exit 3'; echo "exit $?"; } | paste -sd'|')"
 
-# A run that left on the lock ran nothing and failed nothing: only the other
-# outcomes set checkError and lastCheckEndMs (IPC refresh's throttle), and
-# its line on stderr stays out of the shell's log.
+# A run that left on the lock, or found no check due, ran nothing and
+# failed nothing: only the other outcomes set checkError and lastCheckEndMs
+# (IPC refresh's throttle), and its lines on stderr stay out of the shell's
+# log.
 on_exited=$(sed -n '/^    id: checkProcess$/,/^  }$/p' "$root/Main.qml" | sed -n '/^    onExited: function(exitCode) {$/,/^    }$/p')
-same "onExited sets checkError and lastCheckEndMs only for a run that did not leave on the lock" \
+same "onExited sets checkError and lastCheckEndMs only for a run that did not leave on the lock or find none due" \
   'notRun root.checkError|ran root.checkError|ran root.lastCheckEndMs' \
-  "$(awk '/^      if \(outcome === "notRun"\) \{$/ { b = "notRun" } /^      \} else if \(outcome !== "left"\) \{$/ { b = "ran" }
+  "$(awk '/^      if \(outcome === "notRun"\) \{$/ { b = "notRun" }
+    /^      \} else if \(outcome !== "left" && outcome !== "notDue"\) \{$/ { b = "ran" }
     /^      \}$/ { b = "" } /root\.(checkError|lastCheckEndMs) = / { print (b == "" ? "outside" : b), $1 }' <<<"$on_exited" | paste -sd'|')"
-check "onExited logs no stderr for a run that left on the lock" \
-  grep -q '^      if (err !== "" && outcome !== "left") console.warn("omabump", err)$' <<<"$on_exited"
+check "onExited logs no stderr for a run that left on the lock or found none due" \
+  grep -q '^      if (err !== "" && outcome !== "left" && outcome !== "notDue") console.warn("omabump", err)$' <<<"$on_exited"
+check "a local refresh asked for during the timer's or the panel's run follows it when no check ran" \
+  grep -q '^      if (local && (outcome === "notDue" || outcome === "left")) Qt.callLater(root.localRefresh)$' <<<"$on_exited"
 
 # A local refresh (bin/omabump-check --local) is none of this shell's
 # checks: its exit goes through Model.localOutcome by the checker's own
@@ -115,15 +128,16 @@ check "a queued run waits for the lock by how this shell's own check ended" \
   grep -q '^      Qt.callLater(root.runQueued, Model.queuedRunWaits(outcome))$' <<<"$on_exited"
 check "a Refresh's run counts as one without the wait too (refreshRunning)" grep -q '^    runForRefresh = own$' "$root/Main.qml"
 
-# The panel decides skips between checks: mise and self versions as strings,
-# every other source with vercmp, as row_skipped does.
-qml_strings=$(grep -o '^function stringVersions(source) { return source === "[a-z-]*" || source === "[a-z-]*" }$' "$root/Model.js" \
-  | grep -o '"[a-z-]*"' | tr -d '"' | sort | paste -sd' ')
-script_strings=$(for source in $(jq -r '.[].source' "$root/apps.json" | sort -u) self; do
-  string_versions "$source" && echo "$source"
-done | sort | paste -sd' ')
-same "Model.js compares the same sources' skips as strings as the checker" "$script_strings" "$qml_strings"
-check "Model.js decides skips by stringVersions" grep -q 'if (stringVersions(app.source)) return app.updateAvailable === true && latest === version' "$root/Model.js"
+# The checker decides whether a skip applies and writes it as each row's
+# skipped; Model.js reads that field and compares no versions itself.
+check "Model.js reads the skipped field bin/omabump-check writes" grep -q 'app.skipped === true' "$root/Model.js"
+check "bin/omabump-check writes skipped into every checked row" grep -q 'muted: \$muted, skipped: \$skipped' "$root/bin/omabump-check"
+refuse "Model.js compares no versions" grep -qiE 'vercmp\(|rpmvercmp' "$root/Model.js"
+# A skip leaves the settings only once a run read it and found it over.
+check "Model.js drops a skip by the skipEnded field bin/omabump-check writes" grep -q 'app.skipEnded' "$root/Model.js"
+check "bin/omabump-check writes skipEnded into every checked row" grep -q 'skipped: \$skipped, skipEnded: \$skipEnded' "$root/bin/omabump-check"
+same "Model.js caps the quiet settings where load_quiet does" "$quiet_max" \
+  "$(sed -n 's/^var quietMax = \([0-9]*\)$/\1/p' "$root/Model.js")"
 
 # status.json's runError: the checker writes the field (tests/check.sh runs
 # it), and Model.js must read the same name.
@@ -131,11 +145,13 @@ check "Model.js reads the runError field bin/omabump-check writes" \
   grep -q 'file.runError' "$root/Model.js"
 check "bin/omabump-check writes runError into status.json" \
   grep -q 'runError: \$rerr' "$root/bin/omabump-check"
-# So with a row's selfUpdating: the panel offers no Update, Switch or Ask
-# agent for it, and decides Update and Switch through Model.js.
+# So with a row's selfUpdating: the panel offers no Update or Switch for
+# it, and decides both through Model.js.
 check "Model.js reads the selfUpdating field bin/omabump-check writes" \
   grep -q 'function selfUpdating(app) { return !!app && app.selfUpdating === true }' "$root/Model.js"
 check "bin/omabump-check writes selfUpdating into every row" grep -q 'selfUpdating: \$selfUpdating, icon' "$root/bin/omabump-check"
+# A row without Update has no action at all: the panel starts no agent.
+refuse "the widget starts no coding agent" grep -qE 'omarchy-agent|omabump-prompt' "$root/Main.qml" "$root/Panel.qml"
 check "Panel.qml decides Update and Switch through Model.js" \
   bash -c '[[ $(grep -cE "readonly property bool (updatable: Model.updatable|switchable: Model.switchable)\(app\)" "$1") == 2 ]]' _ "$root/Panel.qml"
 
@@ -153,24 +169,6 @@ model_missing=$(comm -23 \
   <(sed -n 's/^function \([A-Za-z]*\)(.*/\1/p; s/^var \([A-Za-z]*\) = .*/\1/p' "$root/Model.js" | sort -u) | paste -sd' ')
 same "Main.qml and Panel.qml read only what Model.js defines" "" "$model_missing"
 check "and they read some" grep -q 'Model\.tooltipText(' "$root/Panel.qml"
-
-same "Model.js caps the quiet settings where load_quiet does" "$quiet_max" \
-  "$(sed -n 's/^var quietMax = \([0-9]*\)$/\1/p' "$root/Model.js")"
-
-# tests/vercmp.tsv holds vercmp's own answers, so Model.js's port is tested
-# against the real thing (tests/model.test.mjs). The fields are split by
-# hand: read would merge the tabs around an empty version.
-vercmp_wrong=""
-while IFS= read -r line; do
-  [[ $line == '#'* || -z $line ]] && continue
-  a=${line%%$'\t'*} rest=${line#*$'\t'}
-  b=${rest%%$'\t'*} want=${rest#*$'\t'}
-  got=$(vercmp "$a" "$b")
-  (( got > 0 )) && got=1
-  (( got < 0 )) && got=-1
-  [[ $got == "$want" ]] || vercmp_wrong+="[$a $b: $got, not $want] "
-done <"$root/tests/vercmp.tsv"
-same "tests/vercmp.tsv: every pair is what vercmp answers" "" "$vercmp_wrong"
 
 # --- Model.js under node -------------------------------------------------------
 
@@ -200,12 +198,7 @@ else
   # array of arguments.
   model_call() { node "$root/tests/model.mjs" "$1"; }
 
-  # The ids and versions load_quiet keeps, by the scripts' own functions.
-  model_ids=(claude-desktop z-code-bin mise:claude mise: mise:-x mise:npm:x self:omabump self:other github:x
-    -x .x _x @x +x a..b A a.B 'a b' a/b é '' x:y 0)
-  same "Model.appIdOk accepts the ids app_id_ok accepts" \
-    "$(for id in "${model_ids[@]}"; do if app_id_ok "$id"; then echo true; else echo false; fi; done)" \
-    "$(for id in "${model_ids[@]}"; do jq -cn --arg v "$id" '[$v]'; done | model_call appIdOk)"
+  # K stores only a version load_quiet keeps, by the script's own function.
   model_versions=(1.0 1.0.0-beta.1 v1 1.0~rc1 1+2_3 -1 .1 1..2 1:2 '1 0' '' é1 1é
     "$(printf '1%.0s' {1..64})" "$(printf '1%.0s' {1..65})")
   same "Model.skipVersionOk accepts the versions skip_version_ok accepts" \
@@ -213,8 +206,9 @@ else
     "$(for v in "${model_versions[@]}"; do jq -cn --arg v "$v" '[$v]'; done | model_call skipVersionOk)"
 
   # load_quiet and Model.js read the same shell.json entry alike: wrong
-  # types, refused ids and versions, and the cap on each setting. Prints
-  # load_quiet's mutes and skips, then Model.js's, one line each.
+  # types, refused versions, and the cap on each setting. Prints
+  # load_quiet's mutes and skips, then Model.js's, one line each. The ids
+  # are ones app_id_ok keeps: no listed row has another.
   model_quiet() {
     local entry
     jq '{plugins: [{id: "io.github.vladkarok.omabump"} + .]}' >"$shell_json"
@@ -223,14 +217,14 @@ else
     entry=$(jq -c '[.plugins[0]]' "$shell_json")
     echo "$(model_call mutedApps <<<"$entry" | jq -c 'sort') $(model_call skippedVersions <<<"$entry" | jq -cS .)"
   }
-  model_pair=$(jq -n '{mutedApps: ["a", 1, "Bad", "mise:x", "", "a", "self:omabump", "x y", null, "mise:"],
-    skippedVersions: {a: "1.0", "mise:b": "2.0-beta.1", Bad: "1.0", c: "1..2", d: 3, e: "", "self:omabump": "0.2.0", f: "v1 "}}' | model_quiet)
-  same "Model.js keeps the mutes and skips load_quiet keeps" "$(sed -n 1p <<<"$model_pair")" "$(sed -n 2p <<<"$model_pair")"
-  model_pair=$(jq -n '{mutedApps: ([range(150) | "Bad\(.)", .] + [range(100) | "ok\(.)"]),
+  model_pair=$(jq -n '{mutedApps: ["a", 1, "mise:x", "a", "self:omabump", null],
+    skippedVersions: {a: "1.0", "mise:b": "2.0-beta.1", c: "1..2", d: 3, e: "", "self:omabump": "0.2.0", f: "v1 ", g: "1:2"}}' | model_quiet)
+  same "Model.js keeps the skips load_quiet keeps" "$(sed -n 1p <<<"$model_pair")" "$(sed -n 2p <<<"$model_pair")"
+  model_pair=$(jq -n '{mutedApps: ([range(150) | 7, "m\(.)"] + [range(100) | "ok\(.)"]),
     skippedVersions: ([range(150) | {key: "bad-\(.)", value: "1..2"}, {key: "num-\(.)", value: 1}]
       + [range(100) | {key: "ok-\(.)", value: "1.0"}] | from_entries)}' | model_quiet)
   same "Model.js caps the mutes and skips as load_quiet does" "$(sed -n 1p <<<"$model_pair")" "$(sed -n 2p <<<"$model_pair")"
-  same "and the cap leaves 50 of each" "50 50" "$(sed -n 2p <<<"$model_pair" | jq -rs '"\(.[0] | length) \(.[1] | length)"')"
+  same "and the cap leaves 200 mutes and 50 skips" "200 50" "$(sed -n 2p <<<"$model_pair" | jq -rs '"\(.[0] | length) \(.[1] | length)"')"
   rm -f "$shell_json"
   load_quiet
 fi

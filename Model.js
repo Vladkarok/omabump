@@ -35,137 +35,51 @@ function refreshIntervalSec(settings) {
   return Math.min(86400, Math.max(300, Number(setting(settings, "refreshIntervalSec", 3600)) || 3600))
 }
 
-// --- ids and versions the checker accepts --------------------------------------
+// --- mute and skip settings ----------------------------------------------------
 
-// pkg_name_ok, app_id_ok and skip_version_ok in bin/omabump-common. The
-// checker drops a muted id or a skipped entry these refuse (load_quiet), so
-// the widget must too: else a row the checker notifies about would show as
-// quiet here.
-var selfPkg = "self:omabump"
-
-function pkgNameOk(name) {
-  return typeof name === "string" && /^[a-z0-9@_+][a-z0-9@._+-]*$/.test(name)
-}
-
-function appIdOk(id) {
-  return pkgNameOk(id) || (typeof id === "string" && id.indexOf("mise:") === 0 && pkgNameOk(id.substring(5)))
-    || id === selfPkg
-}
-
-// A version as mise or a feed prints it. skipToggled checks it before a
-// skip is stored.
+// A version as mise or a feed prints it: skip_version_ok in
+// bin/omabump-common, which load_quiet applies to every skip it reads.
+// skippedVersions drops one it refuses and skipToggled refuses to store
+// one: the panel would show that skip while the checker never applies it.
 function skipVersionOk(v) {
   return typeof v === "string" && v.length <= 64 && /^[0-9A-Za-z][A-Za-z0-9._+~-]*$/.test(v) && v.indexOf("..") === -1
 }
 
 // load_quiet reads only the first quietMax strings of each setting, and
-// drops the ones the rules above refuse after that cut, not before. The
-// bar may hand the skips over in another key order than shell.json has,
-// so only past the cap could the two keep different ones.
+// drops the ones it refuses after that cut, not before. The bar may hand
+// the skips over in another key order than shell.json has, so only past
+// the cap could the two keep different ones.
 var quietMax = 200
 
-// Rows the user muted (pkg ids): no badge, no count, no notification.
+// Rows the user muted (pkg ids): no badge, no count, no notification. Only
+// listed rows are looked up in it, and every row's id is one load_quiet
+// accepts, so the strings need no check of their own.
 function mutedApps(settings) {
   var list = setting(settings, "mutedApps", [])
   var out = []
   if (!isList(list)) return out
-  for (var i = 0, kept = 0; i < list.length && kept < quietMax; i++) {
+  for (var i = 0, n = 0; i < list.length && n < quietMax; i++) {
     if (typeof list[i] !== "string") continue
-    kept++
-    if (appIdOk(list[i]) && out.indexOf(list[i]) === -1) out.push(list[i])
+    n++
+    if (out.indexOf(list[i]) === -1) out.push(list[i])
   }
   return out
 }
 
-// {pkg: version} the user skipped. While a row's newest version is that
-// one it signals nothing; a newer release lights it up again (skipHolds).
+// {pkg: version} the user skipped. Whether a skip still applies is the
+// checker's answer, the row's skipped (isSkipped).
 function skippedVersions(settings) {
   var map = setting(settings, "skippedVersions", {})
   var out = {}
   if (!map || typeof map !== "object" || isList(map)) return out
-  var kept = 0
+  var n = 0
   for (var pkg in map) {
     if (typeof map[pkg] !== "string") continue
-    if (kept++ >= quietMax) break
-    if (appIdOk(pkg) && skipVersionOk(map[pkg])) out[pkg] = map[pkg]
+    if (n++ >= quietMax) break
+    if (skipVersionOk(map[pkg])) out[pkg] = map[pkg]
   }
   return out
 }
-
-// --- pacman's vercmp -------------------------------------------------------------
-
-// alpm_pkg_vercmp: below zero, zero or above zero as a is older than, the
-// same as or newer than b. The checker runs vercmp itself; the panel needs
-// the same answer for skips between checks.
-function vercmp(a, b) {
-  a = String(a)
-  b = String(b)
-  if (a === b) return 0
-  var x = splitEvr(a), y = splitEvr(b)
-  var ret = rpmvercmp(x.epoch, y.epoch)
-  if (ret === 0) ret = rpmvercmp(x.version, y.version)
-  // A release counts only when both versions have one.
-  if (ret === 0 && x.release !== null && y.release !== null) ret = rpmvercmp(x.release, y.release)
-  return ret
-}
-
-// [epoch:]version[-release]: no epoch is 0, no release is null.
-function splitEvr(v) {
-  var digits = /^[0-9]*/.exec(v)[0].length
-  var epoch = "0"
-  if (v.charAt(digits) === ":") {
-    if (digits > 0) epoch = v.substring(0, digits)
-    v = v.substring(digits + 1)
-  }
-  var dash = v.lastIndexOf("-")
-  return dash < 0 ? { epoch: epoch, version: v, release: null }
-    : { epoch: epoch, version: v.substring(0, dash), release: v.substring(dash + 1) }
-}
-
-// Compares runs of digits (as numbers) or of letters (as text) in turn;
-// anything else separates them.
-function rpmvercmp(a, b) {
-  if (a === b) return 0
-  var digit = /[0-9]/, alpha = /[A-Za-z]/
-  var one = 0, two = 0
-  while (one < a.length && two < b.length) {
-    var from1 = one, from2 = two
-    while (one < a.length && !digit.test(a.charAt(one)) && !alpha.test(a.charAt(one))) one++
-    while (two < b.length && !digit.test(b.charAt(two)) && !alpha.test(b.charAt(two))) two++
-    if (one >= a.length || two >= b.length) break
-    // The longer separator is newer.
-    if (one - from1 !== two - from2) return one - from1 < two - from2 ? -1 : 1
-    var run = digit.test(a.charAt(one)) ? digit : alpha
-    var end1 = one, end2 = two
-    while (end1 < a.length && run.test(a.charAt(end1))) end1++
-    while (end2 < b.length && run.test(b.charAt(end2))) end2++
-    // Digits against letters: the digits are newer.
-    if (end2 === two) return run === digit ? 1 : -1
-    var s1 = a.substring(one, end1), s2 = b.substring(two, end2)
-    if (run === digit) {
-      s1 = s1.replace(/^0+/, "")
-      s2 = s2.replace(/^0+/, "")
-      if (s1.length !== s2.length) return s1.length > s2.length ? 1 : -1
-    }
-    if (s1 !== s2) return s1 < s2 ? -1 : 1
-    one = end1
-    two = end2
-  }
-  if (one >= a.length && two >= b.length) return 0
-  // What is left decides: letters are older than nothing (1.0a < 1.0),
-  // anything else is newer.
-  return (one >= a.length && !alpha.test(b.charAt(two))) || alpha.test(a.charAt(one)) ? -1 : 1
-}
-
-// The installed version less epoch and pkgrel (upstream_part in
-// bin/omabump-common).
-function upstreamPart(v) { return String(v).replace(/^[^:]*:/, "").replace(/-[^-]*$/, "") }
-
-// string_versions in bin/omabump-common: versions mise or Omabump's
-// release feed print compare as strings, since mise decides what is newer
-// there and vercmp would call 1.0.0 and 1.0.0-beta.1 equal. Every other
-// source compares with vercmp.
-function stringVersions(source) { return source === "mise" || source === "self" }
 
 // --- mute and skip -------------------------------------------------------------
 
@@ -188,25 +102,22 @@ function skippedVersion(skipped, app) {
   return app && Object.prototype.hasOwnProperty.call(skipped, app.pkg) ? skipped[app.pkg] : ""
 }
 
-// Whether a skip of version still applies to the row, by the rule
-// row_skipped in bin/omabump-common applies to an update: mise and
-// Omabump's own rows while their update is exactly that version; the
-// others (vercmp) while their newest version is not newer than it and the
-// installed one is older, so a feed that rolls back below a skip stays
-// skipped and an install of that version or a later one ends it. The
-// installed version loses epoch and pkgrel, as the checker compares it
-// with a feed's.
+// Whether a skip of version still applies to the row. The checker decides
+// (row_skipped in bin/omabump-common, by vercmp or by string) and writes
+// the answer as the row's skipped; the panel compares no versions. Until a
+// check has read a new skip, the row's newest version being the skipped
+// one stands in for that answer: K stores exactly that, so a skip shows at
+// once. A newer release comes with skipped false and another newest
+// version, and an install of the skipped one with no update, so either
+// ends the skip.
 function skipHolds(app, version) {
-  var latest = String(app.latest || "")
   version = String(version || "")
-  if (version === "" || latest === "") return false
-  if (stringVersions(app.source)) return app.updateAvailable === true && latest === version
-  return vercmp(latest, version) <= 0 && vercmp(upstreamPart(String(app.installed || "")), version) < 0
+  return version !== "" && app.updateAvailable === true
+    && (app.skipped === true || version === String(app.latest || ""))
 }
 
-// A row whose update the user skipped. Decided from the settings as they
-// are now, by the checker's rule, so a skip shows at once and a skip
-// changed since the last check does not keep that check's answer.
+// A row whose update the user skipped. There is a skip only while the
+// settings as they are now hold one, so an unskip shows at once too.
 function isSkipped(skipped, app) {
   return !!app && app.updateAvailable === true && skipHolds(app, skippedVersion(skipped, app))
 }
@@ -214,18 +125,21 @@ function isSkipped(skipped, app) {
 // A row that signals nothing: muted, or at a skipped version.
 function isQuiet(muted, skipped, app) { return isMuted(muted, app) || isSkipped(skipped, app) }
 
-// Whether the settings keep the skip of version for pkg: while it applies,
-// and while the last check cannot tell. That is a row it did not list
-// (hidden by Show mise tools, not installed now) and one that failed, is
-// stale, is being checked, was not checked or has no newest version.
+// Whether the settings keep the skip of version for pkg: until the last
+// check or local refresh read that very skip and found it over (the row's
+// skipEnded, from skip_over in bin/omabump-common), so a skip no run has
+// read yet stays whatever its version. Kept too while the last check
+// cannot tell: a row it did not list (hidden by Show mise tools, not
+// installed now) and one that failed, is stale, is being checked, was not
+// checked or has no newest version.
 function skipKept(apps, pkg, version) {
   var app = appFor(apps, pkg)
   if (!app || app.checking === true || app.stale === true || app.unchecked === true
     || String(app.error || "") !== "" || String(app.latest || "") === "") return true
-  return skipHolds(app, version)
+  return String(app.skipEnded || "") !== String(version)
 }
 
-// The skips a settings write keeps: one goes once its row shows it no
+// The skips a settings write keeps: one goes once a run found it no
 // longer applies (a newer release than the skipped one, or that version or
 // a later one installed); one the last check cannot judge stays.
 function liveSkips(apps, skips) {
@@ -255,7 +169,8 @@ function mutedToggled(muted, app) {
 }
 
 // skippedVersions after K on app, as { skips }; { note } when its newest
-// version is not one the checker stores; null with nothing to skip.
+// version is not one the checker reads (skipVersionOk); null with nothing
+// to skip.
 function skipToggled(skipped, app) {
   var skips = {}
   for (var pkg in skipped) if (pkg !== app.pkg) skips[pkg] = skipped[pkg]
@@ -391,63 +306,12 @@ function parseStatus(text, showMise) {
     pkgsError: String(pkgs.error || ""),
     pkgsNote: String(pkgs.note || ""),
     miseError: showMise ? String(file.miseError || "") : "",
-    runError: String(file.runError || ""),
-    // The check was the widget's retry of one that failed (dueRun).
-    retry: file.retry === true
+    runError: String(file.runError || "")
   }
 }
 
-// When the last check started, finished or not (a run that died half way
-// leaves startedAt past checkedAt); a file from before startedAt has only
-// checkedAt. NaN when the file says neither.
-function lastRunMs(checkedAt, startedMs) {
-  if (startedMs > 0) return startedMs
-  return checkedAt !== "" ? new Date(checkedAt).getTime() : NaN
-}
-
-// Whether a check is due, intervalSec after the last one started. Every
-// monitor's bar runs its own copy of the widget and a shell reload starts
-// them all, so a check that started less than an interval (less 30 s of
-// slack) ago is recent enough. That start, not checkedAt (the end), is
-// what counts: from the end, this widget's own next tick would come up
-// short by however long its last check took and be skipped. A run that
-// died half way counts from its start too: its retry follows it (dueRun),
-// and nothing piles up behind runs that keep dying.
-function checkDue(nowMs, checkedAt, startedMs, intervalSec) {
-  var age = nowMs - lastRunMs(checkedAt, startedMs)
-  // A time ahead of the clock (it was set back) proves nothing.
-  return !(isFinite(age) && age >= 0 && age < (intervalSec - 30) * 1000)
-}
-
-// How often each bar asks whether a check is due (dueRun).
+// How often each bar asks whether a check is due (Main.qml's runDue).
 var pollSec = 60
-
-// A check that failed (the summary says "Check failed": offline after a
-// resume, a feed's 504) is tried once more retrySec after it started,
-// instead of a whole interval later. Once: a retry that fails too waits
-// the interval, so an outage, or a rate limit that lasts the hour, is not
-// asked again every few minutes.
-var retrySec = 300
-
-// Which check the timer, or opening the panel, may start. After a check
-// that failed and was no retry (retried: status.json's retry, or this bar
-// asked for the retry of that very run), "retry" once retrySec have passed
-// since it started, even when the interval's check is due as well: that
-// run then says it is the retry, and the next failure waits. Else "check"
-// when the interval's check is due; else "".
-function dueRun(nowMs, checkedAt, startedMs, intervalSec, failed, retried) {
-  if (failed && !retried) return checkDue(nowMs, checkedAt, startedMs, Math.min(intervalSec, retrySec)) ? "retry" : ""
-  return checkDue(nowMs, checkedAt, startedMs, intervalSec) ? "check" : ""
-}
-
-// dueRun for one bar (Main.qml's dueCheck). Its own last start (askedMs)
-// counts too: a run that wrote nothing moved no time in status.json. So
-// does the retry it started (retryAskedMs, the lastRunMs status.json showed
-// then): until a run writes the file again, that failure has had its retry.
-function barDueRun(nowMs, checkedAt, startedMs, askedMs, intervalSec, failed, fileRetry, retryAskedMs) {
-  var retried = fileRetry || retryAskedMs === lastRunMs(checkedAt, startedMs)
-  return dueRun(nowMs, checkedAt, Math.max(startedMs, askedMs), intervalSec, failed, retried)
-}
 
 // --- this shell's checks ------------------------------------------------------------
 
@@ -456,6 +320,10 @@ function barDueRun(nowMs, checkedAt, startedMs, askedMs, intervalSec, failed, fi
 // found the lock taken (or, with --wait, held past its own wait).
 var lockBusyExit = 75
 
+// What bin/omabump-check --if-due exits with when no check is due
+// (not_due_exit there): it ran nothing and wrote nothing.
+var notDueExit = 76
+
 // What a check's exit means for this shell (Main.qml's onExited). Both
 // "notRun" and "left" ran nothing. "notRun": waitScript gave up on the
 // lock (waited: it had not said "started"), held past its wait by checks
@@ -463,10 +331,12 @@ var lockBusyExit = 75
 // left the check to the one holding it. The timer's run does not wait; a
 // run that waited lost it, after waitScript's wait, to a check that
 // therefore started after the request, and so did a queued run that did
-// not wait (queuedRunWaits): either way that check answers it. "ok" or
-// "failed" otherwise.
+// not wait (queuedRunWaits): either way that check answers it. "notDue":
+// the timer's or the panel's run found no check due. "ok" or "failed"
+// otherwise.
 function checkOutcome(exitCode, waited) {
   if (exitCode === lockBusyExit) return waited ? "notRun" : "left"
+  if (exitCode === notDueExit) return "notDue"
   return exitCode === 0 ? "ok" : "failed"
 }
 
@@ -565,20 +435,11 @@ function localDue(nowMs, inventoryMs, intervalSec) {
   return !(inventoryMs > 0 && age >= 0 && age < (intervalSec - 30) * 1000)
 }
 
-// What opening the panel runs (Main.qml's panelOpened): nothing while a
-// check runs, which reads the installed versions too; the timer's check
-// when one is due (dueRun, its retry included); else a local refresh.
-function openedRun(checking, due) {
-  if (checking) return ""
-  return due ? "full" : "local"
-}
-
 // --- rows ------------------------------------------------------------------------
 
 // An app installed as a copy that updates itself (the checker's
 // selfUpdating: its AppImage or its npm package): its own updater replaces
-// the copy, so the row has no Update, no Switch and no Ask agent, whatever
-// else it says.
+// the copy, so the row has no Update and no Switch, whatever else it says.
 function selfUpdating(app) { return !!app && app.selfUpdating === true }
 
 function updatable(app) { return !!app && app.updateAvailable === true && app.installable === true && !selfUpdating(app) }
@@ -592,11 +453,12 @@ function switchable(app) { return !!app && app.switchable === true && !selfUpdat
 // Or a mise tool whose request holds it below a newer release. Not a
 // release omarchy-pkgs still holds (held): Update comes back by itself.
 // Not an AUR package omarchy update already updates (omarchyUpdate, its
-// note says so), nor an app that updates itself: there is nothing to plan.
-// Not a row no check has read (unchecked): a local refresh found a mise
-// tool at another version than its newest one was known for, and the
-// check it asked for says.
-function askable(app) {
+// note says so), nor an app that updates itself: those have a way to
+// update. Not a row no check has read (unchecked): a local refresh found a
+// mise tool at another version than its newest one was known for, and the
+// check it asked for says. Such a row has no action; its second line says
+// why (extraLine).
+function noRoute(app) {
   if (!app || app.installable === true || app.source === "self" || app.held === true
     || app.omarchyUpdate === true || app.blocked === true || app.unchecked === true || selfUpdating(app)) return false
   if (app.updateAvailable === true) return true
@@ -604,12 +466,11 @@ function askable(app) {
     && String(app.latest || "") !== "" && app.latest !== app.installed
 }
 
-function hasAction(app) { return updatable(app) || askable(app) || switchable(app) }
+function hasAction(app) { return updatable(app) || switchable(app) }
 
 // What Enter does: "update" when the plugin can install the row, else
-// "ask" (Ask agent) when an agent can plan it, else nothing.
+// nothing.
 function primaryAction(app) {
-  if (askable(app)) return "ask"
   return updatable(app) ? "update" : ""
 }
 
@@ -674,8 +535,8 @@ function installedText(app) {
   return app.updateAvailable === true && short === String(app.latest || "") ? full : short
 }
 
-// The second line of a row: exceptions only. actionNote is what the last
-// Ask agent or Copy prompt did for it.
+// The second line of a row: exceptions only. actionNote is why the last
+// Skip did nothing (skipToggled's note).
 function extraLine(app, actionNote) {
   if (!app) return ""
   if (app.checking === true) return "Checking…"
@@ -683,7 +544,7 @@ function extraLine(app, actionNote) {
   if (String(app.error || "") !== "") return "Check failed: " + app.error
   var note = shortNote(app)
   if (note !== "") return note
-  if (askable(app)) return "No install route"
+  if (noRoute(app)) return "No install route"
   if (app.stale === true) return "Last known version"
   return ""
 }
@@ -757,21 +618,6 @@ function luminance(c) {
   return 0.2126 * channel(c.r) + 0.7152 * channel(c.g) + 0.0722 * channel(c.b)
 }
 
-// What bin/omabump-prompt's wrapper printed: the first line says what
-// happened, agent (the prompt follows), copied, noagent (copied instead)
-// or error (the message follows). { prompt } for the agent, { note } for
-// the row otherwise.
-function promptOutcome(output) {
-  output = String(output || "")
-  var newline = output.indexOf("\n")
-  var kind = newline < 0 ? output.trim() : output.substring(0, newline)
-  var rest = newline < 0 ? "" : output.substring(newline + 1)
-  if (kind === "agent") return { prompt: rest }
-  if (kind === "copied") return { note: "Prompt copied" }
-  if (kind === "noagent") return { note: "No default agent set, prompt copied" }
-  return { note: "Prompt failed: " + (rest.trim() || kind || "no output") }
-}
-
 // --- panel text ------------------------------------------------------------------
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)) }
@@ -792,7 +638,6 @@ function keyAction(text, modifiers, settingsOpen, cursorActive) {
   if (settingsOpen) return ""
   if (text === "r" || text === "R") return "refresh"
   if (!cursorActive) return ""
-  if (text === "c" || text === "C") return "copy"
   if (text === "w" || text === "W") return "switch"
   if (text === "m" || text === "M") return "mute"
   return text === "K" ? "skip" : ""
@@ -802,7 +647,6 @@ function hintText(settingsOpen, app, rowCount, muted, skipped) {
   if (settingsOpen) return "Space change · Esc back"
   var mute = app ? (isMuted(muted, app) ? " · m unmute" : " · m mute") : ""
   if (app && app.updateAvailable === true) mute = (isSkipped(skipped, app) ? " · K unskip" : " · K skip") + mute
-  if (askable(app)) return "Enter ask agent · c copy prompt" + mute
   if (updatable(app)) return "Enter update" + mute + " · Esc close"
   if (switchable(app)) return "w switch package" + mute + " · Esc close"
   return (rowCount > 0 ? "↑↓ select · " : "") + "r refresh · s settings" + mute
