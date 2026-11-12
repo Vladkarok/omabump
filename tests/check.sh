@@ -867,6 +867,76 @@ same "--local and the checks around it leave no scratch files" '' "$(leftovers)"
 rm -f "$run_dir/config/omarchy/omabump/apps.json" "$run_state/status.json" "$run_dir/fixture.json" "$run_dir/pkgs" \
   "$run_dir/mise-ls.json" "$run_dir/held" "$run_dir/go"
 
+# --- a check only when one is due (--if-due) -------------------------------------------------
+
+# status.json as a check left it, started $1 seconds from now (negative:
+# ago), with the JSON $2 merged over it. Its one row is claude-desktop,
+# which the fake pacman has installed. A check run here fails (every feed
+# and git fail), so a run's own file would earn a retry: these times are
+# the real clock's, written just before each run. The attempt file the
+# runs before it left goes.
+due_attempt=$run_state/check-attempt
+due_status() {
+  rm -f "$due_attempt"
+  jq -n --arg at "$(date -Iseconds -d "@$(( $(date +%s) + $1 ))")" --argjson more "${2:-"{}"}" '
+    {schemaVersion: 1, checkedAt: $at, checking: false, startedAt: $at, inventoryAt: $at, runError: "", retry: false,
+     omarchyPkgs: {commit: "", following: false, error: "", note: ""}, miseError: "",
+     apps: [{pkg: "claude-desktop", label: "Claude Desktop", source: "omarchy", error: ""}]} * $more' >"$run_state/status.json"
+}
+due_failed='{"apps": [{"pkg": "claude-desktop", "source": "omarchy", "error": "the feed timed out"}]}'
+# The check's exit, whether it called mise, and status.json's retry.
+due_run() {
+  local rc
+  check_run --if-due --interval 3600; rc=$?
+  echo "$rc|$([[ -s $run_dir/mise.log ]] && echo ran || echo none)|$(run_status .retry)"
+}
+run_settings ''
+due_status -3500
+before=$(md5sum <"$run_state/status.json")
+same "--if-due: within the interval less 30 s of the last start: exit 76, no mise call, nothing written" \
+  "76|none|false|$before|no attempt" \
+  "$(due_run)|$(md5sum <"$run_state/status.json")|$([[ -e $due_attempt ]] && echo attempt || echo no attempt)"
+due_status -3580
+same "--if-due: past it, a check runs, no retry" '0|ran|false' "$(due_run)"
+same "--if-due: and notes its start outside the leftover sweep" '' "$(leftovers)"
+check "--if-due: the attempt file is there" test -s "$due_attempt"
+due_status -300 "$due_failed"
+same "--if-due: a failed check 300 s ago: its retry runs, and status.json says so" '0|ran|true' "$(due_run)"
+due_status -300 "$(jq -c '.retry = true' <<<"$due_failed")"
+same "--if-due: a failed retry: no second one" '76|none|true' "$(due_run)"
+due_status -3580 "$(jq -c '.retry = true' <<<"$due_failed")"
+same "--if-due: the interval after it, a check, no retry" '0|ran|false' "$(due_run)"
+run_settings ', "mutedApps": ["claude-desktop"]'
+due_status -300 "$(jq -c '.omarchyPkgs.error = "Could not fetch omarchy-pkgs"' <<<"$due_failed")"
+same "--if-due: only a muted row failed (omarchy-pkgs too, with every omarchy row muted): no retry" '76|none|false' "$(due_run)"
+run_settings ''
+due_status -300 '{"checking": true}'
+same "--if-due: a \"checking\" mark with the lock free (a killed run): its retry" '0|ran|true' "$(due_run)"
+due_status -300 "$due_failed"
+cp "$run_state/status.json" "$run_dir/due-before.json"
+due_run >/dev/null
+# The retry that ran wrote status.json; put the old one back, as if it had
+# written nothing (killed before its first write).
+cp "$run_dir/due-before.json" "$run_state/status.json"
+same "--if-due: a retry that wrote nothing still counts: no retry every minute" '76|none|false' "$(due_run)"
+due_status -3000
+printf '%s 0\n' "$(( $(date +%s) - 300 ))" >"$due_attempt"
+same "--if-due: a check that wrote nothing failed: its retry" '0|ran|true' "$(due_run)"
+due_status 3600
+same "--if-due: a start ahead of the clock (it was set back): a check" '0|ran|false' "$(due_run)"
+due_status -3580
+loc_hold 8
+same "--if-due: another check holds the lock: exit 75, no mise call" '75|none|false' "$(due_run)"
+loc_free
+for args in '--local' '' '--wait --interval 3600' '--retry --interval 3600' '--interval 0' '--interval 1h'; do
+  # shellcheck disable=SC2086 # the words of each case
+  check_run --if-due $args; rc=$?
+  same "--if-due ${args:-without --interval}: a usage error" 2 "$rc"
+done
+check_run --interval 3600; rc=$?
+same "--interval without --if-due: a usage error" 2 "$rc"
+rm -f "$run_state/status.json" "$due_attempt" "$run_dir/due-before.json" "$run_dir/held" "$run_dir/go"
+
 # --- an app installed as its self-updating AppImage -----------------------------------------
 
 # T3 Code as the shipped table has it, its feed a command feed of the

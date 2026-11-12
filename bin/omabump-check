@@ -18,14 +18,20 @@
 # package.json; the app updates itself, so no route.
 #
 #   omabump-check [--no-notify] [--no-mise] [--wait] [--retry]
+#   omabump-check --if-due --interval SEC [--no-notify] [--no-mise]
 #   omabump-check --local [--no-mise]
 #
 # --wait runs after a check already in progress instead of leaving it to
 # that one: the installer's refresh needs a check that starts after its
 # install, since the running one may have read the old version.
 #
-# --retry marks the run as the widget's one retry of a check that failed
-# (status.json's retry, Model.dueRun): a retry that fails is not retried.
+# --retry marks the run as the one retry of a check that failed
+# (status.json's retry): a retry that fails is not retried.
+#
+# --if-due runs a check only when one is due, SEC (the widget's interval
+# setting) after the last one started, or the retry of one that failed:
+# the widget's timer and the panel opening ask with it. Exit 76 when none
+# is due, with nothing written: see "whether a check is due" below.
 #
 # --local reads the installed versions again and nothing else, without the
 # network: see local_refresh below.
@@ -33,7 +39,8 @@
 # Exit 75: no check ran. Without --wait another check held the lock, and
 # that one writes status.json; with --wait, it held the lock past the wait.
 # A check that finds a local refresh holding it waits for that one instead,
-# which takes seconds and is no check.
+# which takes seconds and is no check. Exit 76: --if-due found no check
+# due.
 #
 # Muted rows and skipped versions come from the widget's settings in
 # Omarchy's shell.json (load_quiet), whoever runs the check. So do the
@@ -52,8 +59,10 @@ set -euo pipefail
 # shellcheck source=omabump-common
 source "$(dirname "$(readlink -f "$0")")/omabump-common"
 
-usage="usage: omabump-check [--no-notify] [--no-mise] [--wait] [--retry] | --local [--no-mise]"
-notify="" with_mise="" wait_lock=0 local_run=0 retry=0
+usage="usage: omabump-check [--no-notify] [--no-mise] [--wait] [--retry]
+       omabump-check --if-due --interval SEC [--no-notify] [--no-mise]
+       omabump-check --local [--no-mise]"
+notify="" with_mise="" wait_lock=0 local_run=0 retry=0 if_due=0 interval=""
 while (( $# )); do
   case $1 in
     --no-notify) notify=0 ;;
@@ -61,11 +70,20 @@ while (( $# )); do
     --wait) wait_lock=1 ;;
     --local) local_run=1 ;;
     --retry) retry=1 ;;
+    --if-due) if_due=1 ;;
+    --interval) (( $# > 1 )) || { echo "$usage" >&2; exit 2; }; interval=$2; shift ;;
     *) echo "$usage" >&2; exit 2 ;;
   esac
   shift
 done
-(( ! (local_run && (wait_lock || retry)) )) || { echo "$usage" >&2; exit 2; }
+(( ! (local_run && (wait_lock || retry || if_due)) )) || { echo "$usage" >&2; exit 2; }
+# --if-due decides the retry itself and never waits for a check: a check
+# holding the lock is the one that was due.
+if (( if_due )); then
+  if [[ ! $interval =~ ^[1-9][0-9]{0,8}$ ]] || (( wait_lock || retry )); then echo "$usage" >&2; exit 2; fi
+else
+  [[ -z $interval ]] || { echo "$usage" >&2; exit 2; }
+fi
 
 # What --local tells its caller besides 0 and 75 (Model.js reads the same
 # numbers, Model.localOutcome): a row changed in a way only a check can
@@ -122,6 +140,74 @@ fi
 load_quiet
 [[ -n $notify ]] || if [[ $setting_notify == false ]]; then notify=0; else notify=1; fi
 [[ -n $with_mise ]] || if [[ $setting_show_mise == false ]]; then with_mise=0; else with_mise=1; fi
+
+# --- whether a check is due (--if-due) ---------------------------------------
+#
+# Decided under the lock, so whatever status.json says is over: no other
+# check runs, and a "checking" mark left in it is a run that was killed.
+# Every monitor's bar asks every minute, and a shell reload starts them all,
+# so a check that started less than the interval (less 30 s of slack) ago is
+# recent enough. Its start counts, not its end: from the end, the next one
+# would come up short by however long the last one took. A time ahead of
+# the clock (it was set back) proves nothing, and a check is due.
+#
+# A check that failed is tried once more retry_sec after it started
+# (sooner with a shorter interval), instead of a whole interval later: the
+# summary says "Check failed" (offline after a resume, a feed's 504). Once:
+# a retry that fails too waits the interval, so an outage, or a rate limit
+# that lasts the hour, is not asked again every few minutes. Failed means
+# what the widget calls a failure: runError, an omarchy-pkgs or mise error
+# that not only muted rows share, a failed row that is not muted (by the
+# settings as they are now), or the killed run's mark.
+#
+# attempt_file holds when the last --if-due run started, and whether it was
+# the retry. A run that wrote nothing (it died before its first write) moved
+# no time in status.json: its start counts all the same, so nothing starts
+# every minute behind it, and it failed. A retry that wrote nothing was the
+# retry all the same.
+not_due_exit=76 retry_sec=300
+attempt_file=$state_dir/check-attempt
+if (( if_due )); then
+  now_s=$(date +%s)
+  started_at="" checked_at="" file_retry=false failed=false
+  # shellcheck disable=SC2016 # jq variables, not the shell's
+  [[ -s $status_file ]] && IFS=$'\x1f' read -r started_at checked_at file_retry failed < <(jq -r \
+    --argjson muted "$muted_json" --argjson mise "$with_mise" '
+    def text: if . == null or . == false then "" elif type == "string" then . else tostring end;
+    ([.apps | arrays | .[] | objects | select($mise == 1 or .source != "mise")]) as $apps
+    | def muted: (.pkg | tostring) as $p | $muted | index($p) != null;
+      def all_muted($source): [$apps[] | select(.source == $source and .selfUpdating != true)]
+        | length > 0 and all(.[]; muted);
+      ((.omarchyPkgs | objects | .error) // null | text) as $perr
+    | [(.startedAt | text), (.checkedAt | text), (.retry == true),
+       ((.runError | text) != "" or ($perr != "" and (all_muted("omarchy") | not))
+        or ($mise == 1 and (.miseError | text) != "" and (all_muted("mise") | not))
+        or any($apps[]; (.error | text) != "" and (muted | not)) or .checking == true)]
+    | map(tostring) | join("\u001f")' "$status_file" 2>/dev/null) || true
+  # When the last run status.json shows started: a file from before
+  # startedAt has only checkedAt.
+  run_s=""
+  [[ -z $started_at ]] || run_s=$(date -d "$started_at" +%s 2>/dev/null) || run_s=""
+  [[ -n $run_s || -z $checked_at ]] || run_s=$(date -d "$checked_at" +%s 2>/dev/null) || run_s=""
+  attempt_s="" attempt_retry=0
+  [[ ! -s $attempt_file ]] || read -r attempt_s attempt_retry <"$attempt_file" || true
+  [[ $attempt_s =~ ^[0-9]{1,12}$ && $attempt_retry =~ ^[01]$ ]] || attempt_s="" attempt_retry=0
+  last_s=$run_s retried=0
+  [[ $file_retry == true ]] && retried=1
+  if [[ -n $attempt_s ]] && { [[ -z $run_s ]] || (( attempt_s >= run_s )); }; then
+    # The last attempt is the last run. Started in the same second, it is
+    # the run status.json shows; after it, one that wrote nothing.
+    if [[ -z $run_s ]] || (( attempt_s > run_s )); then failed=true retried=0; fi
+    (( ! attempt_retry )) || retried=1
+    last_s=$attempt_s
+  fi
+  window=$interval
+  if [[ $failed == true ]] && (( ! retried )); then
+    window=$(( interval < retry_sec ? interval : retry_sec )) retry=1
+  fi
+  if [[ -n $last_s ]] && (( now_s >= last_s && now_s - last_s < window - 30 )); then exit "$not_due_exit"; fi
+  printf '%s %s\n' "$now_s" "$retry" >"$attempt_file"
+fi
 
 # Only a check or a local refresh makes these, and only under the lock: any
 # left over is from a run that was killed outright. The locks themselves,
