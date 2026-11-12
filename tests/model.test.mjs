@@ -474,6 +474,18 @@ test("extraLine: the row's exception, in order", () => {
     ["Checking…", "Cannot skip 1..2: not a version Omabump stores", "Check failed: e", "Installed as chatgpt-desktop", "No install route", "Last known version", "", ""])
 })
 
+test("extraLine: the release-age hold says only until when", () => {
+  const held = row({ held: true, installable: false, updateAvailable: true,
+    note: "omarchy-pkgs holds new releases for 24 h, Update from Nov 13 14:05; Recipe at abc" })
+  same([m.extraLine(held, ""), m.rowTooltip(held, [], {}, "").split("\n")[2]],
+    ["Held until Nov 13 14:05", "No Update yet: omarchy-pkgs holds new releases for 24 h, Update from Nov 13 14:05"])
+})
+
+test("versionText: installed, and the newest while an update exists", () => {
+  same([m.versionText(update), m.versionText(row({ source: "mise", installed: "2.0", latest: "2.1" })), m.versionText(null)],
+    ["1.0.0 → 1.1.0", "2.0", ""])
+})
+
 test("sourceLabel: where the newest version came from", () => {
   same([row({ stale: true }), row({ versionFrom: "mise" }), row({}), row({ versionFrom: "x" }), row({ versionFrom: "" })].map(a => m.sourceLabel(a)),
     ["an earlier check", "mise", "the vendor's release feed", "x", ""])

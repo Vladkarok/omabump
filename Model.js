@@ -535,6 +535,16 @@ function installedText(app) {
   return app.updateAvailable === true && short === String(app.latest || "") ? full : short
 }
 
+// "installed → latest" while an update exists, else the installed version.
+function versionText(app) {
+  if (!app) return ""
+  return installedText(app) + (app.updateAvailable === true ? " → " + app.latest : "")
+}
+
+// bin/omabump-check's release-age hold clause. The row says it short, so
+// the date fits; the tooltip keeps the whole note.
+var holdNote = /^omarchy-pkgs holds new releases for [0-9]+ h, Update from /
+
 // The second line of a row: exceptions only. actionNote is why the last
 // Skip did nothing (skipToggled's note).
 function extraLine(app, actionNote) {
@@ -542,7 +552,7 @@ function extraLine(app, actionNote) {
   if (app.checking === true) return "Checking…"
   if (actionNote) return actionNote
   if (String(app.error || "") !== "") return "Check failed: " + app.error
-  var note = shortNote(app)
+  var note = shortNote(app).replace(holdNote, "Held until ")
   if (note !== "") return note
   if (noRoute(app)) return "No install route"
   if (app.stale === true) return "Last known version"
