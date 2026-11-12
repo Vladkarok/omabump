@@ -1221,12 +1221,33 @@ check "self_merge: back at the installed commit, the release's files gone" at_be
 # A merge that moved HEAD and then failed.
 self_reset
 # shellcheck disable=SC2016 # expanded by the child bash
-inst_src 'eval "$(declare -f self_git | sed "1s/^self_git/real_self_git/")"
-  self_git() { real_self_git "$@" || return; [[ $1 != merge ]]; }
+inst_src 'eval "$(declare -f self_git_held | sed "1s/^self_git_held/real_self_git_held/")"
+  self_git_held() { real_self_git_held "$@" || return; [[ $1 != merge ]]; }
   self_target=$T_TARGET; self_merge "$T_BEFORE" omarchy-plugin-validate' self:omabump
 says "self_merge: a merge that fails after moving HEAD rolls back" "git merge --ff-only $target failed; rolled back to ${before:0:12}, the old version is still installed"
 check "self_merge: back at the installed commit" at_before
 no_call "self_merge: nothing validated after a failed merge" 'validate'
+
+# Stopped by a signal while the merge runs, slow here: the rollback waits
+# for the merge, so it neither races git nor leaves the release to land
+# after it. TERM goes to the installer alone (kill <pid>), which reaches no
+# git; INT and HUP to its whole process group, as a terminal sends them.
+cat >"$istubs/git" <<'EOF'
+#!/bin/bash
+for a; do [[ $a != merge ]] || { kill "-$T_SIG" -- "$T_KILL"; sleep 1; }; done
+PATH=${PATH#*:} exec git "$@"   # the real git, after the stubs directory
+EOF
+chmod +x "$istubs/git"
+for sig in TERM INT HUP; do
+  self_reset
+  # shellcheck disable=SC2016 # expanded by the child bash
+  T_SIG=$sig inst_src 'T_KILL=$$; [[ $T_SIG == TERM ]] || { T_KILL=$(ps -o pgid= -p $$); T_KILL=-${T_KILL// /}; }; export T_KILL
+    self_target=$T_TARGET; self_merge "$T_BEFORE" omarchy-plugin-validate; echo applied' self:omabump
+  says "self_merge: $sig during the merge rolls back once it ends" "the update stopped part way; rolled back to ${before:0:12}, the old version is still installed"
+  check "self_merge: back at the installed commit after $sig during the merge" at_before
+  no_call "self_merge: nothing validated after $sig during the merge" 'validate'
+done
+rm -f "$istubs/git"
 
 # Stopped by a signal while validating: the rollback follows the validator.
 self_reset

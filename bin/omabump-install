@@ -233,10 +233,10 @@ mkpkg() { run_unlocked makepkg --config "$cache_dir/makepkg.conf" "$@"; }
 # meanwhile, by an error or a signal, says they stay. ($? cannot tell: bash
 # runs this trap for a signal with $? still the last command's status.)
 # self_before is set from install_self's merge until the new version passed
-# validation (self_merge): a run stopped meanwhile, by Ctrl-C or the
-# terminal closing, puts the clone back from here. The merge takes under a
-# second, the validation longer, and either cut short would leave a plugin
-# no release names or one never validated. staged_copy names the
+# validation (self_merge): a run that ends meanwhile puts the clone back
+# from here. self_merge holds Ctrl-C, the terminal closing and TERM until
+# its step is done, then rolls back itself: either step cut short would
+# leave a plugin no release names or one never validated. staged_copy names the
 # root-owned copy in $staging_dir from the call to sudo install that writes
 # it (stage_and_install). A run that ends with it there, pacman not
 # running (TERM or the terminal closed end this script at once), removes
@@ -255,7 +255,7 @@ mkpkg() { run_unlocked makepkg --config "$cache_dir/makepkg.conf" "$@"; }
 # and the message names it and the command that removes it. The removal
 # and the record come first and the message last: with the terminal gone,
 # a failed write would end on_exit.
-restore_clone=0 started=0 self_before="" staged_copy="" staging_running=0 pacman_running=0
+restore_clone=0 started=0 self_before="" self_stop=0 staged_copy="" staging_running=0 pacman_running=0
 on_exit() {
   local left="" later=""
   if [[ -n $staged_copy && -e $staged_copy ]]; then
@@ -924,23 +924,35 @@ install_mise() {
 }
 
 # Fast-forwards the plugin clone from the commit $1 to $self_target and
-# validates the result with "${@:2}" <plugin dir>; if either fails,
-# self_undo puts the clone back at $1.
+# validates the result with "${@:2}" <plugin dir>; if either fails, or the
+# run is stopped meanwhile, self_undo puts the clone back at $1. A signal
+# waits for the step it comes in: the merge runs held (self_git_held), out
+# of reach of Ctrl-C, a closing terminal and a TERM sent to this script
+# alone, so rolling back at once would race a merge that carries on and
+# lands. Held, the merge is never cut short part way either. Each step is
+# bounded, the merge by self_git_held's timeout.
 self_merge() {
-  self_before=$1
+  local rc=0
+  self_before=$1 self_stop=0
   shift
-  self_git merge -q --ff-only "$self_target" || self_undo "git merge --ff-only $self_target failed"
-  run_unlocked "$@" "$plugin_dir" </dev/null || self_undo "the new version failed validation"
+  trap 'self_stop=1' HUP INT TERM
+  self_git_held merge -q --ff-only "$self_target" || rc=$?
+  (( ! self_stop )) || self_undo "the update stopped part way"
+  (( rc == 0 )) || self_undo "git merge --ff-only $self_target failed"
+  run_unlocked "$@" "$plugin_dir" </dev/null || rc=$?
+  (( ! self_stop )) || self_undo "the update stopped part way"
+  (( rc == 0 )) || self_undo "the new version failed validation"
   self_before=""
+  trap - HUP INT TERM
 }
 
 # Puts the plugin clone back at self_before and exits with $1. git clean
-# -fd removes the new files a merge stopped part way left untracked; not
-# -x, which would delete ignored files of yours too. git runs under timeout
-# alone, not through self_git's run_killable, which stops git on Ctrl-C or
-# a closing terminal: a reset cut short there would leave the release in
+# -fd removes the new files a failed merge left untracked; not -x, which
+# would delete ignored files of yours too. git runs under timeout alone,
+# not through self_git's run_killable, which stops git on Ctrl-C or a
+# closing terminal: a reset cut short there would leave the release in
 # place, and the run would end before it could say so. This script ignores
-# INT and HUP from here to its exit too. bash lets a Ctrl-C pass while it
+# INT, HUP and TERM from here to its exit too. bash lets a Ctrl-C pass while it
 # waits for a command that does not die of it, as git here does not, but
 # one that arrives between commands (a second Ctrl-C, or the first landing
 # as one git ends and the next starts) would end the run before git clean
@@ -948,7 +960,7 @@ self_merge() {
 self_git_held() { run_unlocked timeout -k 10 120 env GIT_ALLOW_PROTOCOL=https GIT_TERMINAL_PROMPT=0 git "${git_safe[@]}" -C "$plugin_dir" "$@" </dev/null; }
 self_undo() {
   local before=$self_before
-  trap '' INT HUP
+  trap '' INT HUP TERM
   self_before=""
   if self_git_held reset -q --hard "$before" && self_git_held clean -qfd; then
     die "$1; rolled back to ${before:0:12}, the old version is still installed"
