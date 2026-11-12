@@ -1,13 +1,60 @@
 #!/bin/bash
-# Unit tests for bin/omabump-common. Plain bash: one line per test, every
-# test runs, and any failure makes the exit non-zero. Nothing touches the network: fetch,
+# Omabump's tests. Plain bash: one line per test, every test runs, and any
+# failure makes the exit non-zero. Nothing touches the network: fetch,
 # mise_run and the git network wrapper are stubbed below, and every XDG
 # directory points into a scratch directory.
 #
-#   tests/run.sh
+#   tests/run.sh               every part, in order
+#   tests/run.sh <part>...     only those parts
+#   tests/run.sh --list        the parts
+#
+# unit is this file's tests of bin/omabump-common; model is Model.js under
+# node (tests/model.sh); qml, check, install and pin-watch are
+# tests/<part>.sh.
 set -uo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+parts=(unit model qml check install pin-watch)
+
+# Each part runs in a bash of its own, from the setup below and nothing an
+# earlier part left, so one part can run alone. The counts file carries the
+# test number on from part to part.
+if [[ ${1:-} != --part ]]; then
+  if [[ ${1:-} == --list ]]; then printf '%s\n' "${parts[@]}"; exit 0; fi
+  (( $# )) || set -- "${parts[@]}"
+  for p; do
+    [[ " ${parts[*]} " == *" $p "* ]] || { echo "tests/run.sh: no part '$p'; --list names them" >&2; exit 2; }
+  done
+  mkdir -p "$root/.tests"
+  counts=$(mktemp -p "$root/.tests")
+  trap 'rm -f "$counts"; rmdir "$root/.tests" 2>/dev/null' EXIT
+  # secs <start>: the seconds since $EPOCHREALTIME was <start>.
+  secs() { local us=$(( ${EPOCHREALTIME//[!0-9]/} - ${1//[!0-9]/} )); printf '%d.%d' $(( us / 1000000 )) $(( us % 1000000 / 100000 )); }
+  n=0 failed=0 run_start=$EPOCHREALTIME
+  for p; do
+    echo "# $p"
+    part_start=$EPOCHREALTIME
+    echo "$n" >"$counts"
+    OMABUMP_TEST_COUNTS=$counts bash "$root/tests/run.sh" --part "$p"
+    rc=$?
+    # A part that stopped half way wrote no count: that is a failure too.
+    if read -r part_n part_failed <"$counts" && [[ -n ${part_failed:-} ]]; then
+      n=$part_n failed=$(( failed + part_failed ))
+    else
+      n=$(( n + 1 )) failed=$(( failed + 1 ))
+      echo "FAIL $n - $p ran to the end: exit $rc"
+    fi
+    echo "# $p: $(secs "$part_start") s"
+  done
+  if (( failed )); then
+    echo "$failed of $n tests failed ($(secs "$run_start") s)"
+    exit 1
+  fi
+  echo "all $n tests passed ($(secs "$run_start") s)"
+  exit 0
+fi
+part=$2
+
 # Scratch space inside the checkout, never the system temp directory.
 mkdir -p "$root/.tests"
 scratch=$(mktemp -d -p "$root/.tests")
@@ -17,6 +64,8 @@ mkdir -p "$XDG_CONFIG_HOME/omarchy/omabump" "$scratch/served"
 
 # shellcheck source=../bin/omabump-common
 source "$root/bin/omabump-common"
+# Never the shell.json under the real HOME: the tests write and remove it.
+shell_json=$scratch/shell.json
 # The real mise_run, kept under another name before the stub replaces it.
 eval "$(declare -f mise_run | sed '1s/^mise_run/real_mise_run/')"
 
@@ -34,9 +83,12 @@ fetch() {
 }
 # shellcheck disable=SC2329 # stubs, called from omabump-common
 mise_run() { echo "mise_run called in a test" >&2; return 1; }
+# shellcheck disable=SC2329 # called from omabump-common
 pgit_net() { echo "pgit_net called in a test" >&2; return 1; }
 
-n=0 failed=0
+counts=${OMABUMP_TEST_COUNTS:-/dev/null}
+n=$(<"$counts") failed=0
+n=${n:-0}
 pass() { n=$((n + 1)); echo "ok $n - $1"; }
 fail() { n=$((n + 1)) failed=$((failed + 1)); echo "FAIL $n - $1${2:+: $2}"; }
 # check <name> <command...>: the command must succeed.
@@ -46,8 +98,23 @@ refuse() { local name=$1; shift; if "$@" >/dev/null 2>&1; then fail "$name" "exp
 # same <name> <expected> <actual>
 same() { if [[ $3 == "$2" ]]; then pass "$1"; else fail "$1" "expected '$2', got '$3'"; fi; }
 
+# git, quiet and with a test author, for the repositories the tests make.
+tgit() { git -c user.name=t -c user.email=t@example.com -c init.defaultBranch=main -c advice.detachedHead=false "$@" >/dev/null 2>&1; }
 hexsum() { printf '%s' "$2" | "${1}sum" | cut -d' ' -f1; }
 b64sum() { printf '%s' "$1" | python3 -c 'import base64, hashlib, sys; print(base64.b64encode(hashlib.sha512(sys.stdin.buffer.read()).digest()).decode())'; }
+
+# The part's last test number and its failures, for the run that started it.
+finish() { echo "$n $failed" >"$counts"; exit $(( failed > 0 )); }
+# unit is the rest of this file.
+case $part in
+  unit) ;;
+  model) source "$root/tests/model.sh"; finish ;;
+  qml) source "$root/tests/qml.sh"; finish ;;
+  check) source "$root/tests/check.sh"; finish ;;
+  install) source "$root/tests/install.sh"; finish ;;
+  pin-watch) source "$root/tests/pin-watch.sh"; finish ;;
+  *) echo "tests/run.sh: no part '$part'" >&2; exit 2 ;;
+esac
 
 # --- clean_text ---------------------------------------------------------------
 
@@ -697,6 +764,7 @@ mise_run() { return 1; }
 mise_unused_tools=x
 mise_unused_load
 same "mise_unused_load: none when mise cannot list its config" '' "$mise_unused_tools"
+# shellcheck disable=SC2329 # called from omabump-common
 mise_run() { echo "mise_run called in a test" >&2; return 1; }
 mise_ls_json='{}'
 # A vfox backend plugin is disabled by its own name: every installed plugin
@@ -909,7 +977,6 @@ plugins_dir=$real_plugins
 # allows only https; the test's self_git also allows file:// and nothing else
 # changes. A user's git config could rewrite URLs, so it is left out.
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
-tgit() { git -c user.name=t -c user.email=t@example.com -c init.defaultBranch=main -c advice.detachedHead=false "$@" >/dev/null 2>&1; }
 eval "$(declare -f self_git | sed '1s/^self_git/real_self_git/')"
 self_git() { git -c protocol.file.allow=always -C "$plugin_dir" "$@" </dev/null; }
 tgit init -q --bare "$scratch/self.git"
@@ -944,6 +1011,7 @@ tgit -C "$plugin_dir" reset -q --hard main
 tgit -C "$plugin_dir" merge -q --ff-only origin/main
 same "self_plan: a tag behind the installed commit is not a fast-forward" 'not a fast-forward' "$(self_plan 0.2.0 2>&1 | grep -o 'not a fast-forward')"
 refuse "self_plan: an odd version never reaches git" self_plan '0.2.0:refs/heads/x'
+# shellcheck disable=SC2329 # called from omabump-common
 self_git() { git -C "$plugin_dir" "$@" </dev/null; }
 for url in https://github.com/vladkarok/omabump https://GitHub.com/VladKarok/Omabump.git; do
   tgit -C "$plugin_dir" remote set-url origin "$url"
@@ -986,13 +1054,4 @@ done
 mise_ls_json='{"grok":[{"version":"1.0.46","installed":true,"active":true}]}'
 same "the Grok CLI row finds mise's first-party grok" "grok 1.0.46" "$(mise_active "$(app_json mise:grok-cli)")"
 mise_ls_json='{}'
-
-source "$root/tests/qml.sh"
-source "$root/tests/check.sh"
-source "$root/tests/install.sh"
-source "$root/tests/pin-watch.sh"
-if (( failed )); then
-  echo "$failed of $n tests failed"
-  exit 1
-fi
-echo "all $n tests passed"
+finish

@@ -1,4 +1,4 @@
-// Tests for Model.js, the widget's rules. Run by tests/qml.sh when node is
+// Tests for Model.js, the widget's rules. Run by tests/model.sh when node is
 // installed: one line per test, "ok<TAB>name" or "not ok<TAB>name<TAB>why",
 // then "done<TAB>count". Exits non-zero when any test fails.
 import assert from "node:assert/strict"

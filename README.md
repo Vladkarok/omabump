@@ -295,7 +295,7 @@ Packages Omabump installed stay installed; pacman manages them like any other.
 
 ## Development
 
-`bash tests/run.sh` runs every suite: the bash helpers, whole checks and installs against fake `pacman`, `sudo`, `curl`, `git` and `mise` (no network, no root), and the widget's logic in `Model.js` through node (`tests/model.test.mjs`), and the panel's cursor under the pointer (`tests/tst_pointer.qml`, offscreen through qmltestrunner). It needs `vercmp` (pacman), `jq`, `python` and, for the `Model.js` tests, `node`, and for the pointer test `qt6-declarative`; without those, their tests are reported as skipped. Run it in the foreground: the Ctrl-C tests need a shell that can trap INT. CI also runs `bash -n`, `py_compile` and shellcheck.
+`bash tests/run.sh` runs every suite: the bash helpers, whole checks and installs against fake `pacman`, `sudo`, `curl`, `git` and `mise` (no network, no root), and the widget's logic in `Model.js` through node (`tests/model.test.mjs`), and the panel's cursor under the pointer (`tests/tst_pointer.qml`, offscreen through qmltestrunner). It needs `vercmp` (pacman), `jq`, `python` and, for the `Model.js` tests, `node`, and for the pointer test `qt6-declarative`; without those, their tests are reported as skipped. Run it in the foreground: the Ctrl-C tests need a shell that can trap INT. The suite comes in parts, which `tests/run.sh --list` names: `tests/run.sh check install` runs only those two, each from a clean scratch directory, and every part prints its time as it ends. After a change to one file, run the part that tests it (`unit` for `bin/omabump-common`, `model` for `Model.js`, `qml` for the QML), then the whole suite before a commit. CI also runs `bash -n`, `py_compile` and shellcheck.
 
 ## Tested on
 
