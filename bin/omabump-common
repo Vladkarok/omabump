@@ -1399,7 +1399,9 @@ self_plan() {
   local tag=v$1 status
   self_target=""
   version_ok "$1" || { echo "'$1' is not a release version" >&2; return 1; }
-  status=$(self_git status --porcelain) || { echo "git status failed in $plugin_dir" >&2; return 1; }
+  # --untracked-files=normal whatever status.showUntrackedFiles says: the
+  # rollback's git clean -fd deletes any untracked file this would not see.
+  status=$(self_git status --porcelain --untracked-files=normal) || { echo "git status failed in $plugin_dir" >&2; return 1; }
   [[ -z $status ]] || { echo "the plugin clone $plugin_dir has local changes" >&2; return 1; }
   self_git fetch -q --no-tags origin -- "refs/tags/$tag" >&2 || { echo "could not fetch the tag $tag" >&2; return 1; }
   self_target=$(self_git rev-parse --verify -q 'FETCH_HEAD^{commit}') || { echo "the tag $tag names no commit" >&2; return 1; }

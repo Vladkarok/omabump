@@ -936,11 +936,15 @@ self_merge() {
 
 # Puts the plugin clone back at self_before and exits with $1. git clean
 # -fd removes the new files a merge stopped part way left untracked; not
-# -x, which would delete ignored files of yours too.
+# -x, which would delete ignored files of yours too. git runs under timeout
+# alone, not through self_git's run_killable, which stops git on Ctrl-C or
+# a closing terminal: a reset cut short there would leave the release in
+# place, and the run would end before it could say so.
+self_git_held() { run_unlocked timeout -k 10 120 env GIT_ALLOW_PROTOCOL=https GIT_TERMINAL_PROMPT=0 git "${git_safe[@]}" -C "$plugin_dir" "$@" </dev/null; }
 self_undo() {
   local before=$self_before
   self_before=""
-  if self_git reset -q --hard "$before" && self_git clean -qfd; then
+  if self_git_held reset -q --hard "$before" && self_git_held clean -qfd; then
     die "$1; rolled back to ${before:0:12}, the old version is still installed"
   fi
   die "$1, and the rollback failed; see git -C $plugin_dir status, and restore it with: git -C $plugin_dir reset --hard $before"
@@ -980,7 +984,7 @@ install_self() {
   # The prompt can wait for minutes: refuse if the clone changed meanwhile,
   # so a rollback below can never discard an edit made while it waited.
   [[ $(self_git rev-parse HEAD) == "$before" ]] || die "the plugin clone moved while waiting; nothing changed, run Update again"
-  [[ -z $(self_git status --porcelain) ]] || die "the plugin clone has local changes now; nothing changed"
+  [[ -z $(self_git status --porcelain --untracked-files=normal) ]] || die "the plugin clone has local changes now; nothing changed"
   self_merge "$before" "${validate[@]}"
   run_unlocked omarchy-shell shell rescanPlugins >/dev/null 2>&1 </dev/null || true
   "$plugin_dir/bin/omabump-check" --no-notify --wait || true

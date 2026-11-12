@@ -1236,5 +1236,21 @@ says "self_merge: a run stopped while validating rolls back" "the update stopped
 check "self_merge: back at the installed commit after the signal" at_before
 refuse "self_merge: and the run is a failure" test "$irc" = 0
 
+# Ctrl-C during the rollback, sent as a terminal sends it, to the
+# installer's whole process group: git, slow here, still finishes the reset.
+self_reset
+cat >"$istubs/git" <<'EOF'
+#!/bin/bash
+for a; do [[ $a != reset ]] || { kill -INT -- "-$T_PGID"; sleep 1; }; done
+PATH=${PATH#*:} exec git "$@"   # the real git, after the stubs directory
+EOF
+chmod +x "$istubs/git"
+# shellcheck disable=SC2016 # expanded by the child bash
+STUB_VALIDATE=fail inst_src 'T_PGID=$(ps -o pgid= -p $$) && export T_PGID=${T_PGID// /}
+  self_target=$T_TARGET; self_merge "$T_BEFORE" omarchy-plugin-validate' self:omabump
+rm -f "$istubs/git"
+says "self_merge: Ctrl-C during the rollback does not cut it short" "the new version failed validation; rolled back to ${before:0:12}, the old version is still installed"
+check "self_merge: the reset finished under Ctrl-C" at_before
+
 self_reset
 unset T_BEFORE T_TARGET
