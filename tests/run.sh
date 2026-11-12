@@ -918,6 +918,13 @@ same "self_plan: nothing moved before the answer" "$(git -C "$scratch/self-work"
 echo dirty >"$plugin_dir/one"
 same "self_plan: local changes refuse" 'local changes' "$(self_plan 0.2.0 2>&1 | grep -o 'local changes')"
 tgit -C "$plugin_dir" checkout -q -- one
+# The rollback's git clean -fd would delete an untracked file, so one counts
+# even where status.showUntrackedFiles hides it.
+tgit -C "$plugin_dir" config status.showUntrackedFiles no
+echo mine >"$plugin_dir/mine"
+same "self_plan: an untracked file refuses, though git status hides it" 'local changes' "$(self_plan 0.2.0 2>&1 | grep -o 'local changes')"
+rm "$plugin_dir/mine"
+tgit -C "$plugin_dir" config --unset status.showUntrackedFiles
 refuse "self_plan: a tag that does not exist" self_plan 0.9.0
 tgit -C "$plugin_dir" reset -q --hard main
 tgit -C "$plugin_dir" merge -q --ff-only origin/main

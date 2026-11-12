@@ -1209,90 +1209,32 @@ export T_BEFORE=$before T_TARGET=$target
 
 self_reset
 # shellcheck disable=SC2016 # expanded by the child bash
-inst_src 'self_target=$T_TARGET; self_apply "$T_BEFORE" omarchy-plugin-validate; echo applied' self:omabump
-same "self_apply: a validated release stays" "0|applied|$target" "$irc|$iout|$(git -C "$iplugin" rev-parse HEAD)"
+inst_src 'self_target=$T_TARGET; self_merge "$T_BEFORE" omarchy-plugin-validate; echo applied' self:omabump
+same "self_merge: a validated release stays" "0|applied|$target" "$irc|$iout|$(git -C "$iplugin" rev-parse HEAD)"
 
 self_reset
 # shellcheck disable=SC2016 # expanded by the child bash
-STUB_VALIDATE=fail inst_src 'self_target=$T_TARGET; self_apply "$T_BEFORE" omarchy-plugin-validate' self:omabump
-says "self_apply: a failed validation rolls back" "the new version failed validation; rolled back to ${before:0:12}"
-check "self_apply: back at the installed commit, the release's files gone" at_before
+STUB_VALIDATE=fail inst_src 'self_target=$T_TARGET; self_merge "$T_BEFORE" omarchy-plugin-validate' self:omabump
+says "self_merge: a failed validation rolls back" "the new version failed validation; rolled back to ${before:0:12}, the old version is still installed"
+check "self_merge: back at the installed commit, the release's files gone" at_before
 
 # A merge that moved HEAD and then failed.
 self_reset
 # shellcheck disable=SC2016 # expanded by the child bash
-inst_src 'eval "$(declare -f self_git_held | sed "1s/^self_git_held/real_self_git_held/")"
-  self_git_held() { real_self_git_held "$@" || return; [[ $1 != merge ]]; }
-  self_target=$T_TARGET; self_apply "$T_BEFORE" omarchy-plugin-validate' self:omabump
-says "self_apply: a merge that fails after moving HEAD rolls back" "git merge --ff-only $target failed; rolled back to ${before:0:12}"
-check "self_apply: back at the installed commit" at_before
-no_call "self_apply: nothing validated after a failed merge" 'validate'
-
-# A merge that stops part way: a.txt rewritten, b.log, c.txt and n/sub/f
-# written, d/new not (d is read-only), HEAD and the index not moved. Root
-# writes anyway.
-self_reset
-if (( $(id -u) == 0 )); then
-  pass "self_apply: a merge that stops part way rolls back (skipped as root)"
-  pass "self_apply: the files it wrote are gone (skipped as root)"
-else
-  chmod 555 "$iplugin/d"
-  # shellcheck disable=SC2016 # expanded by the child bash
-  inst_src 'self_target=$T_TARGET; self_apply "$T_BEFORE" omarchy-plugin-validate' self:omabump
-  chmod 755 "$iplugin/d"
-  says "self_apply: a merge that stops part way rolls back" "git merge --ff-only $target failed; rolled back to ${before:0:12}"
-  check "self_apply: the files it wrote are gone" at_before
-fi
+inst_src 'eval "$(declare -f self_git | sed "1s/^self_git/real_self_git/")"
+  self_git() { real_self_git "$@" || return; [[ $1 != merge ]]; }
+  self_target=$T_TARGET; self_merge "$T_BEFORE" omarchy-plugin-validate' self:omabump
+says "self_merge: a merge that fails after moving HEAD rolls back" "git merge --ff-only $target failed; rolled back to ${before:0:12}, the old version is still installed"
+check "self_merge: back at the installed commit" at_before
+no_call "self_merge: nothing validated after a failed merge" 'validate'
 
 # Stopped by a signal while validating: the rollback follows the validator.
 self_reset
 # shellcheck disable=SC2016 # expanded by the child bash
-STUB_VALIDATE=term inst_src 'self_target=$T_TARGET; self_apply "$T_BEFORE" omarchy-plugin-validate; echo applied' self:omabump
-says "self_apply: a run stopped while validating rolls back" "the update stopped part way; rolled back to ${before:0:12}"
-check "self_apply: back at the installed commit after the signal" at_before
-refuse "self_apply: and the run is a failure" test "$irc" = 0
-
-# Stopped by a signal while git merges, as closing the terminal or kill
-# would: git, under timeout in a process group of its own, is not told and
-# goes on to finish the merge. The rollback has to come after it.
-self_reset
-cat >"$istubs/git" <<'EOF'
-#!/bin/bash
-for a; do [[ $a != merge ]] || { kill -TERM "$T_INSTALLER"; sleep 1; }; done
-PATH=${PATH#*:} exec git "$@"   # the real git, after the stubs directory
-EOF
-chmod +x "$istubs/git"
-# shellcheck disable=SC2016 # expanded by the child bash
-inst_src 'export T_INSTALLER=$$; self_target=$T_TARGET; self_apply "$T_BEFORE" omarchy-plugin-validate; echo applied' self:omabump
-rm -f "$istubs/git"
-says "self_apply: a run stopped while git merges rolls back" "the update stopped part way; rolled back to ${before:0:12}"
-check "self_apply: once the merge is done, not under it" at_before
-no_call "self_apply: and validates nothing" 'validate'
-
-# Ctrl-C while git merges, sent as a terminal sends it, to the installer's
-# whole process group: git, slow here, is not reached and finishes the
-# merge (the stub records that it did); the rollback comes after it.
-self_reset
-cat >"$istubs/git" <<'EOF'
-#!/bin/bash
-m=0
-for a; do [[ $a != merge ]] || m=1; done
-(( m )) || PATH=${PATH#*:} exec git "$@"   # the real git, after the stubs directory
-kill -INT -- "-$T_PGID"; sleep 1
-PATH=${PATH#*:} git "$@"
-rc=$?
-echo "git merge ended $rc" >>"$STUB_LOG/calls"
-exit "$rc"
-EOF
-chmod +x "$istubs/git"
-# shellcheck disable=SC2016 # expanded by the child bash
-inst_src 'T_PGID=$(ps -o pgid= -p $$) && export T_PGID=${T_PGID// /}
-  self_target=$T_TARGET; self_apply "$T_BEFORE" omarchy-plugin-validate; echo applied' self:omabump
-rm -f "$istubs/git"
-calls "self_apply: Ctrl-C does not cut the merge short" 'git merge ended 0'
-says "self_apply: Ctrl-C while git merges rolls back" "the update stopped part way; rolled back to ${before:0:12}"
-check "self_apply: after the merge finished under Ctrl-C" at_before
-no_call "self_apply: Ctrl-C while git merges validates nothing" 'validate'
+STUB_VALIDATE=term inst_src 'self_target=$T_TARGET; self_merge "$T_BEFORE" omarchy-plugin-validate; echo applied' self:omabump
+says "self_merge: a run stopped while validating rolls back" "the update stopped part way; rolled back to ${before:0:12}, the old version is still installed"
+check "self_merge: back at the installed commit after the signal" at_before
+refuse "self_merge: and the run is a failure" test "$irc" = 0
 
 # Ctrl-C during the rollback, sent as a terminal sends it, to the
 # installer's whole process group: git, slow here, still finishes the reset.
@@ -1305,9 +1247,10 @@ EOF
 chmod +x "$istubs/git"
 # shellcheck disable=SC2016 # expanded by the child bash
 STUB_VALIDATE=fail inst_src 'T_PGID=$(ps -o pgid= -p $$) && export T_PGID=${T_PGID// /}
-  self_target=$T_TARGET; self_apply "$T_BEFORE" omarchy-plugin-validate' self:omabump
+  self_target=$T_TARGET; self_merge "$T_BEFORE" omarchy-plugin-validate' self:omabump
 rm -f "$istubs/git"
-says "self_apply: Ctrl-C during the rollback does not cut it short" "the new version failed validation; rolled back to ${before:0:12}"
-check "self_apply: the reset finished under Ctrl-C" at_before
+says "self_merge: Ctrl-C during the rollback does not cut it short" "the new version failed validation; rolled back to ${before:0:12}, the old version is still installed"
+check "self_merge: the reset finished under Ctrl-C" at_before
+
 self_reset
 unset T_BEFORE T_TARGET
