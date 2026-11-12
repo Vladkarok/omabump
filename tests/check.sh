@@ -12,142 +12,6 @@
 # Single quotes below hold shell text for files and jq, never expanded here:
 # shellcheck disable=SC2016
 
-# --- discovery: the wrapper parser ----------------------------------------------
-
-d2=$scratch/discover2
-mkdir -p "$d2/bin"
-printf '{"setup.default.agent.omp": {"label": "omp"}, "setup.default.agent.hermes": {"label": "Hermes"}}' >"$d2/stock.jsonc"
-: >"$d2/user.jsonc"
-disc2() { python3 "$root/bin/omabump-discover" --stock "$d2/stock.jsonc" --user "$d2/user.jsonc" --bin-dir "$d2/bin" "$@"; }
-# The omp agent as "<key>/<source>", and its warning.
-omp_of() { disc2 "$@" | jq -r '.agents[] | select(.command == "omp") | "\(.key)/\(.source)"'; }
-omp_warning() { disc2 "$@" | jq -r '.agents[] | select(.command == "omp") | .warning // ""'; }
-put() { printf '%s\n' "$@" >"$d2/bin/omp"; }
-use_exec() { put '#!/bin/bash' "mise use -g --quiet \"$1\" || exit 1" "exec mise x \"$1\" -- \"omp\" \"\$@\""; }
-
-put '#!/bin/bash' '# Written by omarchy-mise-install' '' 'export MISE_MINIMUM_RELEASE_AGE=0' 'export A_B="x y"' "export C='z'" \
-  'mise use -g --quiet "github:can1357/oh-my-pi" || exit 1' '  exec mise x "github:can1357/oh-my-pi" -- "omp" "$@"' '# the end'
-same "wrapper: comments, blank lines and exports around the two lines" 'github:can1357/oh-my-pi/wrapper' "$(omp_of)"
-put '#!/usr/bin/env bash' 'mise use --yes -g "npm:@scope/omp"' 'exec mise exec "npm:@scope/omp" -- "omp" "$@"'
-same "wrapper: env bash, flags in any order, no || exit, mise exec" 'npm:@scope/omp/wrapper' "$(omp_of)"
-# A colon after the first @ (but a leading one) is the version's, not a
-# backend's.
-for pair in 'npm:@scope/omp@1.2.3|npm:@scope/omp' 'omp@latest|omp' '@scope/omp@2|@scope/omp' 'aqua:o/omp@prefix:1|aqua:o/omp' \
-  'ubi:o/omp[exe=omp]@1.0|ubi:o/omp' 'http:omp[url=https://u@example.com/x]|http:omp' \
-  'omp@prefix:1|omp' '@s/x@ref:main|@s/x' 'npm:@s/x@ref:main|npm:@s/x' 'github:o/omp|github:o/omp'; do
-  use_exec "${pair%%|*}"
-  same "wrapper: the key of ${pair%%|*}" "${pair#*|}/wrapper" "$(omp_of)"
-done
-use_exec 'omp@'
-same "wrapper: an empty @version is a warning" "wrapper $d2/bin/omp not recognised: malformed @version suffix" "$(HOME=/nonexistent omp_warning)"
-
-# Files that run mise but are not a wrapper Omabump reads: the agent falls
-# back to its command and the file is named.
-rejected() {
-  same "wrapper: $1" "omp/command|$2" "$(omp_of)|$(HOME=/nonexistent omp_warning | sed "s|^wrapper $d2/bin/omp not recognised: ||")"
-}
-put '#!/bin/bash' 'mise use -g "a"' 'mise use -g "b"' 'exec mise x "a" -- "omp" "$@"'
-rejected "two mise use lines" '2 mise use and 1 exec mise lines, not one of each'
-put '#!/bin/bash' 'mise use --quiet "a"' 'exec mise x "a" -- "omp" "$@"'
-rejected "mise use without -g" 'line 2: mise use without -g, or with a flag Omabump does not know'
-put '#!/bin/bash' 'mise use -g --path /tmp/x "a"' 'exec mise x "a" -- "omp" "$@"'
-rejected "a mise use flag that takes a value" 'line 2 is not a line of an omarchy-mise-install wrapper'
-put '#!/bin/bash' 'exec mise x "a" -- "omp" "$@"' 'mise use -g "a"'
-rejected "exec before use" 'mise use comes after exec mise'
-put '#!/bin/sh' 'mise use -g "a"' 'exec mise x "a" -- "omp" "$@"'
-rejected "a shebang other than bash" 'no bash shebang on the first line'
-put '#!/bin/bash' 'export X=$(id)' 'mise use -g "a"' 'exec mise x "a" -- "omp" "$@"'
-rejected "an export of a command substitution" 'line 2 is not a line of an omarchy-mise-install wrapper'
-use_exec a
-same "wrapper: owned by another uid, with the uid" "omp/command|not owned by uid $(( $(id -u) + 1 ))" \
-  "$(omp_of --uid "$(( $(id -u) + 1 ))")|$(omp_warning --uid "$(( $(id -u) + 1 ))" | sed 's/^.*not recognised: //')"
-
-# Anything else in its place is silent.
-put '#!/bin/bash' 'exec "$HOME/.hermes/hermes-agent/venv/bin/hermes" "$@"'
-same "wrapper: a launcher that does not run mise (Hermes, OpenClaw) is silent" 'omp/command|' "$(omp_of)|$(omp_warning)"
-put '#!/bin/bash' 'echo "run omarchy-mise-install, or install mise first" >&2' 'exit 1'
-same "wrapper: the user's own script that mentions mise is silent" 'omp/command|' "$(omp_of)|$(omp_warning)"
-put '#!/bin/bash' '# mise use -g "a"' 'exec /opt/omp/bin/omp "$@"'
-same "wrapper: mise in a comment only is silent" 'omp/command|' "$(omp_of)|$(omp_warning)"
-same "wrapper: a script that does not run mise, owned by another uid, is silent" '' "$(omp_warning --uid "$(( $(id -u) + 1 ))")"
-put '#!/bin/bash' 'echo "run mise use -g omp first" >&2' 'exit 1'
-same "wrapper: mise use in an echo string is silent" 'omp/command|' "$(omp_of)|$(omp_warning)"
-put '#!/bin/bash' 'exec /opt/omp/bin/omp "$@"  # was: exec mise x "omp" -- "omp" "$@"'
-same "wrapper: mise in a trailing comment is silent" 'omp/command|' "$(omp_of)|$(omp_warning)"
-
-# A changed template that still runs mise is named: mise as the command,
-# after exec, command or NAME=value, by path, with global flags first.
-put '#!/bin/bash' 'exec mise -C "$HOME" x "a" -- "omp" "$@"'
-rejected "a changed template: -C DIR before x" 'line 2 is not a line of an omarchy-mise-install wrapper'
-put '#!/bin/bash' 'MISE_YES=1 command ~/.local/bin/mise --cd /tmp -q use -g "a"'
-rejected "a changed template: NAME=value, command and a path to mise" 'line 2 is not a line of an omarchy-mise-install wrapper'
-# Each global flag that takes a value, and mise as a command after env,
-# sudo, if, &&, $( or a backslash-newline.
-for line in 'exec mise -E dev x "a" -- "omp" "$@"' 'mise --jobs 4 use -g "a"' 'mise -j 4 --env dev use -g "a"' \
-  'mise --log-level debug -P dev --profile=x use -g "a"' 'env MISE_YES=1 mise use -g "a"' 'sudo mise use -g "a"' \
-  'if mise use -g "a"; then exit 1; fi' 'cd /tmp && exec mise x "a" -- "omp" "$@"' 'v=$(mise x "a" -- omp --version)' \
-  $'mise use -g \\\n  "a"'; do
-  put '#!/bin/bash' "$line"
-  rejected "a changed template: ${line//$'\n'/ }" 'line 2 is not a line of an omarchy-mise-install wrapper'
-done
-# A script of the user's that only names mise, in a string with ; in it or
-# one over two lines, stays silent.
-put '#!/bin/bash' 'echo "not yet; mise use -g omp first" >&2' 'exit 1'
-same "wrapper: mise after a ; inside a string is silent" 'omp/command|' "$(omp_of)|$(omp_warning)"
-put '#!/bin/bash' 'echo "install it first:' 'mise use -g omp" >&2' 'exit 1'
-same "wrapper: mise on the second line of a string is silent" 'omp/command|' "$(omp_of)|$(omp_warning)"
-
-# Flags that could each be read two ways made the match backtrack
-# exponentially: 40 of them took hours. Each now reads one way.
-put '#!/bin/bash' "mise $(printf -- '--x %.0s' {1..40})y" "mise $(printf -- '-C %.0s' {1..40})y" \
-  "$(printf 'A=1 exec %.0s' {1..40})mise $(printf -- '--cd -x %.0s' {1..40})y"
-t0=$(date +%s%N)
-out=$(timeout 10 python3 -I "$root/bin/omabump-discover" --stock "$d2/stock.jsonc" --user "$d2/user.jsonc" --bin-dir "$d2/bin" \
-  | jq -r '.agents[] | select(.command == "omp") | "\(.key)|\(.warning // "")"')
-ms=$(( ($(date +%s%N) - t0) / 1000000 ))
-same "wrapper: 40 flags that run nothing are silent" 'omp|' "$out"
-check "wrapper: and are read within a second ($ms ms)" test "$ms" -lt 1000
-rm -f "$d2/bin/omp"
-
-# --- discovery: the menus ---------------------------------------------------------
-
-python3 -c 'print("{\"a\": " + "[" * 100000 + "]" * 100000 + "}")' >"$d2/user.jsonc"
-same "menu: one nested too deeply is that menu's error, the stock agents still count" '1|omp hermes' \
-  "$(disc2 | jq -r '[(.errors | map(select(test("nested too deeply"))) | length), (.agents | map(.command) | join(" "))] | join("|")')"
-# The limit is Omabump's own, the same on any stack: 64 levels pass, 65 do not,
-# and brackets inside strings do not count.
-python3 -c 'print("{\"a\": \"[[[[\", \"b\": " + "[" * 63 + "]" * 63 + "}")' >"$d2/user.jsonc"
-same "menu: 64 levels are read" '0' "$(disc2 | jq -r '.errors | map(select(test("nested too deeply"))) | length')"
-python3 -c 'print("{\"b\": " + "[" * 64 + "]" * 64 + "}")' >"$d2/user.jsonc"
-same "menu: 65 levels are too deep" '1' "$(disc2 | jq -r '.errors | map(select(test("nested too deeply"))) | length')"
-: >"$d2/user.jsonc"
-same "menu: a user menu without agents is no error" '' "$(disc2 | jq -r '.errors | join("|")')"
-printf '{"setup.default.agents.claude": {"label": "Claude"}}' >"$d2/stock.jsonc"
-same "menu: a stock menu without setup.default.agent ids is an error (Omarchy renamed them)" \
-  "the menu $d2/stock.jsonc lists no setup.default.agent.<command> entries|0" "$(disc2 | jq -r '"\(.errors | join("|"))|\(.agents | length)"')"
-printf '{"setup.default.agent.omp": {"label": "omp"}, "setup.default.agent.hermes": {"label": "Hermes"}}' >"$d2/stock.jsonc"
-
-# --- discovery: warnings and disabled rows ----------------------------------------
-
-discover_out='{"agents": [
-  {"command": "omp", "key": "omp", "label": "omp", "source": "command", "warning": "wrapper ~/.local/bin/omp not recognised: x"},
-  {"command": "grok", "key": "grok", "label": "Grok", "source": "command", "warning": "wrapper ~/.local/bin/grok not recognised: y"}],
-  "errors": ["menu trouble"]}'
-rm -f "$user_apps"
-discover_agents
-same "warnings: each rejected mise wrapper is named after the menu errors" \
-  'menu trouble; wrapper ~/.local/bin/omp not recognised: x; wrapper ~/.local/bin/grok not recognised: y' "$discovery_error"
-printf '[{"pkg": "mise:oh-my-pi", "disabled": true}, {"pkg": "mise:grok", "disabled": true}]' >"$user_apps"
-discover_agents
-same "warnings: none for a command whose row the user disabled, by the row or by mise:<command>" 'menu trouble' "$discovery_error"
-printf '{"not": "an array"}' >"$user_apps"
-discover_agents 2>/dev/null
-same "warnings: a user file that is not an array disables nothing" \
-  'menu trouble; wrapper ~/.local/bin/omp not recognised: x; wrapper ~/.local/bin/grok not recognised: y' "$discovery_error"
-rm -f "$user_apps"
-discover_out='{"agents":[],"errors":[]}'
-discover_agents
-
 # --- pins.json of the wrong shape ---------------------------------------------------
 
 for v in '"x"' '[1]' '5' '{"commit": 5}' '{"ref": 7}' '{"follow": ["master"]}'; do
@@ -253,6 +117,11 @@ held_a="a: GitHub's API has 19 of its 60 calls an hour left here, which Omabump 
 same "mise_load: with enough of GitHub's calls left, every key" $'rate|outdated --json -- a b\na: |b: ' "$(reserve_case '20 60')"
 same "mise_load: with fewer, not the key whose versions come from GitHub, and its row says why" \
   $'rate|outdated --json -- a\na: |'"$held_b" "$(reserve_case '19 60')"
+same "mise_load: two keys on GitHub and calls for one above the reserve: the first is asked, the second held" \
+  $'rate|outdated --json -- a\na: |b: GitHub\'s API has 20 of its 60 calls an hour left here, and Omabump leaves the last 20 to you, so mise was not asked about b' \
+  "$(reserve_case '20 60' '{}' '{"a": [], "b": []}')"
+same "mise_load: two keys on GitHub and calls for both above the reserve: both" $'rate|outdated --json -- a b\na: |b: ' \
+  "$(reserve_case '21 60' '{}' '{"a": [], "b": []}')"
 same "mise_load: when GitHub does not say, not that key either" \
   $'rate|outdated --json -- a\na: |b: GitHub\'s API did not say how many calls it has left here, so mise was not asked about b' \
   "$(reserve_case '')"
@@ -378,8 +247,6 @@ same "recipe_blocker: then a failed check, not 'no upstream watch'" "1||could no
 same "recipe_release_age: an unreadable package.json fails" 1 "$(rc_of recipe_release_age "$rev" foo)"
 same "recipe_blocker: a package without a recipe still says so" 'No baz recipe in omarchy-pkgs' "$(recipe_blocker "$rev" baz)"
 same "recipe_blocker: a recipe without package.json needs no blob" 'Repo recipe has no upstream watch yet' "$(recipe_blocker "$rev" bar)"
-same "recipe_source: a recipeCommit whose base recipe cannot be read fails" 1 \
-  "$(rc_of recipe_source foo '{"recipeCommit": "0123456789abcdef0123456789abcdef01234567"}')"
 # The blobs fetched as the real clone would, from its (here local) origin.
 tgit -C "$pkgs_dir" -c protocol.file.allow=always cat-file -e "$rev:pkgbuilds/foo/.omarchy/package.json"
 tgit -C "$pkgs_dir" -c protocol.file.allow=always cat-file -e "$rev:pkgbuilds/foo/PKGBUILD"
@@ -422,7 +289,8 @@ refuse "run_killable: and the command it ran is stopped" kill -0 "${slept:-0}"
 
 # Fake pacman (only claude-desktop and foo-old installed, or with
 # $OMABUMP_TEST_PKGS set the "<name> <version>" lines of that file; with
-# $OMABUMP_TEST_Q_HOOK set, each -Q runs that shell command first),
+# $OMABUMP_TEST_Q_HOOK set, each -Q runs that shell command first; -Qqn
+# knows the names in the file $OMABUMP_TEST_NATIVE as a repo's packages),
 # pacman-conf (the database in $run_dir/pacman-db), curl (every fetch
 # fails), sudo (only looked for, never run), git (every call fails) and mise
 # (logs its calls, knows no tool; with $OMABUMP_TEST_HANG set, `mise ls
@@ -437,6 +305,7 @@ run_dir=$scratch/check-run
 mkdir -p "$run_dir/bin" "$run_dir/home/.config/omarchy" "$run_dir/pacman-db"
 cat >"$run_dir/bin/pacman" <<'EOF'
 #!/bin/sh
+if [ "$1" = -Qqn ]; then grep -qxF -- "$3" "${OMABUMP_TEST_NATIVE:-/dev/null}"; exit; fi
 [ "$1" = -Q ] || exit 1
 [ -z "${OMABUMP_TEST_Q_HOOK:-}" ] || sh -c "$OMABUMP_TEST_Q_HOOK"
 if [ -n "${OMABUMP_TEST_PKGS:-}" ]; then
@@ -510,9 +379,8 @@ check_run --no-mise
 same "--no-mise wins over showMise true" '' "$(cat "$run_dir/mise.log")"
 
 # TERM while a command under its own timeout runs (mise here; git, curl
-# feeds and discovery go the same way): the trap must not wait for it.
-# The .check.XXXXXX dir is an older release's scratch dir.
-mkdir -p "$run_state/.run.stale" "$run_state/.check.Ab12Cd" && : >"$run_state/.status.stale" && : >"$run_state/.state.stale"
+# feeds go the same way): the trap must not wait for it.
+mkdir -p "$run_state/.run.stale" && : >"$run_state/.status.stale" && : >"$run_state/.state.stale"
 rm -f "$run_dir/hang.pid"
 OMABUMP_TEST_HANG=$run_dir/hang.pid check_bg
 pid=$!
@@ -651,54 +519,28 @@ status_mid_run() {
   [[ -z $hung ]] || kill "$hung" 2>/dev/null
 }
 
-# A status.json an older release wrote (no schemaVersion) shows while the
-# next run checks: its notes lose the switch clause, and a skipped mise row
-# is marked unchecked.
 run_settings ''
-cat >"$run_state/status.json" <<'JSON'
-{"checkedAt": "2026-01-01T00:00:00+00:00", "apps": [
-  {"pkg": "foo-bin", "source": "vendor-pkg", "note": "Installed as foo-old, switch to foo-bin; Recipe from omarchy-pkgs 0123456789ab"},
-  {"pkg": "bar-bin", "source": "omarchy", "note": "Installed as bar-old, Update switches to bar-bin"},
-  {"pkg": "baz", "source": "omarchy", "note": "No baz recipe in omarchy-pkgs"},
-  {"pkg": "mise:t", "source": "mise", "note": "Update check skipped: asdf backend"}]}
-JSON
-same "an older status.json: notes lose the switch clause, a skipped mise row is unchecked" \
-  'bar-bin=/false baz=No baz recipe in omarchy-pkgs/false foo-bin=Recipe from omarchy-pkgs 0123456789ab/false mise:t=Update check skipped: asdf backend/true|1' \
-  "$(status_mid_run '"\([.apps[] | "\(.pkg)=\(.note)/\(.unchecked)"] | sort | join(" "))|\(.schemaVersion)"')"
-# When mise's inventory fails, the mise rows of that file stay, failed, to
-# the end of the run, and keep the unchecked the migration gave them.
-cat >"$run_state/status.json" <<'JSON'
-{"checkedAt": "2026-01-01T00:00:00+00:00", "apps": [
-  {"pkg": "mise:t", "source": "mise", "note": "Update check skipped: asdf backend"},
-  {"pkg": "mise:u", "source": "mise", "note": ""}]}
-JSON
-OMABUMP_TEST_LS_FAIL=1 check_run
-same "an older status.json and a failed mise ls: its mise rows stay, stale, with unchecked" \
-  'mise:t=true/true/mise ls failed mise:u=false/true/mise ls failed|1' \
-  "$(run_status '"\([.apps[] | select(.source == "mise") | "\(.pkg)=\(.unchecked)/\(.stale)/\(.error | .[:14])"] | sort | join(" "))|\(.schemaVersion)"')"
-# A file of this release (schemaVersion 1) shows as it is: a note that
-# happens to read like the old clause keeps it, unchecked stays false.
+# The last run's rows show as they are while this one checks: no note is
+# rewritten, unchecked stays as it was.
 cat >"$run_state/status.json" <<'JSON'
 {"schemaVersion": 1, "checkedAt": "2026-01-01T00:00:00+00:00", "apps": [
   {"pkg": "foo-bin", "source": "vendor-pkg", "note": "Installed as a, switch to b", "unchecked": false},
   {"pkg": "mise:t", "source": "mise", "note": "Update check skipped: asdf backend", "unchecked": false}]}
 JSON
-same "a status.json with schemaVersion 1 is not migrated" \
+same "the last run's rows show unchanged while a run checks" \
   'foo-bin=Installed as a, switch to b/false mise:t=Update check skipped: asdf backend/false' \
   "$(status_mid_run '[.apps[] | "\(.pkg)=\(.note)/\(.unchecked)"] | sort | join(" ")')"
 rm -f "$run_state/status.json"
 
-# Scratch files an Update makes while it runs, without the check's lock, and
-# an older release's check made outside its run's dir: a check removes only
-# the day-old ones. An older release's .notified file goes at once.
+# Scratch files an Update makes while it runs, without the check's lock: a
+# check removes only the day-old ones.
 run_cache=$run_dir/cache/omabump
 mkdir -p "$run_cache/.mise-select.Old123" "$run_cache/.mise-select.New123"
 : >"$run_cache/.mise-select.Old123/ls.json"
-for f in "$run_cache/.mise.Old123" "$run_cache/.feed.Old123" "$run_state/.discovered.Old123" \
-  "$run_cache/.mise.New123" "$run_cache/.feed.New123" "$run_state/.discovered.New123" "$run_state/.notified.Ab12Cd"; do
+for f in "$run_cache/.mise.Old123" "$run_cache/.feed.Old123" "$run_cache/.mise.New123" "$run_cache/.feed.New123"; do
   : >"$f"
 done
-touch -d '2 days ago' "$run_cache/.mise.Old123" "$run_cache/.feed.Old123" "$run_state/.discovered.Old123" "$run_cache/.mise-select.Old123"
+touch -d '2 days ago' "$run_cache/.mise.Old123" "$run_cache/.feed.Old123" "$run_cache/.mise-select.Old123"
 # A killed Update's half downloads and sync-upstream's mktemp dirs: the
 # day-old ones go. A whole package and a scratch file by another name stay,
 # however old.
@@ -711,14 +553,14 @@ touch -d '2 days ago' "$run_cache/packages/foo-1.0.pkg.tar.zst.part" "$run_cache
   "$run_cache/scratch/tmp.Old1234567" "$run_cache/scratch/hook.tar"
 run_settings ', "showMise": "false"'
 check_run
-same "a run removes day-old scratch files only, and an older release's .notified" \
-  '.discovered.New123 .feed.New123 .mise-select.New123 .mise.New123' "$(leftovers | sort | paste -sd' ')"
+same "a run removes day-old scratch files only" \
+  '.feed.New123 .mise-select.New123 .mise.New123' "$(leftovers | sort | paste -sd' ')"
 same "a run removes day-old half downloads and sync-upstream dirs only" \
   'foo-0.9.pkg.tar foo-1.1.pkg.tar.zst.part hook.tar tmp.New1234567' \
   "$(find "$run_cache/packages" "$run_cache/scratch" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | paste -sd' ')"
 check "and keeps its lock" test -e "$run_state/.check.lock"
 rm -rf "$run_cache/packages" "$run_cache/scratch"
-rm -rf "$run_cache"/.mise.New123 "$run_cache"/.feed.New123 "$run_cache"/.mise-select.New123 "$run_state"/.discovered.New123
+rm -rf "$run_cache"/.mise.New123 "$run_cache"/.feed.New123 "$run_cache"/.mise-select.New123
 
 # --- a local refresh (--local) ------------------------------------------------------------
 
@@ -745,13 +587,13 @@ loc_status() {
   jq -c --arg self "$self_version" '.apps += [{pkg: "self:omabump", label: "Omabump", source: "self", installedName: "omabump",
     installed: $self, latest: $self}]
     | .apps |= map({label: "", installedName: "", installed: "", latest: "", versionFrom: "feed", updateAvailable: false,
-    installable: true, error: "", note: "", stale: false, switchable: false, recipe: "", recipeCommit: "", request: "",
+    installable: true, error: "", note: "", stale: false, switchable: false, recipe: "", request: "",
     muted: false, skipped: false, unchecked: false, held: false, omarchyUpdate: false, blocked: false, selfUpdating: false,
     icon: "", iconLight: ""} + .)' \
     >"$run_dir/fixture.json" <<'JSON'
 {"schemaVersion": 1, "checkedAt": "2026-01-01T00:10:00+00:00", "checking": false, "startedAt": "2026-01-01T00:09:00+00:00",
  "inventoryAt": "2026-01-01T00:09:00+00:00", "runError": "", "omarchyPkgs": {"commit": "", "following": false, "error": "", "note": ""},
- "discoveryError": "", "miseError": "", "apps": [
+ "miseError": "", "apps": [
   {"pkg": "loc-a", "source": "omarchy", "installedName": "loc-a", "installed": "1.0-1", "latest": "1.2", "updateAvailable": true,
    "skipped": true, "note": "Recipe from omarchy-pkgs 0123456789ab"},
   {"pkg": "loc-b", "source": "vendor-pkg", "installedName": "loc-b", "installed": "2.0-1", "latest": "2.0"},
@@ -920,7 +762,7 @@ local_run; rc=$?
 same "--local: once it is over, the rows move and the mise change asks for its check" "$local_full|1.2-1|2.1|" \
   "$rc|$(loc_row loc-a .installed)|$(loc_row mise:u .installed)|$(loc_row loc-gone .pkg)"
 # A transaction that starts during the run: while mise ls runs (after
-# discovery, before pacman's rows are read), or while they are read. It
+# the table is read, before pacman's rows are), or while they are read. It
 # takes loc-a out of pacman's database, as replacing a package does.
 for when in LS Q; do
   loc_status
@@ -933,6 +775,29 @@ for when in LS Q; do
     "$local_busy|$status_md5" "$rc|$(loc_md5)"
   rm -f "$run_dir/pacman-db/db.lck"
 done
+
+# A check reads pacman without that wait. A package pacman is replacing
+# right then reads as uninstalled: its row stays as the last check left it,
+# failed, for the retry to read. With no transaction, such a row goes.
+loc_status
+loc_pkgs 'loc-b 2.0-1' 'loc-held 1.0-1' 'loc-gone 3.0-1'
+loc_tools t=1.0 u=2.0 k=1.0
+: >"$run_dir/pacman-db/db.lck"
+OMABUMP_TEST_PKGS=$run_dir/pkgs OMABUMP_TEST_MISE_LS=$run_dir/mise-ls.json check_run --no-notify
+same "a check while pacman replaces a package: its row stays, the last check's, failed" \
+  '1.0-1|1.2|true|false|pacman was in the middle of a transaction, so the installed version was not read|null' \
+  "$(loc_row loc-a '"\(.installed)|\(.latest)|\(.stale)|\(.installable)|\(.error)|\(.checking)"')"
+same "an indicator row whose package no repo has: no install path" 'false|false|No supported install path' \
+  "$(loc_row loc-gone '"\(.omarchyUpdate)|\(.installable)|\(.note)"')"
+rm -f "$run_dir/pacman-db/db.lck"
+# An indicator row's package that one of pacman's repos has: omarchy update
+# (pacman -Syu) updates it.
+echo loc-gone >"$run_dir/native"
+OMABUMP_TEST_NATIVE=$run_dir/native OMABUMP_TEST_PKGS=$run_dir/pkgs OMABUMP_TEST_MISE_LS=$run_dir/mise-ls.json check_run --no-notify
+same "a check with no transaction: a package that is not installed loses its row" '' "$(loc_row loc-a .pkg)"
+same "an indicator row whose package a repo has: omarchy update updates it, no Update here" \
+  'true|false|Updates with omarchy update' "$(loc_row loc-gone '"\(.omarchyUpdate)|\(.installable)|\(.note)"')"
+rm -f "$run_dir/native"
 
 rm -f "$run_state/status.json"
 local_run; rc=$?
@@ -1196,12 +1061,12 @@ same "AppImage: updateBlocked does not mark a self-updating row" "false|$ai_note
 loc_pkgs 't3code-bin 0.1.1-1'
 ai_run
 same "AppImage: it marks the package's" true "$(ai_row .blocked)"
-jq '.apps |= map(if .pkg == "t3code-bin" then .recipe = "t3code-bin 0.1.1-1" | .recipeCommit = "0123456" else . end)' \
+jq '.apps |= map(if .pkg == "t3code-bin" then .recipe = "t3code-bin 0.1.1-1" else . end)' \
   "$run_state/status.json" >"$run_dir/edited.json" && mv "$run_dir/edited.json" "$run_state/status.json"
 loc_pkgs ''
 ai_run --local; rc=$?
-same "--local: to the AppImage: no updateBlocked mark, no recipe" "$local_full|true|false||" \
-  "$rc|$(ai_row '"\(.selfUpdating)|\(.blocked)|\(.recipe)|\(.recipeCommit)"')"
+same "--local: to the AppImage: no updateBlocked mark, no recipe" "$local_full|true|false|" \
+  "$rc|$(ai_row '"\(.selfUpdating)|\(.blocked)|\(.recipe)"')"
 loc_pkgs 't3code-bin 0.1.1-1'
 ai_run --local; rc=$?
 same "--local: back to the package: the updateBlocked mark again" "$local_full|false|true" \

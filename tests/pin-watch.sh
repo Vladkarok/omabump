@@ -57,7 +57,7 @@ printf '{"omarchyPkgs": {"commit": "%s", "ref": "refs/heads/master"}}\n' "$pw_pi
 cat >"$pw/plugin/apps.json" <<'EOF'
 [
   {"pkg": "app", "source": "omarchy"},
-  {"pkg": "pinned", "source": "omarchy", "recipeCommit": "0000000000000000000000000000000000000000"},
+  {"pkg": "pinned", "source": "omarchy"},
   {"pkg": "hooked", "source": "omarchy"},
   {"pkg": "mise:x", "source": "mise", "tool": "x"}
 ]
@@ -202,6 +202,23 @@ pw_run
 same "pin-watch: once the pinned hook writes _commit again, its change is no news" '0|' "$pw_rc|$pw_out"
 pw_bump
 
+# A recipe file with a Markdown code block of its own. As a context line of
+# the diff (" ```"), three backticks would close a three-backtick block, and
+# what follows would be the issue's own Markdown, an @mention among it. So
+# the block's fence is one backtick longer than the longest run in the diff.
+printf '%s\n' 'post_install() {' '  cat <<EOM' '```' 'run it' '```' 'EOM' '}' >"$pw/up/pkgbuilds/app/app.install"
+pw_commit 4 "app: an install note"
+pw_bump
+sed -i 's/^run it$/@someone run it/' "$pw/up/pkgbuilds/app/app.install"
+pw_commit 4 "app: the note names someone"
+pw_run
+pw_block=$(awk '$0 == "````diff" { on = 1; next } $0 == "````" { on = 0 } on' <<<"$pw_out")
+same "pin-watch: a diff with a line of three backticks is news as any other" 3 "$pw_rc"
+check "pin-watch: its block has a four-backtick fence, and that line stays inside it" grep -qx ' ```' <<<"$pw_block"
+check "pin-watch: and so does the line after it" grep -qxF '+@someone run it' <<<"$pw_block"
+refuse "pin-watch: no three-backtick fence opens a block of that report" grep -qx '```diff' <<<"$pw_out"
+pw_bump
+
 # A blob the blob-less clone cannot fetch is an error, never a file that is
 # not there (a change that would then go unseen, and the issue closed).
 printf 'helper() { python3 "${BASH_SOURCE[0]%%/*}/watch.py"; echo unreadable; }\n' >"$pw/up/helpers/a.sh"
@@ -217,7 +234,6 @@ pw_commit 1 "helpers and a watch for pinned"
 pw_run
 check "pin-watch: a change to a helper sync-upstream sources is news" grep -q '^### Code Update runs' <<<"$pw_out"
 check "pin-watch: the report lists what Update runs" grep -qF 'name there or on master: `bin/sync-lib`, `helpers/a.sh`, `helpers/hook.sh`, `helpers/new.sh`, `helpers/providers/__init__.py`, `helpers/providers/github.py`, `helpers/util.py`, `helpers/watch.py`.' <<<"$pw_out"
-check "pin-watch: a recipeCommit app whose recipe now has a watch is named" grep -q '`pinned`: the recipe on master now has an upstream watch' <<<"$pw_out"
 refuse "pin-watch: the suggestion skips a commit younger than 3 days" grep -q "\"commit\": \"$(git -C "$pw/up" rev-parse HEAD)\"" <<<"$pw_out"
 
 printf '{"omarchyPkgs": {"commit": "%s", "ref": "refs/heads/master"}}\n' "$(git -C "$pw/up" rev-parse HEAD)" >"$pw/plugin/pins.json"

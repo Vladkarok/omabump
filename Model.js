@@ -29,9 +29,10 @@ function boolSetting(settings, name, fallback) {
   return fallback
 }
 
-// Between a minute and a day, whatever shell.json holds.
+// Between five minutes and a day, whatever shell.json holds: a check asks
+// every feed, and nothing they say changes faster than that.
 function refreshIntervalSec(settings) {
-  return Math.min(86400, Math.max(60, Number(setting(settings, "refreshIntervalSec", 3600)) || 3600))
+  return Math.min(86400, Math.max(300, Number(setting(settings, "refreshIntervalSec", 3600)) || 3600))
 }
 
 // --- ids and versions the checker accepts --------------------------------------
@@ -364,8 +365,7 @@ function staleCount(apps, muted) {
 // --- status.json -----------------------------------------------------------------
 
 // status.json as the widget reads it, or null while it is empty. Throws on
-// text that is not JSON. schemaVersion is 0 for a file from before the
-// field: its notes carry the switch clause themselves (fullNote).
+// text that is not JSON.
 function parseStatus(text, showMise) {
   if (String(text || "").trim() === "") return null
   var parsed = JSON.parse(String(text))
@@ -379,9 +379,7 @@ function parseStatus(text, showMise) {
   // refresh; a file from before the field has none.
   var inventory = file.inventoryAt ? new Date(file.inventoryAt).getTime() : NaN
   var pkgs = file.omarchyPkgs && typeof file.omarchyPkgs === "object" ? file.omarchyPkgs : {}
-  var schema = Number(file.schemaVersion)
   return {
-    schemaVersion: isFinite(schema) && schema > 0 ? Math.floor(schema) : 0,
     apps: apps,
     checkedAt: file.checkedAt ? String(file.checkedAt) : "",
     checking: file.checking === true,
@@ -392,7 +390,6 @@ function parseStatus(text, showMise) {
     pkgsFollowing: pkgs.following === true,
     pkgsError: String(pkgs.error || ""),
     pkgsNote: String(pkgs.note || ""),
-    discoveryError: String(file.discoveryError || ""),
     miseError: showMise ? String(file.miseError || "") : "",
     runError: String(file.runError || ""),
     // The check was the widget's retry of one that failed (dueRun).
@@ -649,37 +646,19 @@ function switchClause(app) {
   return ""
 }
 
-// The row's whole note: the switch clause, then the checker's own. A file
-// from before schemaVersion 1 has the clause in its note already. So do
-// rows the first check after an upgrade carries over from such a file
-// (write_status copies the rows it has not reached, and a run that dies
-// half way keeps them): a note that already starts with the clause this
-// composes from the row's fields keeps it once.
-function fullNote(app, schema) {
+// The row's whole note: the switch clause, then the checker's own.
+function fullNote(app) {
   var note = String(app.note || "")
-  var clause = schema >= 1 ? switchClause(app) : ""
-  if (clause === "" || note === clause || note.indexOf(clause + "; ") === 0) return note
+  var clause = switchClause(app)
+  if (clause === "") return note
   return note !== "" ? clause + "; " + note : clause
 }
 
 // The row's second line keeps the first clause, and of a switch only the
 // name it is installed as: the tooltip and the Switch button say the rest.
-function shortNote(app, schema) {
-  if (schema < 1) return legacyFirstClause(app.note)
+function shortNote(app) {
   if (switchClause(app) !== "") return "Installed as " + app.installedName
   return String(app.note || "").split("; ")[0]
-}
-
-// The first clause of a note in a file from before schemaVersion 1, which
-// still says the switch: "Installed as chatgpt-desktop, switch to
-// chatgpt-bin" is "Installed as chatgpt-desktop", as that release's panel
-// showed it. The one place the widget reads the checker's wording, and
-// only for such a file: since then the row's fields say it (switchClause).
-function legacyFirstClause(note) {
-  var first = String(note || "").split("; ")[0]
-  var cut = first.indexOf(", Update switches to ")
-  if (cut < 0) cut = first.indexOf(", switch to ")
-  return cut < 0 ? first : first.substring(0, cut)
 }
 
 // The package release (-1) says nothing next to an upstream version, so
@@ -697,12 +676,12 @@ function installedText(app) {
 
 // The second line of a row: exceptions only. actionNote is what the last
 // Ask agent or Copy prompt did for it.
-function extraLine(app, schema, actionNote) {
+function extraLine(app, actionNote) {
   if (!app) return ""
   if (app.checking === true) return "Checking…"
   if (actionNote) return actionNote
   if (String(app.error || "") !== "") return "Check failed: " + app.error
-  var note = shortNote(app, schema)
+  var note = shortNote(app)
   if (note !== "") return note
   if (askable(app)) return "No install route"
   if (app.stale === true) return "Last known version"
@@ -720,10 +699,10 @@ function sourceLabel(app) {
 // Update says so, with the reason its second line gives, instead of a
 // route it cannot take. A self-updating app's says which copy updates
 // itself (its installedName, the path apps.json gives), then the note.
-function rowTooltip(app, schema, muted, skipped, pkgsCommit) {
+function rowTooltip(app, muted, skipped, pkgsCommit) {
   if (!app) return ""
   var lines = []
-  var note = fullNote(app, schema)
+  var note = fullNote(app)
   var name = String(app.installedName || "")
   var itself = selfUpdating(app)
   lines.push("Installed " + (itself ? installedText(app) : String(app.installed || ""))
@@ -738,12 +717,12 @@ function rowTooltip(app, schema, muted, skipped, pkgsCommit) {
     : "omarchy update does not update plugins")
   else if (app.installable !== true) {
     // A held release gets its Update once the hold ends.
-    var why = shortNote(app, schema)
+    var why = shortNote(app)
     lines.push((app.held === true ? "No Update yet" : "No Update here") + (why !== "" ? ": " + why : ""))
     if (why === note) note = ""
   } else if (app.source === "mise") lines.push("Updates with mise up")
   else if (app.source === "omarchy") {
-    var commit = String(app.recipeCommit || pkgsCommit || "")
+    var commit = String(pkgsCommit || "")
     lines.push("Updates through Omarchy's recipe"
       + (String(app.recipe || "") !== "" ? " " + app.recipe : "")
       + (commit !== "" ? " at " + commit.substring(0, 7) : ""))
@@ -861,7 +840,7 @@ function intervalOptions(choices, current) {
 // The summaries below read s, the checker's state (Main.qml's summary):
 // checking, checkFailed, checkedAt, appCount, the counts above by name
 // (updateCount, waitingCount, quietCount, errorCount, mutedErrorCount,
-// uncheckedCount, staleCount), pkgsFollowing and discoveryError.
+// uncheckedCount, staleCount) and pkgsFollowing.
 
 // What quiet rows hold back, in one wording for the header, the tooltip
 // and IPC status: " (+N muted/skipped)" for their updates. The tooltip and
@@ -876,11 +855,14 @@ function quietNote(s, withFailures) {
 }
 
 // All current, N updates, check failed, or last known (rows from an
-// earlier run because this one failed for them).
+// earlier run because this one failed for them). "N updates" counts what
+// the bar icon counts, the rows with an Update (updateCount); newer
+// releases Omabump does not install (waitingCount) are named apart, and
+// only when there is no update to say first.
 function heroState(s, checked) {
   if (s.checkFailed) return "Check failed"
-  var updates = s.updateCount + s.waitingCount
-  if (updates > 0) return updates + (updates === 1 ? " update" : " updates")
+  if (s.updateCount > 0) return s.updateCount + (s.updateCount === 1 ? " update" : " updates")
+  if (s.waitingCount > 0) return s.waitingCount + " newer, no Update here"
   if (s.staleCount > 0) return "Last known, " + checked
   if (s.errorCount > 0) return "Check failed"
   if (s.checkedAt === "") return "Not checked yet"
@@ -915,15 +897,11 @@ function summaryText(s) {
 
 function followingText(s) { return s.pkgsFollowing ? "omarchy-pkgs: following master (unpinned)" : "" }
 
-// A failure or a warning (a wrapper Omabump no longer recognises).
-function discoveryText(s) { return s.discoveryError !== "" ? "Agent discovery: " + s.discoveryError : "" }
-
 function tooltipText(s) {
   var summary = summaryText(s)
   var text = summary.indexOf("All current") === 0 ? "Omabump up to date" + summary.substring(11)
     : summary !== "" ? "Omabump: " + summary
     : s.checkedAt === "" ? "Omabump: not checked yet" : "Omabump: none installed"
   if (followingText(s) !== "") text += "\n" + followingText(s)
-  if (discoveryText(s) !== "") text += "\n" + discoveryText(s)
   return text
 }

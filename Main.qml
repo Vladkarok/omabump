@@ -80,8 +80,6 @@ Item {
   property var apps: []
   // The rows apps was last set from, as JSON: see parse().
   property string appsJson: ""
-  // status.json's schemaVersion: 0 for a file from before the field.
-  property int schemaVersion: 0
   property string checkedAt: ""
   property string pkgsCommit: ""
   // The user opted out of the pinned omarchy-pkgs commit (pins.json).
@@ -102,10 +100,6 @@ Item {
   // status.json says its run stopped part way (killed, timed out, a failed
   // command), whoever started it: every bar and a run from a terminal see it.
   property string runError: ""
-  // bin/omabump-discover could not read Omarchy's agent menu (the curated
-  // mise rows still show, discovered ones do not), or found a wrapper it no
-  // longer recognises.
-  property string discoveryError: ""
   // mise could not list its tools: no CLI row could be read this run.
   property string miseError: ""
   // When this shell's last check ended, not counting a run that never took
@@ -174,7 +168,7 @@ Item {
     checking: checking, checkFailed: checkFailed, checkedAt: checkedAt, appCount: apps.length,
     updateCount: updateCount, waitingCount: waitingCount, quietCount: quietCount,
     errorCount: errorCount, mutedErrorCount: mutedErrorCount, uncheckedCount: uncheckedCount,
-    staleCount: staleCount, pkgsFollowing: pkgsFollowing, discoveryError: discoveryError
+    staleCount: staleCount, pkgsFollowing: pkgsFollowing
   })
 
   // Refresh (click, r, IPC) always gets a check that starts after it. While
@@ -267,7 +261,8 @@ Item {
   // or so. Apps are updated outside Omabump (Omarchy's wrappers run mise up
   // on launch, omarchy update runs pacman), and until the next check a row
   // would offer an Update that is already installed. One runs when the
-  // panel opens (panelOpened) and on each bar's localTimer. It holds the
+  // panel opens (panelOpened) and, while the bar counts an update, on each
+  // bar's localTimer. It holds the
   // checker's lock, so no check runs beside it, and leaves at once when
   // the lock is taken (Model.lockBusyExit). It never moves checkedAt or
   // startedAt, so the timer's check stays due as it was, and it is none of
@@ -309,7 +304,6 @@ Item {
     try {
       var status = Model.parseStatus(content, showMise)
       if (!status) return
-      schemaVersion = status.schemaVersion
       // A check rewrites the file once per row, and the file watch and the
       // end of the check both read it. A new array re-runs everything bound
       // to apps, in each monitor's copy of the widget, so rows that did not
@@ -329,7 +323,6 @@ Item {
       pkgsFollowing = status.pkgsFollowing
       pkgsError = status.pkgsError
       pkgsNote = status.pkgsNote
-      discoveryError = status.discoveryError
       miseError = status.miseError
       runError = status.runError
       // A run that started after this shell's failed one, and completed,
@@ -447,10 +440,14 @@ Item {
     onTriggered: root.scheduledRefresh()
   }
 
-  // Each bar's local refresh, between the checks (localTick).
+  // Each bar's local refresh, between the checks (localTick), only while
+  // the bar counts an update: that is what a refresh can take back when the
+  // app was updated elsewhere. With none, the icon has nothing to get
+  // wrong, and no process starts until the next check or until the panel
+  // opens (panelOpened).
   Timer {
     interval: Model.localIntervalSec * 1000
-    running: root.settingsReady && root.statusRead
+    running: root.settingsReady && root.statusRead && root.updateCount > 0
     repeat: true
     onTriggered: root.localTick()
   }

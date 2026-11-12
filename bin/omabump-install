@@ -76,7 +76,7 @@ fi
 pkg=$(jq -r .pkg <<<"$app")
 # The name becomes a lock file name below and reaches pacman and git.
 app_id_ok "$pkg" || die "'$pkg' is not a package name Omabump accepts"
-# A discovered row's label comes from a menu file: shown in the terminal only
+# A label may come from the user's apps.json: shown in the terminal only
 # after term_safe, on one line.
 label=$(jq -r '.label // .pkg' <<<"$app" | term_safe | tr '\t\n' '  ' | sed 's/ *$//')
 
@@ -270,7 +270,6 @@ on_exit() {
       && later=" (the next Update of $label removes it too)"
   fi
   (( restore_clone )) && pkgs_restore "$pkg"
-  [[ -z ${build_gnupg:-} ]] || rm -rf -- "$build_gnupg"
   [[ -z $self_before ]] || self_rollback "the update stopped part way"
   if [[ -n $left ]] && (( pacman_running )); then
     echo "omabump: pacman may still be reading the staged copy, so it stays in $left; once pacman has ended, remove it with: sudo rm -f -- $left$later" >&2
@@ -630,45 +629,6 @@ unstage() {
   staged_copy=""
 }
 
-# A recipe that checks PGP signatures (validpgpkeys; of the shipped apps,
-# voxtype-bin) carries the keys it trusts as keys/pgp/<FINGERPRINT>.asc, and
-# omarchy-pkgs' own builds import exactly those, never a keyserver. makepkg
-# reads the keyring of whoever runs it, where those keys normally are not,
-# and stops at "unknown public key". So the build gets a keyring of its own,
-# $keyring_dir, made anew from the files validpgpkeys names: each must
-# hold that one primary key and no other. It holds public keys only, your
-# keyring is neither read nor written, nothing is fetched and no gpg daemon
-# starts. A recipe that lacks the file of any key it trusts (omarchy-pkgs
-# before c05469c8 shipped none) leaves makepkg with your keyring, as before.
-# Run in the recipe directory: sets build_gnupg and says which keys the
-# build trusts. The keyring goes after the build, or when the run ends.
-keyring_dir=$cache_dir/gnupg build_gnupg=""
-keyring_gpg() { run_unlocked gpg --homedir "$keyring_dir" --batch --no-tty --no-autostart "$@" </dev/null; }
-recipe_keyring() {
-  local home=$keyring_dir valid f name got names=()
-  build_gnupg=""
-  valid=$(mkpkg --printsrcinfo | sed -n 's/^\tvalidpgpkeys = //p') || die "makepkg --printsrcinfo failed"
-  [[ -n $valid ]] || return 0
-  for f in keys/pgp/*.asc; do
-    name=${f##*/} name=${name%.asc}
-    [[ -f $f && ! -L $f && $name =~ ^[0-9A-F]{40}$ ]] || continue
-    grep -qxF -- "$name" <<<"$valid" || continue
-    names+=("$name")
-  done
-  (( ${#names[@]} && ${#names[@]} == $(wc -l <<<"$valid") )) || return 0
-  rm -rf -- "${home:?}"
-  (umask 077 && mkdir -p "$home") || die "cannot create $home"
-  for name in "${names[@]}"; do
-    f=keys/pgp/$name.asc
-    got=$(keyring_gpg --with-colons --show-keys -- "$f" 2>/dev/null \
-      | awk -F: '$1 == "pub" { n++; want = 1 } $1 == "fpr" && want { print $10; want = 0 } END { exit n != 1 }') \
-      && [[ $got == "$name" ]] || die "$f does not hold the key $name and nothing else; not building"
-    keyring_gpg --quiet --import -- "$f" 2>/dev/null || die "gpg could not import $f; not building"
-  done
-  build_gnupg=$home
-  echo "Signatures: makepkg checks them against the keys the recipe ships (keys/pgp), in a keyring of its own, not yours: ${names[*]}"
-}
-
 # Builds the recipe in the current directory, checks the result and installs it.
 build_and_install() {
   local want=$1 list files f line msg sum now match=""
@@ -679,9 +639,7 @@ build_and_install() {
   done
   [[ -n $match ]] || die "makepkg would not produce $want $target_version: ${files[*]}"
   echo "Package file: $match"
-  recipe_keyring
   if (( prepare )); then
-    [[ -z $build_gnupg ]] || { rm -rf -- "${build_gnupg:?}"; build_gnupg=""; }
     if replaces_other; then show_switch "$(recipe_install "$want")" "$PWD"; fi
     echo "After the build:"
     stage_and_install "$match" "$want $target_version" sha256 "the one taken of $match right after the build"
@@ -694,16 +652,8 @@ build_and_install() {
 
   started=1
   # -s installs missing build dependencies with sudo pacman -S --asdeps;
-  # without --noconfirm pacman asks for those too. With the recipe's keyring
-  # (recipe_keyring), --nosign: a makepkg.conf that signs what it builds
-  # would look for your secret key there, and nothing here reads a signature.
-  if [[ -n $build_gnupg ]]; then
-    GNUPGHOME=$build_gnupg mkpkg -sfC --nosign
-    rm -rf -- "${build_gnupg:?}"
-    build_gnupg=""
-  else
-    mkpkg -sfC
-  fi
+  # without --noconfirm pacman asks for those too.
+  mkpkg -sfC
   [[ -f $match ]] || die "makepkg did not produce $match"
   # The digest of the file makepkg wrote, before anything else reads it: the
   # staged copy must match it, not only its name and version.
@@ -782,13 +732,7 @@ install_omarchy() {
     echo "omarchy-pkgs pinned at $commit, checked out detached"
   fi
 
-  recipe_source "$pkg" "$app" || die "the pinned recipe is not usable"
-  [[ -n $recipe_note ]] && echo "$recipe_note"
-  if [[ $recipe_rev != "$pkgs_base" ]]; then
-    recipe_materialise "$pkg" "$recipe_rev" || die "could not lay out the recipe from $recipe_rev"
-    echo "Recipe tree taken whole from $recipe_rev"
-  fi
-  blocker=$(recipe_blocker "$recipe_rev" "$pkg") || die "could not read the $pkg recipe at ${recipe_rev:0:12}"
+  blocker=$(recipe_blocker "$pkgs_base" "$pkg") || die "could not read the $pkg recipe at ${pkgs_base:0:12}"
   [[ -z $blocker ]] || refuse "$blocker; wait for the [omarchy] repo"
 
   # The first fetched code that runs: omarchy-pkgs' sync tool and the
@@ -968,8 +912,11 @@ install_mise() {
   fi
   if [[ $now == "$target" ]]; then
     echo "$label is now $now."
+  elif [[ -n $now && $now != "$installed" ]]; then
+    # mise up looks for the newest again: a release since mise outdated.
+    echo "$label is now $now: mise up found a release past $target."
   else
-    echo "$label is ${now:-not active} after mise up, expected $target. See mise ls $tool."
+    die "$label is ${now:-not active} after mise up, expected $target. See mise ls $tool."
   fi
   target_version=$now
 }
@@ -1104,7 +1051,7 @@ install_main() {
     omarchy) install_omarchy ;;
     vendor-pkg) install_vendor_pkg ;;
     mise) install_mise ;;
-    indicator) refuse "$label has no supported install path; update it the way you installed it" ;;
+    indicator) refuse "$label has no Update here: omarchy update updates it when pacman or the AUR has its package, else update it the way you installed it" ;;
     *) die "unknown source '$source'" ;;
   esac
 

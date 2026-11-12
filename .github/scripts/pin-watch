@@ -10,9 +10,7 @@
 #   - the recipes of the omarchy apps in apps.json, less pkgver, pkgrel and
 #     checksum arrays, which sync-upstream rewrites itself on every Update,
 #     and less what the recipe's own hook rewrites (hook_writes), so a
-#     routine "sync upstream releases" commit is not news;
-#   - for an app pinned to a recipeCommit, whether master's own recipe now
-#     has an upstream watch, so the entry can go.
+#     routine "sync upstream releases" commit is not news.
 #
 # Prints nothing and exits 0 when none of that changed. Exits 3 with the
 # report on stdout when something did. Anything else is an error. Used by
@@ -43,7 +41,6 @@ ref=$(jq -r '.omarchyPkgs.ref // "refs/heads/master"' "$plugin_dir/pins.json")
 [[ $ref =~ ^refs/heads/[A-Za-z0-9._/-]+$ && $ref != *..* ]] || { echo "pin-watch: bad ref '$ref' in pins.json" >&2; exit 1; }
 branch=${ref#refs/heads/}
 mapfile -t apps < <(jq -r '.[] | select(.source == "omarchy") | .pkg' "$plugin_dir/apps.json")
-mapfile -t pinned_apps < <(jq -r '.[] | select(.source == "omarchy" and (.recipeCommit // "") != "") | .pkg' "$plugin_dir/apps.json")
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -137,14 +134,21 @@ recipe_changes() {
   done < <(g diff --no-renames --name-only "$pin" "$tip" -- "pkgbuilds/$app")
 }
 
-# Standard input in a fenced diff block, cut at $1 lines.
+# Standard input in a fenced diff block, cut at $1 lines. The fence is one
+# backtick longer than the longest run of them in the text, and never
+# shorter than three: a recipe's own line of three, as a context line of the
+# diff (" ```"), would close a three-backtick block, and the rest of the
+# diff would be the issue's Markdown, its @mentions included.
 fenced() {
-  local max=$1 out lines
+  local max=$1 out lines len fence
   out=$(cat)
   lines=$(wc -l <<<"$out")
-  printf '```diff\n'
+  len=$(awk '{ s = $0; while (match(s, /`+/)) { if (RLENGTH > n) n = RLENGTH; s = substr(s, RSTART + RLENGTH) } }
+    END { print (n < 3 ? 3 : n + 1) }' <<<"$out")
+  fence=$(printf '%*s' "$len" '' | tr ' ' '`')
+  printf '%sdiff\n' "$fence"
   head -n "$max" <<<"$out"
-  printf '```\n'
+  printf '%s\n' "$fence"
   (( lines <= max )) || printf '\n(%d more lines; see the compare link.)\n' "$(( lines - max ))"
 }
 
@@ -166,17 +170,6 @@ recipe_diff() {
       g diff --no-renames --no-color "$pin" "$tip" -- "$file"
     fi
   done
-}
-
-# True when the recipe of $1 at $tip has an upstream watch or hook that
-# sync-upstream would follow.
-watched_at_head() {
-  local meta
-  meta=$(blob_at "$tip" "pkgbuilds/$1/.omarchy/package.json") || exit 1
-  [[ -n $meta ]] || meta='{}'
-  jq -e '.sync == false' >/dev/null 2>&1 <<<"$meta" && return 1
-  [[ -n $(g ls-tree --name-only "$tip" -- "pkgbuilds/$1/.omarchy/upstream.sh") ]] && return 0
-  jq -e '.upstream' >/dev/null 2>&1 <<<"$meta"
 }
 
 # An extended regular expression that matches $1 as it is.
@@ -266,11 +259,7 @@ for app in "${apps[@]}"; do
   changed+=("$app")
   changed_files+=("${files[@]}")
 done
-unpinnable=()
-for app in "${pinned_apps[@]}"; do
-  watched_at_head "$app" && unpinnable+=("$app")
-done
-[[ -n $runner || ${#changed[@]} -gt 0 || ${#unpinnable[@]} -gt 0 ]] || exit 0
+[[ -n $runner || ${#changed[@]} -gt 0 ]] || exit 0
 
 web=https://github.com/omacom/omarchy-pkgs
 [[ $repo == "$web.git" || $repo == "$web" ]] || web=""
@@ -319,13 +308,6 @@ if (( ${#changed[@]} )); then
   printf 'Changed beyond a routine sync: %s. PKGBUILDs are shown without the lines a sync rewrites.\n\n' \
     "$(printf '`%s`, ' "${changed[@]}" | sed 's/, $//')"
   recipe_diff "${changed_files[@]}" | fenced 300
-fi
-
-if (( ${#unpinnable[@]} )); then
-  printf '\n### Pinned recipes\n\n'
-  for app in "${unpinnable[@]}"; do
-    printf -- '- `%s`: the recipe on %s now has an upstream watch, so its `recipeCommit` entry in apps.json can go with the bump.\n' "$app" "$branch"
-  done
 fi
 
 candidate=$(g rev-list -1 --first-parent --before="$age days ago" "$tip")

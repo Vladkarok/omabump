@@ -121,15 +121,13 @@ load_quiet
 [[ -n $with_mise ]] || if [[ $setting_show_mise == false ]]; then with_mise=0; else with_mise=1; fi
 
 # Only a check or a local refresh makes these, and only under the lock: any
-# left over is from a run that was killed outright. .check.?????? and
-# .notified.?????? are an older release's; the locks themselves,
+# left over is from a run that was killed outright. The locks themselves,
 # .check.lock and .local.lock, match none of them, and deleting one would
 # let a second run take a new lock beside this one.
-rm -rf -- "$state_dir"/.run.* "$state_dir"/.check.?????? "$state_dir"/.notified.?????? "$state_dir"/.status.* "$state_dir"/.state.*
-# An Update makes these while it runs, without this lock, and an older
-# release's check left them outside its run's dir. One more than a day old
-# belongs to no live run.
-find "$state_dir" "$cache_dir" -mindepth 1 -maxdepth 1 \( -name '.discovered.??????' -o -name '.mise.??????' \
+rm -rf -- "$state_dir"/.run.* "$state_dir"/.status.* "$state_dir"/.state.*
+# An Update makes these while it runs, without this lock. One more than a
+# day old belongs to no live run.
+find "$state_dir" "$cache_dir" -mindepth 1 -maxdepth 1 \( -name '.mise.??????' \
   -o -name '.mise-select.??????' -o -name '.feed.??????' \) -mmin +1440 -exec rm -rf -- {} + 2>/dev/null || true
 # A killed Update's half download (curl writes to it until it stops, within
 # 30 minutes, and a new download starts it over) and sync-upstream's mktemp
@@ -199,7 +197,7 @@ self_row() {
 # self-updating app's own updater moves it. This reads the installed
 # versions again, from pacman, the apps' own copies and Omabump's
 # manifest.json (installed_app) and mise's inventory (mise ls, offline),
-# after discovery has read Omarchy's menu (load_table), and nothing else:
+# for the apps of the table (load_table), and nothing else:
 # no feed, no omarchy-pkgs, no mise outdated, nothing on the network. It
 # starts from the last check's status.json and keeps the rest of each row
 # (the newest version, the route, notes, errors, muted, skipped), and
@@ -253,7 +251,7 @@ local_refresh() {
     [[ -z $mise_inventory_error ]] || echo "omabump-check: $mise_inventory_error; the mise rows stay as they were" >&2
   fi
 
-  # Discovery and mise ls can take a while, and a transaction that started
+  # mise ls can take a while, and a transaction that started
   # meanwhile would be read half way: pacman's lock is looked for again
   # right before its rows are read, and once more after them.
   ! pacman_busy || local_pacman_busy
@@ -334,7 +332,7 @@ local_row() {
       '{pkg: $pkg, label: $label, source: $source, installedName: $installedName,
         installed: $installed, latest: "", versionFrom: "",
         updateAvailable: false, installable: false, error: "", note: "Not checked yet",
-        stale: false, switchable: false, recipe: "", recipeCommit: "",
+        stale: false, switchable: false, recipe: "",
         request: "", muted: $muted, skipped: false, unchecked: true, held: false, omarchyUpdate: false, blocked: $blocked,
         selfUpdating: $selfUpdating, icon: $icon, iconLight: $iconLight}')
     why="$pkg${installed:+ $installed} is installed since the last check"
@@ -365,7 +363,7 @@ local_row() {
     row=$(jq -c --arg name "$name" --arg installed "$installed" --argjson self "$self" --argjson blocked "$blocked" '
       . + {installedName: $name, installed: $installed, selfUpdating: $self, updateAvailable: false, installable: false,
            switchable: false, held: false, skipped: false, unchecked: true, note: "Not checked yet",
-           recipe: "", recipeCommit: "", omarchyUpdate: false, blocked: $blocked}' <<<"$prev")
+           recipe: "", omarchyUpdate: false, blocked: $blocked}' <<<"$prev")
     why="$pkg is installed as $name now"
     return 0
   fi
@@ -449,19 +447,12 @@ previous='{"apps":[]}'
 [[ -s $status_file ]] && jq -e 'type == "object" and (.apps | type == "array")
   and all(.apps[]; type == "object" and (.pkg | type == "string"))' "$status_file" >/dev/null 2>&1 \
   && previous=$(<"$status_file")
-# A status.json from an older release has no schemaVersion. Its notes may
-# start with the switch clause, which the panel now writes from the row's
-# fields, and its skipped mise rows may lack "unchecked". Those rows show
-# while this run checks, so this brings them to the current shape first.
-previous=$(jq -c 'if has("schemaVersion") then . else .apps |= map(
-    .note = (.note | strings // "" | sub("^Installed as [^\\s,]+, (Update switches|switch) to [^\\s;]+(; |$)"; ""))
-    | .unchecked = (.unchecked == true or (.note | startswith("Update check skipped")))) end' <<<"$previous")
 notified='{}'
 [[ -s $notified_file ]] && jq -e 'type == "object"' "$notified_file" >/dev/null 2>&1 && notified=$(<"$notified_file")
 
 pkgs_state=""
 pkgs_commit=$(jq -r '.omarchyPkgs.commit // ""' <<<"$previous")
-pkgs_error="" pkgs_note="" mise_note="" discovery_note=""
+pkgs_error="" pkgs_note="" mise_note=""
 started=$(date -Iseconds)
 rows=() order='[]' status_done=0
 # Every scratch file of the run, the helpers' included (run_tmp), is in
@@ -509,31 +500,28 @@ pkgs_ready() {
   [[ $pkgs_state == ready ]]
 }
 
-# What the recipe at recipe_rev (recipe_source) says about the omarchy row
-# of $1: sets note, installable and hold from its watch and release-age
-# window, recipe and recipe_commit from its PKGBUILD. Nothing is set and it
-# fails, with the reason on stderr, when the blob-less clone could not read
-# a file the recipe has: a failed check, never a missing recipe or watch.
+# What the recipe at the pinned commit (pkgs_base) says about the omarchy
+# row of $1: sets note, installable and hold from its watch and release-age
+# window, recipe from its PKGBUILD. Nothing is set and it fails, with the
+# reason on stderr, when the blob-less clone could not read a file the
+# recipe has: a failed check, never a missing recipe or watch.
 recipe_read() {
   local pkg=$1 blocker age=0 text rc=0
-  blocker=$(recipe_blocker "$recipe_rev" "$pkg") || return 1
-  if [[ -z $blocker ]]; then age=$(recipe_release_age "$recipe_rev" "$pkg") || return 1; fi
-  text=$(recipe_file "$recipe_rev" "$pkg" PKGBUILD) || rc=$?
+  blocker=$(recipe_blocker "$pkgs_base" "$pkg") || return 1
+  if [[ -z $blocker ]]; then age=$(recipe_release_age "$pkgs_base" "$pkg") || return 1; fi
+  text=$(recipe_file "$pkgs_base" "$pkg" PKGBUILD) || rc=$?
   (( rc < 2 )) || return 1
   read -r _ recipe < <(recipe_version <<<"$text" 2>/dev/null) || recipe=""
-  [[ $recipe_rev == "$pkgs_base" ]] || recipe_commit=$recipe_rev
   if [[ -n $blocker ]]; then
     note=$blocker
   else
-    installable=true note=$recipe_note hold=$age
+    installable=true hold=$age
   fi
 }
 
-# One table for the whole run: discovery and the merge happen once.
+# One table for the whole run: the merge happens once.
 load_table
 table=$app_table
-# Shown in the panel: without discovery, only the curated mise rows remain.
-(( with_mise )) && [[ -n $discovery_error ]] && discovery_note=$(clean_text "${discovery_error:0:200}")
 order=$(jq -c 'map(.pkg)' <<<"$table")
 
 # Replaces status.json in one rename. $1 is 0 while checking, 1 for the final
@@ -558,7 +546,7 @@ write_status() {
   printf '%s\n' "${rows[@]}" | jq -s --slurpfile prevs "$tmp/previous.json" --argjson order "$order" \
     --argjson final "$final" --arg at "$at" --arg started "$started" \
     --arg commit "$pkgs_commit" --arg perr "$(clean_text "$pkgs_error")" --arg pnote "$(clean_text "$pkgs_note")" \
-    --argjson following "$pkgs_follow" --arg derr "$discovery_note" --arg merr "$mise_note" \
+    --argjson following "$pkgs_follow" --arg merr "$mise_note" \
     --arg rerr "$(clean_text "$run_error")" --argjson retry "$retry" "$jq_row_order"'
     $prevs[0] as $prev
     | (map(.pkg)) as $done
@@ -569,7 +557,7 @@ write_status() {
        inventoryAt: (if $final == 1 then $started else ($prev.inventoryAt | strings) // "" end), runError: $rerr,
        retry: ($retry == 1),
        omarchyPkgs: {commit: $commit, following: ($following == 1), error: $perr, note: $pnote},
-       discoveryError: $derr, miseError: $merr, apps: .}' >"$out"
+       miseError: $merr, apps: .}' >"$out"
   mv -f "$out" "$status_file"
 }
 
@@ -592,11 +580,22 @@ while IFS= read -r app; do
   pkg=$(jq -r '.pkg' <<<"$app")
   label=$(jq -r '.label // .pkg' <<<"$app")
   [[ $with_mise == 0 && $(jq -r '.source' <<<"$app") == mise ]] && continue
-  read -r source installed_name installed < <(installed_app "$app") || continue
+  if ! read -r source installed_name installed < <(installed_app "$app"); then
+    # Not installed. Or pacman is replacing it right now and its database
+    # reads half way (pacman_busy): then the last check's row stays, failed,
+    # so that the retry reads it, rather than go now and come back as new.
+    # Not a mise tool or Omabump itself, which pacman does not hold.
+    if pacman_busy && row_source=$(jq -r '.source' <<<"$app") && [[ $row_source != mise && $row_source != self ]]; then
+      while IFS= read -r row; do rows+=("$row"); done < <(jq -c --arg pkg "$pkg" \
+        --arg e "pacman was in the middle of a transaction, so the installed version was not read" '.apps[]
+        | select(.pkg == $pkg) | del(.checking) | .stale = true | .installable = false | .error = $e' <<<"$previous")
+    fi
+    continue
+  fi
 
   prev=$(jq -c --arg pkg "$pkg" '[.apps[] | select(.pkg == $pkg)][0] // {}' <<<"$previous")
   latest="" from="" note="" installable=false stale=false
-  route_error="" feed_error="" recipe="" recipe_commit="" mise_update=false request="" unchecked=false
+  route_error="" feed_error="" recipe="" mise_update=false request="" unchecked=false
   hold=0 held=false omarchy_update=false self_updating=false
 
   # Installed as a copy that updates itself: no route of its source applies,
@@ -624,10 +623,14 @@ while IFS= read -r app; do
       if self_git_managed; then installable=true
       else note="Local checkout, update it with git"; fi ;;
     indicator)
-      # omarchy update runs yay -Sua, which updates every foreign
-      # package: an AUR row installed that way needs nothing from here.
+      # omarchy update runs pacman -Syu, then yay -Sua for every foreign
+      # package. So a package one of pacman's repos has (voxtype-bin, from
+      # [omarchy]) needs nothing from here, nor does an AUR row installed
+      # from the AUR.
       note="No supported install path"
-      if [[ $(jq -r '.feed.type // ""' <<<"$app") == aur-rpc ]]; then
+      if pacman -Qqn -- "$installed_name" >/dev/null 2>&1; then
+        omarchy_update=true note="Updates with omarchy update"
+      elif [[ $(jq -r '.feed.type // ""' <<<"$app") == aur-rpc ]]; then
         if pacman -Qqm -- "$installed_name" >/dev/null 2>&1; then
           omarchy_update=true note="Updates with omarchy update (AUR)"
         else
@@ -636,18 +639,11 @@ while IFS= read -r app; do
       fi ;;
     omarchy)
       # Installable means bin/sync-upstream could move the recipe: it exists
-      # at the pinned omarchy-pkgs commit (or the app's recipeCommit) and has
-      # a watch or hook.
-      recipe_rc=0
+      # at the pinned omarchy-pkgs commit and has a watch or hook.
       if pkgs_ready; then
-        recipe_source "$pkg" "$app" 2>"$tmp/err" || recipe_rc=$?
-        if (( recipe_rc == 0 )); then
-          recipe_read "$pkg" 2>"$tmp/err" || route_error=$(<"$tmp/err")
-        elif (( recipe_rc != 75 )); then
-          route_error=$(<"$tmp/err")
-        fi
+        recipe_read "$pkg" 2>"$tmp/err" || route_error=$(<"$tmp/err")
       fi
-      if [[ $pkgs_state == busy ]] || (( recipe_rc == 75 )); then
+      if [[ $pkgs_state == busy ]]; then
         installable=$(jq '.installable == true' <<<"$prev")
         held=$(jq '.held == true' <<<"$prev")
         note=$pkgs_busy_note
@@ -711,7 +707,7 @@ while IFS= read -r app; do
     newer "$latest" "$have" && update=true
   fi
 
-  # The recipe holds a release for its min_release_age (voxtype-bin: 24 h),
+  # The recipe holds a release for its min_release_age (.omarchy/package.json),
   # and Update could not reach it before then. Until the window has passed
   # the row has no Update and does not notify. Once the release is
   # installed, a local refresh takes the clause off again (hold_clause_re).
@@ -756,14 +752,14 @@ while IFS= read -r app; do
     --arg installedName "$(clean_text "$installed_name")" --arg installed "$(clean_text "$installed")" \
     --arg latest "$(clean_text "$latest")" --arg versionFrom "$from" --argjson update "$update" \
     --argjson installable "$installable" --arg error "$error" --arg note "$(clean_text "$note")" \
-    --argjson stale "$stale" --argjson switchable "$switchable" --arg recipe "$(clean_text "$recipe")" --arg recipeCommit "$recipe_commit" \
+    --argjson stale "$stale" --argjson switchable "$switchable" --arg recipe "$(clean_text "$recipe")" \
     --arg request "$(clean_text "$request")" --argjson muted "$muted" --argjson skipped "$skipped" --argjson unchecked "$unchecked" --argjson held "$held" --argjson omarchyUpdate "$omarchy_update" --argjson blocked "$is_blocked" \
     --argjson selfUpdating "$self_updating" \
     --arg icon "$(jq -r '.icon // ""' <<<"$app")" --arg iconLight "$(jq -r '.iconLight // ""' <<<"$app")" \
     '{pkg: $pkg, label: $label, source: $source, installedName: $installedName,
       installed: $installed, latest: $latest, versionFrom: $versionFrom,
       updateAvailable: $update, installable: $installable, error: $error, note: $note,
-      stale: $stale, switchable: $switchable, recipe: $recipe, recipeCommit: $recipeCommit,
+      stale: $stale, switchable: $switchable, recipe: $recipe,
       request: $request, muted: $muted, skipped: $skipped, unchecked: $unchecked, held: $held, omarchyUpdate: $omarchyUpdate, blocked: $blocked,
       selfUpdating: $selfUpdating, icon: $icon, iconLight: $iconLight}')")
   write_status 0

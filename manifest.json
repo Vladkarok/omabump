@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.vladkarok.omabump",
   "name": "Omabump",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "author": "vladkarok",
   "license": "MIT",
   "description": "Agent desktop apps and CLIs at the version the vendor shipped, ahead of the Omarchy repo.",
@@ -31,15 +31,15 @@
         "key": "refreshIntervalSec",
         "type": "integer",
         "label": "Check interval (seconds)",
-        "min": 60,
+        "min": 300,
         "max": 86400,
-        "step": 60,
+        "step": 300,
         "defaultValue": 3600
       },
       {
         "key": "notify",
         "type": "boolean",
-        "label": "Notify on new versions",
+        "label": "Notify on new releases",
         "defaultValue": true,
         "description": "Send a desktop notification when a vendor publishes a version newer than the installed one."
       },
@@ -53,7 +53,7 @@
       {
         "key": "barIconOnlyWithUpdates",
         "type": "boolean",
-        "label": "Hide icon until an update",
+        "label": "Bar icon only when updates exist",
         "defaultValue": false,
         "description": "Show the bar icon only when an installable update exists or a check failed. IPC open and toggle still open the panel."
       }

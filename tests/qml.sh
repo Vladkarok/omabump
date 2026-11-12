@@ -141,17 +141,10 @@ check "Panel.qml decides Update and Switch through Model.js" \
 
 # The widget reads states from status.json's fields, never from the
 # checker's wording: no "Update check skipped" prefix for unchecked, no
-# pattern that strips a switch clause out of a note, but on one legacy path:
-# a file from before schemaVersion 1 still has the clause in its notes, and
-# Model.legacyFirstClause cuts it from the row's second line, as that
-# release's panel did; only shortNote calls it, for such a file alone.
-model_current=$(sed '/^function legacyFirstClause(/,/^}$/d' "$root/Model.js")
+# pattern that strips a switch clause out of a note.
 refuse "the widget recognises no state by the checker's wording" \
   grep -qE 'Update check skipped|\(Update switches\|switch\)|(Update switches|switch) to "\)' \
-  "$root/Main.qml" "$root/Panel.qml" <(printf '%s\n' "$model_current")
-same "only shortNote reads an older file's switch clause, and only in such a file" \
-  "  if (schema < 1) return legacyFirstClause(app.note)" \
-  "$(grep -h 'legacyFirstClause(' "$root/Main.qml" "$root/Panel.qml" <(printf '%s\n' "$model_current"))"
+  "$root/Main.qml" "$root/Panel.qml" "$root/Model.js"
 
 # Every Model.x the QML reads is a function or value Model.js defines: a
 # typo would show only as a binding error in the shell's log.
@@ -269,6 +262,3 @@ else
   grep -q '^Totals: ' <<<"$qml_out" || fail "QML: tests/tst_pointer.qml ran to the end" "exit $qml_rc: $(head -c 400 <<<"$qml_out")"
 fi
 
-check "bin/omabump-check writes schemaVersion 1, the shape Model.parseStatus reads" \
-  grep -q '{schemaVersion: 1,' "$root/bin/omabump-check"
-check "Model.js reads status.json's schemaVersion" grep -q 'schemaVersion' "$root/Model.js"

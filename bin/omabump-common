@@ -289,9 +289,7 @@ user_apps_json() {
 }
 
 # The shipped table (the input) with the user's entries $u merged over it by
-# pkg, as {order: [pkg], by: {pkg: entry}}, and the commands that merge turns
-# off: see apps_table. Shared by apps_table and discover_agents, so a
-# command whose row is disabled is the same one in both.
+# pkg, as {order: [pkg], by: {pkg: entry}}.
 # shellcheck disable=SC2016 # jq variables, not the shell's
 jq_apps_merge='
   def apps_merge($u): map(select(type == "object") | del(._userFeed))
@@ -299,114 +297,41 @@ jq_apps_merge='
     | map(select(.pkg | type == "string"))
     | reduce .[] as $a ({order: [], by: {}};
       if .by[$a.pkg] then .by[$a.pkg] += $a
-      else .order += [$a.pkg] | .by[$a.pkg] = $a end);
-  def apps_off: [.by[] | select(.disabled == true) | (.command | strings), (.pkg | select(startswith("mise:")) | .[5:])];'
+      else .order += [$a.pkg] | .by[$a.pkg] = $a end);'
 
-# The coding-agent CLIs Omarchy offers (bin/omabump-discover: its menu and
-# omarchy-mise-install wrappers, read as text). Sets discovered_json, an
-# array of {command, label, key, source}, and discovery_error, empty when
-# discovery worked. A rejected mise wrapper is named there too, unless the
-# user disabled that command's row (see apps_table): a warning the user
-# cannot act on would never go away. Never fatal: the curated rows stay
-# either way.
-discovered_json='[]' discovery_error=""
-discover_run() { run_killable timeout -k 5 20 python3 -I "$plugin_dir/bin/omabump-discover" </dev/null 2>/dev/null; }
-discover_agents() {
-  local out warnings
-  discovered_json='[]' discovery_error=""
-  command -v python3 >/dev/null || { discovery_error="python3 is missing"; return 0; }
-  if ! out=$(discover_run) || ! jq -e 'type == "object" and (.agents | type == "array") and (.errors | type == "array")' >/dev/null 2>&1 <<<"$out"; then
-    discovery_error="bin/omabump-discover failed"
-    return 0
-  fi
-  discovered_json=$(jq -c '[.agents[] | select(type == "object" and (.command | type == "string")
-    and (.key | type == "string") and (.label | type == "string"))]' <<<"$out")
-  discovery_error=$(jq -r '.errors | map(tostring) | join("; ")' <<<"$out")
-  # The discovered agents reach jq on stdin, the user's file by --slurpfile.
-  # When the merge fails here, every warning stays.
-  warnings=$(jq -r --slurpfile user "$(user_apps_json quiet)" --slurpfile shipped "$shipped_apps" "$jq_apps_merge"'
-    ($shipped[0] | apps_merge($user[0] // [] | map(select(type == "object"))) | apps_off) as $off
-    | [.[] | select((.warning | type == "string") and (.command as $c | any($off[]; . == $c) | not)) | .warning]
-    | join("; ")' <<<"$discovered_json" 2>/dev/null) \
-    || warnings=$(jq -r '[.[] | .warning | strings] | join("; ")' <<<"$discovered_json")
-  [[ -z $warnings ]] || discovery_error+="${discovery_error:+; }$warnings"
-}
-
-# The app table: the shipped one, with the user's file merged over it by pkg,
-# then the discovered agents. A user entry adds an app or overrides fields of
-# a shipped one; "disabled": true hides it. Shipped order comes first, user
-# additions after, new discovered rows last. An entry whose feed the user's
-# file set carries "_userFeed": true (never taken from either file), which
-# feed_version requires for a command feed. An entry whose pkg, installed
-# names, tool names, appImage, npmPackage, updateBlocked or selfUpdate break
-# the rules above is dropped with a line on stderr.
+# The app table: the shipped one, with the user's file merged over it by pkg.
+# A user entry adds an app or overrides fields of a shipped one; "disabled":
+# true hides it. Shipped order comes first, user additions after. An entry
+# whose feed the user's file set carries "_userFeed": true (never taken from
+# either file), which feed_version requires for a command feed. An entry
+# whose pkg, installed names, tool names, appImage, npmPackage, updateBlocked
+# or selfUpdate break the rules above is dropped with a line on stderr. The
+# source must be one of the four route names; "self" is Omabump's own row and
+# never comes from a file.
 #
-# A command is off when the user disabled the entry "mise:<command>" or an
-# entry whose "command" it is: every row with that command is hidden and a
-# discovered agent with it adds nothing. Otherwise a discovered agent joins
-# the entry whose "command" is its command, else the mise entry whose tool
-# list holds its key, else the entry "mise:<command>"; its key goes first in
-# that entry's tool list. With no such entry it becomes the
-# row "mise:<command>" with the menu's label. A disabled or non-mise entry is
-# left alone, a tool list the user's file sets is left as the user wrote it,
-# and pkg stays the row's identity throughout. The source must be one of the
-# four route names; "self" is Omabump's own row and never comes from a file.
-# With $1=0 the discovered agents are left out. Reads discovered_json;
-# load_table runs discovery first.
+# The CLI rows are the mise entries of that table and nothing else: the
+# agents Omarchy offers are listed in apps.json, each with the keys mise may
+# have it under, and a row shows when mise has one of them installed and
+# active (mise_active). An agent Omarchy adds later needs its entry there, or
+# in the user's file.
 apps_table() {
-  local user merged disc rc=0
+  local user merged
   user=$(user_apps_json)
-  # The user's file and the discovered agents go in with --slurpfile, never
-  # as argv strings.
-  mkdir -p "$state_dir"
-  disc=$(mktemp "${run_tmp:-$state_dir}/.discovered.XXXXXX")
-  if [[ ${1:-1} == 1 ]]; then printf '%s\n' "${discovered_json:-[]}" >"$disc"; else echo '[]' >"$disc"; fi
-  merged=$(jq -c --slurpfile user "$user" --slurpfile discs "$disc" "$jq_apps_merge"'
-    ($discs[0] // []) as $disc
-    | ($user[0] // [] | map(select(type == "object"))) as $u
-    | [$u[] | select(has("tool")) | .pkg] as $userTool
+  # The user's file goes in with --slurpfile, never as an argv string.
+  merged=$(jq -c --slurpfile user "$user" "$jq_apps_merge"'
+    ($user[0] // [] | map(select(type == "object"))) as $u
     | apps_merge($u)
-    | apps_off as $off
-    | reduce $disc[] as $d (.;
-      [.order[] as $p | .by[$p]] as $all
-      | [$all[] | select(.source == "mise")] as $mise
-      | ("mise:" + $d.command) as $own
-      | if any($off[]; . == $d.command) then .
-        else
-          ([$all[] | select(.command == $d.command)][0]
-           // [$mise[] | select([.tool // empty] | flatten | index($d.key))][0]
-           // .by[$own]) as $hit
-          | if $hit == null then
-              .order += [$own]
-              | .by[$own] = {pkg: $own, label: $d.label, source: "mise", command: $d.command, tool: [$d.key], discovered: true}
-            elif $hit.disabled == true or $hit.source != "mise" or ($userTool | index($hit.pkg)) then .
-            else .by[$hit.pkg].tool = ([$d.key] + ([$hit.tool // empty] | flatten | map(select(. != $d.key))))
-            end
-        end)
-    | [.order[] as $p | .by[$p] | select(.disabled != true and (.command as $c | any($off[]; . == $c) | not))]' "$shipped_apps") || rc=1
-  rm -f "$disc"
-  (( rc == 0 )) || return 1
+    | [.order[] as $p | .by[$p] | select(.disabled != true)]' "$shipped_apps") || return 1
   jq -r "$jq_name_rules"' .[] | select(entry_ok | not)
     | "ignoring app \(.pkg | tojson): a pkg, installed or tool name with characters Omabump does not accept, an appImage or npmPackage that is not a ~/ path Omabump accepts, an updateBlocked or selfUpdate too long, or a source other than omarchy, vendor-pkg, mise or indicator"' <<<"$merged" >&2
   jq -c "$jq_name_rules"' map(select(entry_ok))' <<<"$merged"
 }
 
-# The table every step of one run works on: discovery and the merge happen
-# once, here, so the check, mise_load and app_json agree. Call it in the
-# script's own shell (not in a subshell, the values would be lost there).
-# A merge that fails with the discovered agents is done again without them:
-# the shipped and user rows always show, and the footer says why the
-# discovered ones do not.
+# The table every step of one run works on: the merge happens once, here,
+# so the check, mise_load and app_json agree. Call it in the script's own
+# shell (not in a subshell, the value would be lost there).
 app_table=""
-load_table() {
-  discover_agents
-  app_table=$(apps_table) && return 0
-  if [[ ${discovered_json:-[]} != '[]' ]] && app_table=$(apps_table 0); then
-    discovery_error="could not merge discovered agents${discovery_error:+; $discovery_error}"
-    return 0
-  fi
-  app_table='[]'
-}
+load_table() { app_table=$(apps_table) || app_table='[]'; }
 
 # An app by its pkg, or else by one of its installed package or mise tool
 # names, so `omabump-install z-code-bin` finds ZCode.
@@ -749,7 +674,7 @@ mise_backend_name() {
 # found and say why (mise_row). When the backends cannot be read, every
 # key counts as GitHub's.
 mise_github_reserve() {
-  local out key why left n limit gh=() rest=()
+  local out key why left n limit can gh=() rest=()
   mise_github_token && return 0
   if ! out=$(mise_offline=1 mise_run ls --json --backend aqua --backend github --backend ubi 2>/dev/null) \
     || ! out=$(jq -r 'if type == "object" then keys[] else error("not an object") end' <<<"$out" 2>/dev/null); then
@@ -763,12 +688,21 @@ mise_github_reserve() {
     read -r n limit <<<"$left"
     # One call per key for a `latest` request, cached by mise for an hour;
     # a pinned or ranged one lists the tool's releases, a few calls more,
-    # which the reserve takes up.
-    if (( n >= github_api_reserve )); then
+    # which the reserve takes up. Each key counts against what is left, as
+    # each feed's fallback does (github_latest_tag): mise is asked about as
+    # many as the calls above the reserve allow, and the rest are held.
+    can=$(( n - github_api_reserve + 1 ))
+    if (( can >= ${#gh[@]} )); then
       github_api_spend "${#gh[@]}"
       return 0
     fi
     why="GitHub's API has $n of its $limit calls an hour left here, which Omabump leaves to you"
+    if (( can > 0 )); then
+      github_api_spend "$can"
+      rest+=("${gh[@]:0:can}")
+      gh=("${gh[@]:can}")
+      why="GitHub's API has $n of its $limit calls an hour left here, and Omabump leaves the last $github_api_reserve to you"
+    fi
   else
     why="GitHub's API did not say how many calls it has left here"
   fi
@@ -1413,14 +1347,6 @@ pkgs_take_lock() {
 }
 pkgs_drop_lock() { exec 8>&-; pkgs_locked=0; }
 
-# Runs "$@" under the clone lock: directly when this process holds it, else
-# in a subshell that takes it for that call only. Fails with 75 when another
-# process holds it.
-pkgs_with_lock() {
-  if (( pkgs_locked )); then "$@"; return; fi
-  (exec 8>"$pkgs_lock"; flock -n 8 || exit 75; "$@")
-}
-
 # git for the clone: HTTPS only, never a credential prompt, and always bounded:
 # the clone is blob-less, so even show, checkout and archive can fetch from
 # GitHub on demand. No hooks, no fsmonitor, no automatic gc or maintenance,
@@ -1607,59 +1533,6 @@ seen_since() {
       "$seen_file" || true
   fi
   echo "$at"
-}
-
-# Fetches the recipeCommit $1 of app $2, or the ref its recipeFetch names.
-recipe_fetch() {
-  local ref
-  pgit_net -C "$pkgs_dir" fetch -q --filter=blob:none origin -- "$1" 2>/dev/null && return 0
-  ref=$(jq -r '.recipeFetch // ""' <<<"$2")
-  [[ -n $ref ]] || return 1
-  ref_ok "$ref" || { echo "recipeFetch '$ref' is not a refs/ name" >&2; return 1; }
-  pgit_net -C "$pkgs_dir" fetch -q --filter=blob:none origin -- "$ref" 2>/dev/null
-}
-
-# Which commit's recipe an app uses. apps.json may pin one with
-# "recipeCommit", a 40-hex SHA from an unmerged omarchy-pkgs PR that gives the
-# package the watch the pinned omarchy-pkgs commit lacks ("recipeFetch" names
-# a ref to fetch when the server will not hand out the bare SHA). Sets
-# recipe_rev and recipe_note. Fails closed with the reason on stderr and never
-# falls back to pkgs_base; fails with 75 when the clone is busy and the
-# commit still has to be fetched. Once pkgs_base's own recipe has a watch,
-# the recipeCommit is ignored.
-recipe_source() {
-  local pkg=$1 app=$2 sha rc=0 blocker
-  recipe_rev=$pkgs_base recipe_note=""
-  sha=$(jq -r '.recipeCommit // ""' <<<"$app")
-  [[ -n $sha ]] || return 0
-  blocker=$(recipe_blocker "$pkgs_base" "$pkg") || return 1
-  if [[ -z $blocker ]]; then
-    recipe_note="Pinned recipe no longer needed, omarchy-pkgs has a watch"
-    return 0
-  fi
-  [[ $sha =~ ^[0-9a-f]{40}$ ]] || { echo "recipeCommit '$sha' is not a 40-hex commit" >&2; return 1; }
-  if ! pgit cat-file -e "$sha^{commit}" 2>/dev/null; then
-    pkgs_with_lock recipe_fetch "$sha" "$app" || rc=$?
-    (( rc != 75 )) || { echo "the omarchy-pkgs clone is busy with an update" >&2; return 75; }
-    pgit cat-file -e "$sha^{commit}" 2>/dev/null || { echo "pinned recipe ${sha:0:12} is unreachable" >&2; return 1; }
-  fi
-  rc=0
-  recipe_has "$sha" "$pkg" PKGBUILD || rc=$?
-  (( rc != 1 )) || { echo "pinned commit ${sha:0:12} has no $pkg recipe" >&2; return 1; }
-  (( rc == 0 )) || return 1
-  recipe_rev=$sha
-  recipe_note=$(jq -r '.recipeNote // ""' <<<"$app")
-  [[ -n $recipe_note ]] || recipe_note="Recipe from omarchy-pkgs ${sha:0:12}"
-}
-
-# Replaces the work tree's recipe with the exact tree at commit $2, so no
-# pkgs_base-only file survives next to it. Needs the lock and pkgs_checkout.
-recipe_materialise() {
-  local pkg=$1 rev=$2
-  [[ $rev == "$pkgs_base" ]] && return 0
-  rm -rf "${pkgs_dir:?}/pkgbuilds/$pkg"
-  pgit archive "$rev" "pkgbuilds/$pkg" | tar -x -C "$pkgs_dir" || return 1
-  [[ -f $pkgs_dir/pkgbuilds/$pkg/PKGBUILD ]]
 }
 
 # A plain assignment in PKGBUILD text on stdin, the form omarchy-pkgs' own

@@ -891,20 +891,6 @@ Panel {
             horizontalAlignment: Text.AlignHCenter
             elide: Text.ElideRight
           }
-
-          Text {
-            textFormat: Text.PlainText
-            visible: text !== ""
-            width: parent.width
-            text: Model.discoveryText(checker.summary)
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            horizontalAlignment: Text.AlignHCenter
-            wrapMode: Text.Wrap
-            maximumLineCount: 2
-            elide: Text.ElideRight
-          }
         }
       }
     }
@@ -925,7 +911,7 @@ Panel {
     readonly property bool muted: Model.isMuted(checker.mutedApps, app)
     readonly property bool quiet: Model.isQuiet(checker.mutedApps, checker.skippedVersions, app)
     readonly property bool skipped: Model.isSkipped(checker.skippedVersions, app)
-    readonly property string extra: Model.extraLine(app, checker.schemaVersion, app ? root.actionNotes[app.pkg] : "")
+    readonly property string extra: Model.extraLine(app, app ? root.actionNotes[app.pkg] : "")
     property bool actionHovered: false
     onShowActionChanged: if (!showAction) actionHovered = false
 
@@ -948,7 +934,7 @@ Panel {
 
     PanelToolTip {
       visible: rowMouse.containsMouse && !appRow.actionHovered
-      text: Model.rowTooltip(appRow.app, checker.schemaVersion, checker.mutedApps, checker.skippedVersions, checker.pkgsCommit)
+      text: Model.rowTooltip(appRow.app, checker.mutedApps, checker.skippedVersions, checker.pkgsCommit)
       fontFamily: root.fontFamily
     }
 
@@ -1030,10 +1016,13 @@ Panel {
           textFormat: Text.PlainText
           visible: appRow.hasUpdate
           text: appRow.app ? "→ " + appRow.app.latest : ""
-          color: appRow.quiet ? root.dim : root.urgent
+          // Red and bold for a release Update installs from here, which is
+          // what the header and the bar icon count. A newer one it does
+          // not install (held, updated elsewhere, no install path) is plain.
+          color: appRow.quiet ? root.dim : appRow.updatable ? root.urgent : root.foreground
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
-          font.bold: !appRow.quiet
+          font.bold: appRow.updatable && !appRow.quiet
         }
 
         Text {
