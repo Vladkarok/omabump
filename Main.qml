@@ -138,6 +138,10 @@ Item {
   // A local refresh asked for while that run decides: it runs after it when
   // no check read the installed versions (checkProcess's onExited).
   property bool localAfterDue: false
+  // A check a local refresh asked for while that run decides: it runs after
+  // it only when none was due. A check that was due took the lock after the
+  // refresh, so it read what the refresh asked about.
+  property bool checkAfterDue: false
   // A local refresh asked for while one ran: one more runs after it.
   property bool localPending: false
   // status.json has been read, or found missing. The timer, the panel and
@@ -351,8 +355,10 @@ Item {
     onExited: function(exitCode) {
       var outcome = Model.checkOutcome(exitCode, root.runWaiting)
       var local = root.localAfterDue
+      var check = root.checkAfterDue
       root.runWaiting = false
       root.localAfterDue = false
+      root.checkAfterDue = false
       if (outcome === "notRun") {
         // Nothing ran: this shell's last check and when it ended stand, and
         // the Refresh says it was not done rather than pass for one that
@@ -374,6 +380,7 @@ Item {
       var err = checkStderr.text.trim()
       if (err !== "" && outcome !== "left" && outcome !== "notDue") console.warn("omabump", err)
       statusFile.reload()
+      if (check && outcome === "notDue") root.checkQueued = true
       Qt.callLater(root.runQueued, Model.queuedRunWaits(outcome))
       // The local refresh asked for meanwhile, when this run read no
       // versions: none was due, or it left on another bar's run.
@@ -410,10 +417,10 @@ Item {
       if (outcome === "failed")
         console.warn("omabump", "local refresh failed (exit " + exitCode + ")" + (err !== "" ? ": " + err : ""))
       statusFile.reload()
-      // Behind this shell's runDue run, which may find none due, it is
-      // queued.
+      // Behind this shell's runDue run, which may find none due, it waits
+      // for that one's answer (checkAfterDue).
       if (Model.localWantsCheck(outcome, checkProcess.running && !root.runIfDue)) {
-        if (checkProcess.running) root.checkQueued = true
+        if (checkProcess.running) root.checkAfterDue = true
         else root.runCheck(false, false)
       }
       if (root.localPending) {

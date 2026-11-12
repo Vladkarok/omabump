@@ -39,8 +39,9 @@
 #
 # Exit 75: no check ran. Without --wait another check held the lock, and
 # that one writes status.json; with --wait, it held the lock past the wait.
-# A check that finds a local refresh holding it waits for that one instead,
-# which takes seconds and is no check. Exit 76: --if-due found no check
+# A check that finds a local refresh, or an --if-due run that has not said
+# "due", holding it waits for that one instead, which takes seconds and may
+# be no check. Exit 76: --if-due found no check
 # due.
 #
 # Muted rows and skipped versions come from the widget's settings in
@@ -118,6 +119,17 @@ if (( local_run )); then
 elif (( wait_lock )); then
   flock -n 9 || { echo "Waiting for the running check to end..." >&2; flock -w 660 9; } \
     || { echo "omabump-check: the running check held the lock for over 11 min; no check ran" >&2; exit 75; }
+elif (( if_due )); then
+  # --if-due holds .local.lock too while it decides, as a local refresh
+  # does: it may find none due and write nothing, so a check that finds it
+  # holding the check lock waits for it instead of leaving the answer to it.
+  # Behind a local refresh or another --if-due run, this one waits as well.
+  exec 6>"$state_dir/.local.lock"
+  flock -w 130 6 || true
+  if ! flock -n 9; then
+    echo "omabump-check: another check is running and will write status.json; no check ran" >&2
+    exit 75
+  fi
 elif ! flock -n 9; then
   # The check lock is tried again with the local one held, so no new local
   # refresh can take it in between.
@@ -192,7 +204,9 @@ if (( if_due )); then
   [[ -n $run_s || -z $checked_at ]] || run_s=$(date -d "$checked_at" +%s 2>/dev/null) || run_s=""
   attempt_s="" attempt_retry=0
   [[ ! -s $attempt_file ]] || read -r attempt_s attempt_retry <"$attempt_file" || true
-  [[ $attempt_s =~ ^[0-9]{1,12}$ && $attempt_retry =~ ^[01]$ ]] || attempt_s="" attempt_retry=0
+  # An attempt ahead of the clock (it was set back) proves nothing either.
+  [[ $attempt_s =~ ^[0-9]{1,12}$ && $attempt_retry =~ ^[01]$ ]] && (( attempt_s <= now_s )) \
+    || attempt_s="" attempt_retry=0
   last_s=$run_s retried=0
   [[ $file_retry == true ]] && retried=1
   if [[ -n $attempt_s ]] && { [[ -z $run_s ]] || (( attempt_s >= run_s )); }; then
@@ -206,8 +220,14 @@ if (( if_due )); then
   if [[ $failed == true ]] && (( ! retried )); then
     window=$(( interval < retry_sec ? interval : retry_sec )) retry=1
   fi
-  if [[ -n $last_s ]] && (( now_s >= last_s && now_s - last_s < window - 30 )); then exit "$not_due_exit"; fi
+  # The check lock goes before .local.lock, so a check waiting on that one
+  # finds this one free.
+  if [[ -n $last_s ]] && (( now_s >= last_s && now_s - last_s < window - 30 )); then
+    exec 9>&- 6>&-
+    exit "$not_due_exit"
+  fi
   printf '%s %s\n' "$now_s" "$retry" >"$attempt_file"
+  exec 6>&-
   # The widget's word that a check runs: until then it shows none.
   echo due
 fi
@@ -546,7 +566,10 @@ notified='{}'
 pkgs_state=""
 pkgs_commit=$(jq -r '.omarchyPkgs.commit // ""' <<<"$previous")
 pkgs_error="" pkgs_note="" mise_note=""
-started=$(date -Iseconds)
+# An --if-due run starts when its attempt says, to the second, so a clock
+# stepped back since then cannot make the run look like one that wrote
+# nothing.
+if (( if_due )); then started=$(date -Iseconds -d "@$now_s"); else started=$(date -Iseconds); fi
 rows=() order='[]' status_done=0
 # Every scratch file of the run, the helpers' included (run_tmp), is in
 # $tmp, which the EXIT trap removes however the run ends.

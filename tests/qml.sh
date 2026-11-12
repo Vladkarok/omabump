@@ -12,9 +12,10 @@ same "Main.qml runs checks under the deadline bin/omabump-check names" \
   "$(grep -o 'under `timeout -k [0-9]* [0-9]*`' "$root/bin/omabump-check" | grep -o 'timeout[^`]*')" \
   "$(grep -o '"timeout", "-k", "[0-9]*", "[0-9]*", checkScript\]' "$root/Main.qml" | sed 's/, checkScript]//' | tr -d '",')"
 # A check that finds a local refresh holding the lock waits for it as long
-# as Main.qml lets one run: its deadline, then the KILL after it.
+# as Main.qml lets one run: its deadline, then the KILL after it. So does
+# an --if-due run, so both waits name the one time.
 same "a check waits for a local refresh as long as Main.qml lets one run" \
-  "$(sed -n 's/^  flock -w \([0-9]*\) 6 || true$/\1/p' "$root/bin/omabump-check")" \
+  "$(sed -n 's/^  flock -w \([0-9]*\) 6 || true$/\1/p' "$root/bin/omabump-check" | sort -u)" \
   "$(sed -n 's/^    var command = \["timeout", "-k", "\([0-9]*\)", "\([0-9]*\)", checkScript, "--local"\]$/\1 \2/p' "$root/Main.qml" \
     | awk '{ print $1 + $2 }')"
 # Every wait for the lock comes before that deadline, never under it: a

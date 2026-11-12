@@ -912,13 +912,54 @@ same "--if-due: only a muted row failed (omarchy-pkgs too, with every omarchy ro
 run_settings ''
 due_status -300 '{"checking": true}'
 same "--if-due: a \"checking\" mark with the lock free (a killed run): its retry" '0|ran|true' "$(due_run)"
-due_status -300 "$due_failed"
+due_status -200 "$due_failed"
+same "--if-due: a failed check 200 s ago: its retry waits for 5 min" '76|none|false' "$(due_run)"
+due_status -300 '{"miseError": "mise failed"}'
+same "--if-due: a miseError: its retry" '0|ran|true' "$(due_run)"
+run_settings ', "showMise": "false"'
+due_status -300 '{"miseError": "mise failed"}'
+same "--if-due: a miseError with Show mise tools off: no retry" '76|none|false' "$(due_run)"
+run_settings ', "mutedApps": ["mise:t"]'
+due_status -300 '{"miseError": "mise failed", "apps": [{"pkg": "claude-desktop", "source": "omarchy", "error": ""},
+  {"pkg": "mise:t", "label": "T", "source": "mise", "error": ""}]}'
+same "--if-due: a miseError with every mise row muted: no retry" '76|none|false' "$(due_run)"
+run_settings ''
+due_status -600 "$due_failed"
 cp "$run_state/status.json" "$run_dir/due-before.json"
 due_run >/dev/null
 # The retry that ran wrote status.json; put the old one back, as if it had
-# written nothing (killed before its first write).
+# written nothing (killed before its first write), and ask 5 min later.
 cp "$run_dir/due-before.json" "$run_state/status.json"
-same "--if-due: a retry that wrote nothing still counts: no retry every minute" '76|none|false' "$(due_run)"
+read -r due_at due_retry <"$due_attempt"
+printf '%s %s\n' "$(( due_at - 300 ))" "$due_retry" >"$due_attempt"
+same "--if-due: a retry that wrote nothing still counts: no retry every 5 min" '76|none|false' "$(due_run)"
+# A check that succeeds starts in the second its attempt names, and that
+# attempt is the run status.json shows: no failure, no retry.
+run_settings ', "mutedApps": ["claude-desktop"]'
+due_status -3580
+due_run >/dev/null
+read -r due_at _ <"$due_attempt"
+same "--if-due: the check starts when its attempt says" "$due_at" "$(date -d "$(run_status .startedAt)" +%s)"
+due_status -300
+printf '%s 0\n' "$(date -d "$(run_status .startedAt)" +%s)" >"$due_attempt"
+same "--if-due: a check that succeeded in its attempt's second: no retry" '76|none|false' "$(due_run)"
+run_settings ''
+due_status -3580
+printf '%s 0\n' "$(( $(date +%s) + 3600 ))" >"$due_attempt"
+same "--if-due: an attempt ahead of the clock (it was set back) counts for nothing" '0|ran|false' "$(due_run)"
+# It decides with the local lock held, as a local refresh does, so a check
+# that finds the check lock taken waits for it rather than leave to a run
+# that may write nothing.
+due_status -3500
+loc_hold 7
+check_bg --if-due --interval 3600
+pid=$!
+waited=no
+for _ in $(seq 100); do pgrep -f '^flock -w [0-9]* 6$' >/dev/null && { waited=yes; break; }; sleep 0.1; done
+same "--if-due: waits for the local lock before it decides" yes "$waited"
+loc_free
+wait "$pid"; rc=$?
+same "--if-due: and then decides" 76 "$rc"
 due_status -3000
 printf '%s 0\n' "$(( $(date +%s) - 300 ))" >"$due_attempt"
 same "--if-due: a check that wrote nothing failed: its retry" '0|ran|true' "$(due_run)"
