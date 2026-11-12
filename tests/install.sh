@@ -26,7 +26,8 @@
 #   curl      serves files from a local directory
 #   makepkg   reads the test recipe's PKGBUILD and "builds" a plain tar,
 #             its files owned by root as under fakeroot, or by
-#             $STUB_MAKEPKG_OWNER ("<uid>:<gid>");
+#             $STUB_MAKEPKG_OWNER ("<uid>:<gid>"), and records the keyring
+#             it was given (GNUPGHOME) and the keys in it;
 #             with $STUB_MAKEPKG_INSTALLS ("<name> <version>") set, that is
 #             what pacman has installed once the build is done, as when
 #             omarchy update installs it meanwhile
@@ -152,8 +153,14 @@ case " $* " in
     for v in "${conflicts[@]}"; do printf '\tconflicts = %s\n' "$v"; done
     for v in "${provides[@]}"; do printf '\tprovides = %s\n' "$v"; done
     for v in "${source[@]}"; do printf '\tsource = %s\n' "$v"; done
+    for v in "${validpgpkeys[@]}"; do printf '\tvalidpgpkeys = %s\n' "$v"; done
     printf '\npkgname = %s\n' "$pkgname" ;;
   *" -sfC "*)
+    keys=""
+    [[ -z ${GNUPGHOME:-} ]] || keys=$(gpg --homedir "$GNUPGHOME" --batch --no-tty --no-autostart --with-colons --list-keys 2>/dev/null \
+      | awk -F: '$1 == "fpr" { printf " %s", $10 }')
+    echo "makepkg keyring ${GNUPGHOME:-yours}$keys" >>"$STUB_LOG/calls"
+    [[ -z ${STUB_FAIL_BUILD:-} ]] || exit 99
     d=$BUILDDIR/$pkgname/pkg files=(.PKGINFO)
     mkdir -p "$d" "$PKGDEST"
     { echo "pkgname = $pkgname"; echo "pkgver = $full"
@@ -272,6 +279,7 @@ cat >"$ihome/.config/omarchy/omabump/apps.json" <<'EOF'
    "vendorPkg": "https://example.invalid/testapp-{version}-1-x86_64.pkg.tar", "checksum": "feed", "configDir": "~/.config/TestApp"},
   {"pkg": "testpkg", "label": "Test Pkg", "source": "omarchy", "installed": ["testpkg", "testpkg-bin"]},
   {"pkg": "nocon", "label": "No Conflict", "source": "omarchy", "installed": ["nocon", "nocon-bin"]},
+  {"pkg": "sigpkg", "label": "Signed Pkg", "source": "omarchy"},
   {"pkg": "mise:testtool", "label": "Test Tool", "source": "mise", "tool": "testtool"},
   {"pkg": "blockedapp", "label": "Blocked App", "source": "omarchy", "updateBlocked": "a known problem in its install script, see x#1"},
   {"pkg": "selfapp", "label": "Self App", "source": "omarchy", "appImage": "~/.local/share/selfapp/Self.AppImage"},
@@ -965,7 +973,7 @@ cat >"$pk/bin/sync-upstream" <<'EOF'
 sed -i "s/^pkgver=.*/pkgver=2.0.0/" "pkgbuilds/$1/PKGBUILD"
 EOF
 chmod +x "$pk/bin/sync-upstream"
-for p in testpkg nocon; do
+for p in testpkg nocon sigpkg; do
   mkdir -p "$pk/pkgbuilds/$p/.omarchy"
   echo '{"upstream": {"type": "github"}}' >"$pk/pkgbuilds/$p/.omarchy/package.json"
 done
@@ -975,6 +983,27 @@ printf '%s\n' 'pkgname=testpkg' 'pkgver=1.0.0' 'pkgrel=1' 'arch=(x86_64)' 'insta
   'provides=(testpkg)' 'source=("testpkg-$pkgver.tar.gz::https://example.invalid/testpkg-$pkgver.tar.gz")' >"$pk/pkgbuilds/testpkg/PKGBUILD"
 echo 'post_install() { echo "testpkg recipe hook"; }' >"$pk/pkgbuilds/testpkg/testpkg.install"
 printf '%s\n' 'pkgname=nocon' 'pkgver=1.0.0' 'pkgrel=1' 'arch=(x86_64)' >"$pk/pkgbuilds/nocon/PKGBUILD"
+# A recipe that checks signatures, as voxtype-bin's does: the key it trusts
+# ships in keys/pgp, named by its fingerprint. The key was made for this
+# test and its secret half thrown away. $sigother is a fingerprint no
+# key file is named for.
+sigkey=E81A998A356492A4322330B2682963E41BDF6266 sigother=0123456789ABCDEF0123456789ABCDEF01234567
+mkdir -p "$pk/pkgbuilds/sigpkg/keys/pgp"
+cat >"$pk/pkgbuilds/sigpkg/keys/pgp/$sigkey.asc" <<'EOF'
+-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mDMEavUa7RYJKwYBBAHaRw8BAQdA5szlGbWUdQrkrjXKjGFXBK9CBBjUo8DH0coU
+io8Cf8y0N09tYWJ1bXAgdGVzdCBrZXksIG5vdCBhIHJlYWwgb25lIDx0ZXN0QGV4
+YW1wbGUuaW52YWxpZD6IkAQTFgoAOBYhBOgamYo1ZJKkMiMwsmgpY+Qb32JmBQJq
+9RrtAhsDBQsJCAcCBhUKCQgLAgQWAgMBAh4BAheAAAoJEGgpY+Qb32JmMj4A/jrk
+JCG4q2MbFp1knPO+ckojDWGBJn42vJ7ONdfpVRXZAQCYKB350KYLmQXGKtv2SdFE
+EIpmevxL6X9F8xiZCn1wCQ==
+=fLb8
+-----END PGP PUBLIC KEY BLOCK-----
+EOF
+# A key file validpgpkeys does not name: never imported.
+cp "$pk/pkgbuilds/sigpkg/keys/pgp/$sigkey.asc" "$pk/pkgbuilds/sigpkg/keys/pgp/FEDCBA9876543210FEDCBA9876543210FEDCBA98.asc"
+printf '%s\n' 'pkgname=sigpkg' 'pkgver=1.0.0' 'pkgrel=1' 'arch=(x86_64)' "validpgpkeys=($sigkey)" >"$pk/pkgbuilds/sigpkg/PKGBUILD"
 igit -C "$pk" add -A
 igit -C "$pk" commit -q -m recipes
 printf '{"omarchyPkgs": {"commit": "%s"}}\n' "$(git -C "$pk" rev-parse HEAD)" >"$ihome/.config/omarchy/omabump/pins.json"
@@ -1033,6 +1062,72 @@ check "install (omarchy): the package file is cleaned up" test ! -e "$it/cache/o
 check "install (omarchy): the build tree is cleaned up" test ! -e "$it/cache/omabump/build/testpkg"
 says "install (omarchy): restart to use it" 'Restart Test Pkg to use 2.0.0-1.'
 same "install (omarchy): no word of files that stay" '' "$(grep -F 'the build and download files stay' <<<"$iout")"
+calls "install (omarchy): a recipe that checks no signatures builds with your keyring" 'makepkg keyring yours'
+no_call "install (omarchy): and may sign its package as your makepkg.conf says" ' --nosign'
+same "install (omarchy): and is told nothing about signatures" '' "$(grep -F 'Signatures:' <<<"$iout")"
+
+# --- a recipe that checks signatures: the keyring made from its own key files -------
+
+ikeyring=$it/cache/omabump/gnupg
+sigsays="Signatures: makepkg checks them against the keys the recipe ships (keys/pgp), in a keyring of its own, not yours: $sigkey"
+fresh 'sigpkg 1.0.0-1'
+STUB_PACMAN_U=ok inst sigpkg
+same "install (omarchy), a recipe with validpgpkeys: installs" 0 "$irc"
+says "install (omarchy), a recipe with validpgpkeys: names the key the build trusts, not the file validpgpkeys does not name" "$sigsays"
+calls "install (omarchy), a recipe with validpgpkeys: makepkg gets a keyring holding that key alone" "makepkg keyring $ikeyring $sigkey"
+calls "install (omarchy), a recipe with validpgpkeys: and signs nothing with it" ' -sfC --nosign'
+check "install (omarchy), a recipe with validpgpkeys: the keyring goes after the build" test ! -e "$ikeyring"
+check "install (omarchy), a recipe with validpgpkeys: your own keyring is not created" test ! -e "$ihome/.gnupg"
+same "install (omarchy), a recipe with validpgpkeys: installed" 'sigpkg 2.0.0-1' "$(<"$idb/installed")"
+
+fresh 'sigpkg 1.0.0-1'
+inst --prepare sigpkg
+same "install --prepare (omarchy), a recipe with validpgpkeys: succeeds" 0 "$irc"
+says "install --prepare (omarchy), a recipe with validpgpkeys: names the key, its file checked" "$sigsays"
+check "install --prepare (omarchy), a recipe with validpgpkeys: leaves no keyring" test ! -e "$ikeyring"
+no_call "install --prepare (omarchy), a recipe with validpgpkeys: no build" ' -sfC'
+
+# recipe_keyring in a recipe directory of its own: <validpgpkeys...> are what
+# makepkg --printsrcinfo reports. Prints the keyring it set, or what it said.
+sigdir=$it/sigrecipe
+keyring_case() {
+  # shellcheck disable=SC2016 # expanded by the child bash
+  T_DIR=$sigdir T_VALID="$*" inst_src 'cd "$T_DIR"
+    mkpkg() { printf "pkgbase = sigpkg\n"; for v in $T_VALID; do printf "\tvalidpgpkeys = %s\n" "$v"; done; }
+    recipe_keyring >/dev/null; echo "keyring=${build_gnupg:-yours}"' sigpkg
+}
+sigfile=$pk/pkgbuilds/sigpkg/keys/pgp/$sigkey.asc
+rm -rf "$sigdir" && mkdir -p "$sigdir/keys/pgp"
+cp "$sigfile" "$sigdir/keys/pgp/$sigkey.asc"
+keyring_case "$sigkey"
+same "recipe_keyring: a key file validpgpkeys names: a keyring of its own" "0|keyring=$ikeyring" "$irc|$iout"
+keyring_case
+same "recipe_keyring: no validpgpkeys: your keyring, as makepkg does" "0|keyring=yours" "$irc|$iout"
+keyring_case "$sigother"
+same "recipe_keyring: validpgpkeys without its key file (a recipe from before keys/pgp): your keyring" "0|keyring=yours" "$irc|$iout"
+keyring_case "$sigkey" "$sigother"
+same "recipe_keyring: a file for one of two trusted keys only: your keyring, which may hold the other" "0|keyring=yours" "$irc|$iout"
+STUB_FAIL_BUILD=1 inst sigpkg
+same "install (omarchy), a recipe with validpgpkeys, the build failing: fails" 99 "$irc"
+check "install (omarchy), a recipe with validpgpkeys, the build failing: the keyring goes all the same" test ! -e "$ikeyring"
+rm -rf "$it/cache/omabump/build/sigpkg"
+mv "$sigdir/keys/pgp/$sigkey.asc" "$sigdir/keys/pgp/$sigother.asc"
+keyring_case "$sigother"
+same "recipe_keyring: a file named for one key that holds another: refused" 1 "$irc"
+says "recipe_keyring: a file named for one key that holds another: says which" \
+  "keys/pgp/$sigother.asc does not hold the key $sigother and nothing else; not building"
+cat "$sigfile" "$sigfile" >"$sigdir/keys/pgp/$sigkey.asc"
+rm -f "$sigdir/keys/pgp/$sigother.asc"
+keyring_case "$sigkey"
+same "recipe_keyring: a file that holds more than its one key: refused" 1 "$irc"
+echo 'not a key' >"$sigdir/keys/pgp/$sigkey.asc"
+keyring_case "$sigkey"
+same "recipe_keyring: a file that is no key: refused" 1 "$irc"
+rm -f "$sigdir/keys/pgp/$sigkey.asc"
+ln -s "$sigfile" "$sigdir/keys/pgp/$sigkey.asc"
+keyring_case "$sigkey"
+same "recipe_keyring: a symlink for a key file is not read: your keyring" "0|keyring=yours" "$irc|$iout"
+rm -rf "$sigdir" "$ikeyring"
 
 # The synced recipe reaches 2.0.0-1, which omarchy update installed after a
 # check that saw 1.0.0-1 and showed 2.0.0: nothing left to do, a success.
