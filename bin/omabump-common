@@ -192,6 +192,10 @@ load_quiet() {
   return 0
 }
 
+# True when the row of the id $1 is muted. A text test: the ids in
+# muted_json are ones app_id_ok accepts, which JSON writes without escapes.
+row_muted() { [[ $muted_json == *"\"$1\""* ]]; }
+
 # Versions mise or Omabump's release feed print are compared as strings: mise
 # decides what is newer there, and vercmp would call 1.0.0 and 1.0.0-beta.1
 # equal. Every other source compares with vercmp.
@@ -367,8 +371,13 @@ app_json() {
 
 # Text bound for status.json and notifications, made inert: control
 # characters dropped and < > & replaced, since a tooltip may render rich text
-# and notify-send bodies are markup.
-clean_text() { printf '%s' "$1" | tr -d '\000-\037\177' | sed 's/</‹/g; s/>/›/g; s/&/＆/g'; }
+# and notify-send bodies are markup. In bash, without tr or sed: a check
+# calls it for every field of every row. A bash string never holds NUL.
+clean_text() {
+  local s=${1//[$'\001'-$'\037'$'\177']/}
+  s=${s//</‹} s=${s//>/›} s=${s//&/＆}
+  printf '%s' "$s"
+}
 
 # Text printed in the terminal for the user to read before pacman (install
 # scripts, the recipe diff), made unable to drive the terminal: ESC shown as
@@ -993,18 +1002,35 @@ self_update_text() {
 # is in place, so both at once is an install half done, or the package put
 # back, and the package is what Update knows.
 installed_app() {
-  local app=$1 source line names
-  source=$(jq -r '.source // ""' <<<"$app")
+  # shellcheck disable=SC2016 # jq variables, not the shell's
+  installed_from "$1" "$(jq -r --argjson app "$1" "$jq_app_facts"'. as $ls | $app | app_facts($ls)' <<<"$mise_ls_json")"
+}
+
+# What installed_app reads of an entry, as one line: its source, its
+# package names (pkg_ok, so no blank) joined by blanks, its npmPackage and
+# its appImage (none ""), and what mise_active prints for it from mise's
+# inventory $ls, split by \x1e. A check reads every entry's line in the jq
+# that lists the table (table_lines in omabump-check).
+# shellcheck disable=SC2016 # jq variables, not the shell's
+jq_app_facts=$mise_jq_active'
+  def app_facts($ls): [.source // "", ((.installed // [.pkg]) | join(" ")), (.npmPackage | strings // ""),
+    (.appImage | strings // ""), (active($ls) | values | "\(.key) \(.version)")] | join("\u001e");'
+
+# installed_app for the app $1 whose line of jq_app_facts is $2.
+installed_from() {
+  local app=$1 source line names npm image active
+  IFS=$'\x1e' read -r source names npm image active <<<"$2"
   if [[ $source == mise ]]; then
-    line=$(mise_active "$app") || return 1
+    [[ -n $active ]] || return 1
+    line=$active
   elif [[ $source == self ]]; then
     line=$(self_version)
     version_ok "$line" || return 1
     line="omabump $line"
   else
-    mapfile -t names < <(jq -r '(.installed // [.pkg])[]' <<<"$app")
-    line=$(npm_package_installed "$app") || line=$(installed_package "${names[@]}") \
-      || line=$(appimage_installed "$app") || return 1
+    read -ra names <<<"$names"
+    { [[ -n $npm ]] && line=$(npm_package_installed "$app"); } || line=$(installed_package "${names[@]}") \
+      || { [[ -n $image ]] && line=$(appimage_installed "$app"); } || return 1
   fi
   echo "$source $line"
 }

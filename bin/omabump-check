@@ -268,6 +268,17 @@ row_switchable() {
     && ! newer "$(upstream_part "$7")" "$6"
 }
 
+# Each app of the table $1, then Omabump itself, as one line of its pkg,
+# source, entry and what installed_from reads of it (jq_app_facts, from
+# mise's inventory as mise_load left it), split by \x1f: the entry is
+# compact JSON, and the pkg and source are names the table allows
+# (apps_table), so none holds one. One jq for the table, not one per app.
+table_lines() {
+  # shellcheck disable=SC2016 # jq variables, not the shell's
+  jq -r --argjson self "$self_app" --slurpfile ls <(printf '%s\n' "$mise_ls_json") "$jq_app_facts"'
+    (.[], $self) | [.pkg, .source, tojson, app_facts($ls[0])] | join("\u001f")' <<<"$1"
+}
+
 # The row of an app installed as a copy that updates itself (installed_app
 # names it by its path): its own updater replaces it, so the row has no
 # route, and its note says how the app updates (self_update_text). $1 the
@@ -367,19 +378,19 @@ local_refresh() {
   # meanwhile would be read half way: pacman's lock is looked for again
   # right before its rows are read, and once more after them.
   ! pacman_busy || local_pacman_busy
-  while IFS= read -r app; do
-    pkg=$(jq -r '.pkg' <<<"$app")
-    source=$(jq -r '.source' <<<"$app")
+  while IFS=$'\x1f' read -r pkg source app facts; do
     # A mise tool mise could not list is never read as uninstalled.
     if [[ $source == mise ]]; then
       (( with_mise )) && [[ -z $mise_inventory_error ]] || continue
     fi
-    prev=$(jq -c --arg pkg "$pkg" '[.apps[] | select(.pkg == $pkg)][0] // {}' <<<"$previous")
-    if ! read -r _ name installed < <(installed_app "$app"); then
-      # Gone, as a check drops a row that is no longer installed.
-      [[ $prev == '{}' ]] || changes+=("$(jq -cn --arg pkg "$pkg" '{pkg: $pkg, _drop: true}')")
+    if ! read -r _ name installed < <(installed_from "$app" "$facts"); then
+      # Gone, as a check drops a row that is no longer installed. A row
+      # status.json does not have stays out: the merge below drops it as
+      # soon as it adds it. The id needs no escapes in JSON (app_id_ok).
+      changes+=("{\"pkg\":\"$pkg\",\"_drop\":true}")
       continue
     fi
+    prev=$(jq -c --arg pkg "$pkg" '[.apps[] | select(.pkg == $pkg)][0] // {}' <<<"$previous")
     name=$(clean_text "$name") installed=$(clean_text "$installed")
     # The skip as these settings hold it, judged at the versions now.
     if local_row; then changes+=("$(jq -c --arg e "$(skip_ended "$row")" '.skipEnded = $e' <<<"$row")"); fi
@@ -387,7 +398,7 @@ local_refresh() {
       echo "omabump-check: $why; a full check is needed" >&2
       need_full=1
     fi
-  done < <(jq -c '.[]' <<<"$app_table"; echo "$self_app")
+  done < <(table_lines "$app_table")
   ! pacman_busy || local_pacman_busy
 
   out=$(mktemp "$tmp/.status.XXXXXX")
@@ -436,18 +447,19 @@ local_row() {
   if [[ $prev == '{}' ]]; then
     # Installed since the last check: what it is, not yet what is newer.
     label=$(jq -r '.label // .pkg' <<<"$app")
-    muted=$(jq --arg pkg "$pkg" 'index($pkg) != null' <<<"$muted_json")
+    muted=false
+    row_muted "$pkg" && muted=true
     [[ $self == true || -z $(jq -r '.updateBlocked // ""' <<<"$app") ]] || blocked=true
     row=$(jq -cn --arg pkg "$pkg" --arg label "$(clean_text "$label")" --arg source "$source" \
       --arg installedName "$name" --arg installed "$installed" --argjson muted "$muted" --argjson blocked "$blocked" \
       --argjson selfUpdating "$self" \
-      --arg icon "$(jq -r '.icon // ""' <<<"$app")" --arg iconLight "$(jq -r '.iconLight // ""' <<<"$app")" \
+      --argjson app "$app" \
       '{pkg: $pkg, label: $label, source: $source, installedName: $installedName,
         installed: $installed, latest: "", versionFrom: "",
         updateAvailable: false, installable: false, error: "", note: "Not checked yet",
         stale: false, switchable: false, recipe: "",
         request: "", muted: $muted, skipped: false, unchecked: true, held: false, omarchyUpdate: false, blocked: $blocked,
-        selfUpdating: $selfUpdating, icon: $icon, iconLight: $iconLight}')
+        selfUpdating: $selfUpdating, icon: ($app.icon // "" | tostring), iconLight: ($app.iconLight // "" | tostring)}')
     why="$pkg${installed:+ $installed} is installed since the last check"
     return 0
   fi
@@ -654,9 +666,9 @@ order=$(jq -c 'map(.pkg)' <<<"$table")
 # row's note, and "unchecked" on every row; inventoryAt, retry and a row's
 # selfUpdating came later, fields a reader may find missing. retry: this
 # run was the widget's retry of a check that failed (--retry).
+previous_at=$(jq -r '.checkedAt // ""' <<<"$previous")
 write_status() {
-  local final=$1 run_error=${2:-} out at
-  at=$(jq -r '.checkedAt // ""' <<<"$previous")
+  local final=$1 run_error=${2:-} out at=$previous_at
   (( final == 1 )) && at=$(date -Iseconds)
   out=$(mktemp "$tmp/.status.XXXXXX")
   printf '%s\n' "${rows[@]}" | jq -s --slurpfile prevs "$tmp/previous.json" --argjson order "$order" \
@@ -692,16 +704,14 @@ if (( with_mise )) && [[ -n $mise_inventory_error ]]; then
     | del(.checking) | .stale = true | .installable = false | .error = $e' <<<"$previous")
 fi
 now=$(date +%s)
-while IFS= read -r app; do
-  pkg=$(jq -r '.pkg' <<<"$app")
-  label=$(jq -r '.label // .pkg' <<<"$app")
-  [[ $with_mise == 0 && $(jq -r '.source' <<<"$app") == mise ]] && continue
-  if ! read -r source installed_name installed < <(installed_app "$app"); then
+while IFS=$'\x1f' read -r pkg source app facts; do
+  [[ $with_mise == 0 && $source == mise ]] && continue
+  if ! read -r _ installed_name installed < <(installed_from "$app" "$facts"); then
     # Not installed. Or pacman is replacing it right now and its database
     # reads half way (pacman_busy): then the last check's row stays, failed,
     # so that the retry reads it, rather than go now and come back as new.
     # Not a mise tool or Omabump itself, which pacman does not hold.
-    if pacman_busy && row_source=$(jq -r '.source' <<<"$app") && [[ $row_source != mise && $row_source != self ]]; then
+    if pacman_busy && [[ $source != mise && $source != self ]]; then
       while IFS= read -r row; do rows+=("$row"); done < <(jq -c --arg pkg "$pkg" \
         --arg e "pacman was in the middle of a transaction, so the installed version was not read" '.apps[]
         | select(.pkg == $pkg) | del(.checking) | .stale = true | .installable = false | .error = $e' <<<"$previous")
@@ -709,7 +719,13 @@ while IFS= read -r app; do
     continue
   fi
 
-  prev=$(jq -c --arg pkg "$pkg" '[.apps[] | select(.pkg == $pkg)][0] // {}' <<<"$previous")
+  label=$(jq -r '.label // .pkg' <<<"$app")
+  # What the last check's row says, for a feed that fails now or a clone
+  # that is busy.
+  IFS=$'\x1f' read -r p_latest p_from p_installed p_update p_installable p_held < <(jq -r --arg pkg "$pkg" '
+    [.apps[] | select(.pkg == $pkg)][0] // {}
+    | [.latest // "", .versionFrom // "", .installed // "", .updateAvailable == true, .installable == true, .held == true]
+    | map(tostring) | join("\u001f")' <<<"$previous")
   latest="" from="" note="" installable=false stale=false
   route_error="" feed_error="" recipe="" mise_update=false request="" unchecked=false
   hold=0 held=false omarchy_update=false self_updating=false
@@ -760,8 +776,7 @@ while IFS= read -r app; do
         recipe_read "$pkg" 2>"$tmp/err" || route_error=$(<"$tmp/err")
       fi
       if [[ $pkgs_state == busy ]]; then
-        installable=$(jq '.installable == true' <<<"$prev")
-        held=$(jq '.held == true' <<<"$prev")
+        installable=$p_installable held=$p_held
         note=$pkgs_busy_note
       elif [[ $pkgs_state != ready ]]; then
         route_error=$pkgs_error
@@ -799,17 +814,17 @@ while IFS= read -r app; do
   # Keep the last known version so a flaky feed neither hides a pending
   # update nor re-announces it once the feed comes back.
   if [[ -n $feed_error ]]; then
-    latest=$(jq -r '.latest // ""' <<<"$prev")
-    from=$(jq -r '.versionFrom // ""' <<<"$prev")
-    stale=true
+    latest=$p_latest from=$p_from stale=true
     # A mise row's update is mise's answer, not a comparison: keep the last
     # one while the installed version has not moved.
-    if [[ $source == mise && $(jq -r '.installed // ""' <<<"$prev") == "$installed" ]]; then
-      mise_update=$(jq '.updateAvailable == true' <<<"$prev")
-    fi
+    [[ $source != mise || $p_installed != "$installed" ]] || mise_update=$p_update
   fi
-  error=$(printf '%s\n' "$route_error" "$feed_error" | sed '/^$/d' | paste -sd';' - | sed 's/;/; /g')
-  error=$(clean_text "$error")
+  # Their lines that are not empty, joined by "; ", as is every ";" in them.
+  error=""
+  while IFS= read -r line; do
+    [[ -z $line ]] || error+=${error:+;}$line
+  done <<<"$route_error"$'\n'"$feed_error"
+  error=$(clean_text "${error//;/; }")
   error=${error:0:240}
 
   # A feed knows only upstream's version, so it is compared with the
@@ -840,7 +855,8 @@ while IFS= read -r app; do
   switchable=false
   row_switchable "$source" "$installed_name" "$pkg" "$installable" "$update" "$latest" "$installed" && switchable=true
 
-  muted=$(jq --arg pkg "$pkg" 'index($pkg) != null' <<<"$muted_json")
+  muted=false
+  row_muted "$pkg" && muted=true
   skipped=false skip_end=""
   skip=$(jq -r --arg pkg "$pkg" '.[$pkg] // ""' <<<"$skipped_json")
   row_skipped "$source" "$update" "$latest" "$skip" && skipped=true
@@ -873,15 +889,15 @@ while IFS= read -r app; do
     --argjson stale "$stale" --argjson switchable "$switchable" --arg recipe "$(clean_text "$recipe")" \
     --arg request "$(clean_text "$request")" --argjson muted "$muted" --argjson skipped "$skipped" --arg skipEnded "$skip_end" --argjson unchecked "$unchecked" --argjson held "$held" --argjson omarchyUpdate "$omarchy_update" --argjson blocked "$is_blocked" \
     --argjson selfUpdating "$self_updating" \
-    --arg icon "$(jq -r '.icon // ""' <<<"$app")" --arg iconLight "$(jq -r '.iconLight // ""' <<<"$app")" \
+    --argjson app "$app" \
     '{pkg: $pkg, label: $label, source: $source, installedName: $installedName,
       installed: $installed, latest: $latest, versionFrom: $versionFrom,
       updateAvailable: $update, installable: $installable, error: $error, note: $note,
       stale: $stale, switchable: $switchable, recipe: $recipe,
       request: $request, muted: $muted, skipped: $skipped, skipEnded: $skipEnded, unchecked: $unchecked, held: $held, omarchyUpdate: $omarchyUpdate, blocked: $blocked,
-      selfUpdating: $selfUpdating, icon: $icon, iconLight: $iconLight}')")
+      selfUpdating: $selfUpdating, icon: ($app.icon // "" | tostring), iconLight: ($app.iconLight // "" | tostring)}')")
   write_status 0
-done < <(jq -c '.[]' <<<"$table"; echo "$self_app")
+done < <(table_lines "$table")
 
 write_status 1
 status_done=1
