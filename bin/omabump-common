@@ -1008,13 +1008,14 @@ installed_app() {
 
 # What installed_app reads of an entry, as one line: its source, its
 # package names (pkg_ok, so no blank) joined by blanks, its npmPackage and
-# its appImage (none ""), and what mise_active prints for it from mise's
-# inventory $ls, split by \x1e. A check reads every entry's line in the jq
-# that lists the table (table_lines in omabump-check).
+# its appImage (none ""), and the first line of what mise_active prints for
+# it from mise's inventory $ls, split by \x1e: a line break in a version
+# would start another row. A check reads every entry's line in the jq that
+# lists the table (table_lines in omabump-check).
 # shellcheck disable=SC2016 # jq variables, not the shell's
 jq_app_facts=$mise_jq_active'
   def app_facts($ls): [.source // "", ((.installed // [.pkg]) | join(" ")), (.npmPackage | strings // ""),
-    (.appImage | strings // ""), (active($ls) | values | "\(.key) \(.version)")] | join("\u001e");'
+    (.appImage | strings // ""), (active($ls) | values | "\(.key) \(.version)" | split("\n")[0])] | join("\u001e");'
 
 # installed_app for the app $1 whose line of jq_app_facts is $2.
 installed_from() {

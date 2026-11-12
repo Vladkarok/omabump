@@ -740,6 +740,13 @@ loc_tools t=1.1 u=2.1 k=1.0
 OMABUMP_TEST_LS_FAIL=1 local_run; rc=$?
 same "--local: mise ls failed: the mise rows stay as they were, none read as uninstalled" \
   "0|$(jq -c '[.apps[] | select(.source == "mise")]' "$run_dir/fixture.json")" "$rc|$(run_status '[.apps[] | select(.source == "mise")] | tojson')"
+# A version with a line break in it is read up to the break, as one row.
+loc_status
+loc_same
+loc_tools t=$'1.0\nx"y' u=2.0 k=1.0
+local_run; rc=$?
+same "--local: a mise version with a line break: its first line, no stray row" "0|$(jq -c .apps "$run_dir/fixture.json" | md5sum)" \
+  "$rc|$(run_status '.apps | tojson' | md5sum)"
 loc_status
 loc_tools u=2.1 npm:k=1.6
 local_run --no-mise; rc=$?
