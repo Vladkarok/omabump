@@ -939,10 +939,16 @@ self_merge() {
 # -x, which would delete ignored files of yours too. git runs under timeout
 # alone, not through self_git's run_killable, which stops git on Ctrl-C or
 # a closing terminal: a reset cut short there would leave the release in
-# place, and the run would end before it could say so.
+# place, and the run would end before it could say so. This script ignores
+# INT and HUP from here to its exit too. bash lets a Ctrl-C pass while it
+# waits for a command that does not die of it, as git here does not, but
+# one that arrives between commands (a second Ctrl-C, or the first landing
+# as one git ends and the next starts) would end the run before git clean
+# and the message, and on_exit no longer rolls back.
 self_git_held() { run_unlocked timeout -k 10 120 env GIT_ALLOW_PROTOCOL=https GIT_TERMINAL_PROMPT=0 git "${git_safe[@]}" -C "$plugin_dir" "$@" </dev/null; }
 self_undo() {
   local before=$self_before
+  trap '' INT HUP
   self_before=""
   if self_git_held reset -q --hard "$before" && self_git_held clean -qfd; then
     die "$1; rolled back to ${before:0:12}, the old version is still installed"

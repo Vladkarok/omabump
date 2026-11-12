@@ -1238,6 +1238,8 @@ refuse "self_merge: and the run is a failure" test "$irc" = 0
 
 # Ctrl-C during the rollback, sent as a terminal sends it, to the
 # installer's whole process group: git, slow here, still finishes the reset.
+# The timeout around the test's bash passes the INT on to it once more, a
+# moment later; on a loaded machine that came after the reset had ended.
 self_reset
 cat >"$istubs/git" <<'EOF'
 #!/bin/bash
@@ -1251,6 +1253,21 @@ STUB_VALIDATE=fail inst_src 'T_PGID=$(ps -o pgid= -p $$) && export T_PGID=${T_PG
 rm -f "$istubs/git"
 says "self_merge: Ctrl-C during the rollback does not cut it short" "the new version failed validation; rolled back to ${before:0:12}, the old version is still installed"
 check "self_merge: the reset finished under Ctrl-C" at_before
+
+# Ctrl-C (or the terminal closing) between the reset and git clean, when
+# the installer waits for no command: sent by the installer's own kill
+# builtin, so it always lands there. The timeout around the test's bash
+# passes it on once more, later, as a second Ctrl-C would come.
+for sig in INT HUP; do
+  self_reset
+  # shellcheck disable=SC2016 # expanded by the child bash
+  STUB_VALIDATE=fail T_SIG=$sig inst_src 'T_PGID=$(ps -o pgid= -p $$) && T_PGID=${T_PGID// /}
+    eval "$(declare -f self_git_held | sed "1s/^self_git_held/real_self_git_held/")"
+    self_git_held() { [[ $1 != clean ]] || kill -s "$T_SIG" -- "-$T_PGID"; real_self_git_held "$@"; }
+    self_target=$T_TARGET; self_merge "$T_BEFORE" omarchy-plugin-validate' self:omabump
+  says "self_merge: $sig between the reset and git clean does not cut the rollback short" "the new version failed validation; rolled back to ${before:0:12}, the old version is still installed"
+  check "self_merge: back at the installed commit after $sig between the git commands" at_before
+done
 
 self_reset
 unset T_BEFORE T_TARGET
