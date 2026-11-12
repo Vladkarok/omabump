@@ -24,12 +24,20 @@ same "a check waits for a local refresh as long as Main.qml lets one run" \
 check "Main.qml waits for the lock before the deadline starts" \
   grep -q 'command = \["bash", "-c", waitScript, "omabump-wait", lockPath, String(lockWaitSec)\].concat(command)$' "$root/Main.qml"
 refuse "Main.qml never passes the checker --wait" grep -q -- '"--wait"' "$root/Main.qml"
-check "Main.qml passes --retry for the retry of a failed check" grep -q 'if (retry) command.push("--retry")$' "$root/Main.qml"
-same "the timer and opening the panel start what Model.dueRun answers" 2 "$(grep -c '= dueCheck()$' "$root/Main.qml")"
-check "Main.qml asks Model.barDueRun with its own start and retry" \
-  grep -q 'return Model.barDueRun(nowMs, checkedAt, fileStartedMs, runAskedMs, refreshIntervalSec, lastCheckFailed,$' "$root/Main.qml"
-check "and notes the retry it starts" grep -q 'if (run === "retry") retryAskedMs = Model.lastRunMs(checkedAt, fileStartedMs)$' "$root/Main.qml"
+# Whether a check, or a failed one's retry, is due is the checker's answer
+# (--if-due), from the interval the widget's settings hold.
+check "Main.qml asks the checker whether a check is due, with its interval" \
+  grep -q 'if (ifDue) command.push("--if-due", "--interval", String(refreshIntervalSec))$' "$root/Main.qml"
+same "the timer and opening the panel ask it (runDue)" 2 "$(grep -c ' runDue()$' "$root/Main.qml")"
+# Until it says a check is due, that run shows as none (tests/check.sh
+# runs the checker's word).
+check "Main.qml counts the run as a check once the checker says due" \
+  grep -q '^        else if (line === "due") root.runIfDue = false$' "$root/Main.qml"
+check "and shows none before" grep -q '^  readonly property bool checking: checkProcess.running && !runIfDue || fileChecking$' "$root/Main.qml"
 check "Main.qml asks every Model.pollSec whether a check is due" grep -q '^    interval: Model.pollSec \* 1000$' "$root/Main.qml"
+same "Model.js reads --if-due's exit by the number bin/omabump-check gives" \
+  "$(sed -n 's/^not_due_exit=\([0-9]*\) .*/\1/p' "$root/bin/omabump-check")" \
+  "$(sed -n 's/^var notDueExit = \([0-9]*\)$/\1/p' "$root/Model.js")"
 
 # A Refresh waits for a running check on the checker's lock, as long as the
 # checker's own --wait would.
@@ -81,16 +89,20 @@ same "waitScript: no lock directory yet, nothing to wait for" "started|ran" \
 same "waitScript: the command's exit status is the run's" "started|exit 3" \
   "$( { bash -c "$wait_script" omabump-wait "$wait_lock" 5 bash -c 'exit 3'; echo "exit $?"; } | paste -sd'|')"
 
-# A run that left on the lock ran nothing and failed nothing: only the other
-# outcomes set checkError and lastCheckEndMs (IPC refresh's throttle), and
-# its line on stderr stays out of the shell's log.
+# A run that left on the lock, or found no check due, ran nothing and
+# failed nothing: only the other outcomes set checkError and lastCheckEndMs
+# (IPC refresh's throttle), and its lines on stderr stay out of the shell's
+# log.
 on_exited=$(sed -n '/^    id: checkProcess$/,/^  }$/p' "$root/Main.qml" | sed -n '/^    onExited: function(exitCode) {$/,/^    }$/p')
-same "onExited sets checkError and lastCheckEndMs only for a run that did not leave on the lock" \
+same "onExited sets checkError and lastCheckEndMs only for a run that did not leave on the lock or find none due" \
   'notRun root.checkError|ran root.checkError|ran root.lastCheckEndMs' \
-  "$(awk '/^      if \(outcome === "notRun"\) \{$/ { b = "notRun" } /^      \} else if \(outcome !== "left"\) \{$/ { b = "ran" }
+  "$(awk '/^      if \(outcome === "notRun"\) \{$/ { b = "notRun" }
+    /^      \} else if \(outcome !== "left" && outcome !== "notDue"\) \{$/ { b = "ran" }
     /^      \}$/ { b = "" } /root\.(checkError|lastCheckEndMs) = / { print (b == "" ? "outside" : b), $1 }' <<<"$on_exited" | paste -sd'|')"
-check "onExited logs no stderr for a run that left on the lock" \
-  grep -q '^      if (err !== "" && outcome !== "left") console.warn("omabump", err)$' <<<"$on_exited"
+check "onExited logs no stderr for a run that left on the lock or found none due" \
+  grep -q '^      if (err !== "" && outcome !== "left" && outcome !== "notDue") console.warn("omabump", err)$' <<<"$on_exited"
+check "a local refresh asked for during the timer's or the panel's run follows it when no check ran" \
+  grep -q '^      if (local && (outcome === "notDue" || outcome === "left")) Qt.callLater(root.localRefresh)$' <<<"$on_exited"
 
 # A local refresh (bin/omabump-check --local) is none of this shell's
 # checks: its exit goes through Model.localOutcome by the checker's own

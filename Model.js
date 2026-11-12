@@ -306,63 +306,12 @@ function parseStatus(text, showMise) {
     pkgsError: String(pkgs.error || ""),
     pkgsNote: String(pkgs.note || ""),
     miseError: showMise ? String(file.miseError || "") : "",
-    runError: String(file.runError || ""),
-    // The check was the widget's retry of one that failed (dueRun).
-    retry: file.retry === true
+    runError: String(file.runError || "")
   }
 }
 
-// When the last check started, finished or not (a run that died half way
-// leaves startedAt past checkedAt); a file from before startedAt has only
-// checkedAt. NaN when the file says neither.
-function lastRunMs(checkedAt, startedMs) {
-  if (startedMs > 0) return startedMs
-  return checkedAt !== "" ? new Date(checkedAt).getTime() : NaN
-}
-
-// Whether a check is due, intervalSec after the last one started. Every
-// monitor's bar runs its own copy of the widget and a shell reload starts
-// them all, so a check that started less than an interval (less 30 s of
-// slack) ago is recent enough. That start, not checkedAt (the end), is
-// what counts: from the end, this widget's own next tick would come up
-// short by however long its last check took and be skipped. A run that
-// died half way counts from its start too: its retry follows it (dueRun),
-// and nothing piles up behind runs that keep dying.
-function checkDue(nowMs, checkedAt, startedMs, intervalSec) {
-  var age = nowMs - lastRunMs(checkedAt, startedMs)
-  // A time ahead of the clock (it was set back) proves nothing.
-  return !(isFinite(age) && age >= 0 && age < (intervalSec - 30) * 1000)
-}
-
-// How often each bar asks whether a check is due (dueRun).
+// How often each bar asks whether a check is due (Main.qml's runDue).
 var pollSec = 60
-
-// A check that failed (the summary says "Check failed": offline after a
-// resume, a feed's 504) is tried once more retrySec after it started,
-// instead of a whole interval later. Once: a retry that fails too waits
-// the interval, so an outage, or a rate limit that lasts the hour, is not
-// asked again every few minutes.
-var retrySec = 300
-
-// Which check the timer, or opening the panel, may start. After a check
-// that failed and was no retry (retried: status.json's retry, or this bar
-// asked for the retry of that very run), "retry" once retrySec have passed
-// since it started, even when the interval's check is due as well: that
-// run then says it is the retry, and the next failure waits. Else "check"
-// when the interval's check is due; else "".
-function dueRun(nowMs, checkedAt, startedMs, intervalSec, failed, retried) {
-  if (failed && !retried) return checkDue(nowMs, checkedAt, startedMs, Math.min(intervalSec, retrySec)) ? "retry" : ""
-  return checkDue(nowMs, checkedAt, startedMs, intervalSec) ? "check" : ""
-}
-
-// dueRun for one bar (Main.qml's dueCheck). Its own last start (askedMs)
-// counts too: a run that wrote nothing moved no time in status.json. So
-// does the retry it started (retryAskedMs, the lastRunMs status.json showed
-// then): until a run writes the file again, that failure has had its retry.
-function barDueRun(nowMs, checkedAt, startedMs, askedMs, intervalSec, failed, fileRetry, retryAskedMs) {
-  var retried = fileRetry || retryAskedMs === lastRunMs(checkedAt, startedMs)
-  return dueRun(nowMs, checkedAt, Math.max(startedMs, askedMs), intervalSec, failed, retried)
-}
 
 // --- this shell's checks ------------------------------------------------------------
 
@@ -371,6 +320,10 @@ function barDueRun(nowMs, checkedAt, startedMs, askedMs, intervalSec, failed, fi
 // found the lock taken (or, with --wait, held past its own wait).
 var lockBusyExit = 75
 
+// What bin/omabump-check --if-due exits with when no check is due
+// (not_due_exit there): it ran nothing and wrote nothing.
+var notDueExit = 76
+
 // What a check's exit means for this shell (Main.qml's onExited). Both
 // "notRun" and "left" ran nothing. "notRun": waitScript gave up on the
 // lock (waited: it had not said "started"), held past its wait by checks
@@ -378,10 +331,12 @@ var lockBusyExit = 75
 // left the check to the one holding it. The timer's run does not wait; a
 // run that waited lost it, after waitScript's wait, to a check that
 // therefore started after the request, and so did a queued run that did
-// not wait (queuedRunWaits): either way that check answers it. "ok" or
-// "failed" otherwise.
+// not wait (queuedRunWaits): either way that check answers it. "notDue":
+// the timer's or the panel's run found no check due. "ok" or "failed"
+// otherwise.
 function checkOutcome(exitCode, waited) {
   if (exitCode === lockBusyExit) return waited ? "notRun" : "left"
+  if (exitCode === notDueExit) return "notDue"
   return exitCode === 0 ? "ok" : "failed"
 }
 
@@ -478,14 +433,6 @@ function localWantsCheck(outcome, checkRunning) {
 function localDue(nowMs, inventoryMs, intervalSec) {
   var age = nowMs - inventoryMs
   return !(inventoryMs > 0 && age >= 0 && age < (intervalSec - 30) * 1000)
-}
-
-// What opening the panel runs (Main.qml's panelOpened): nothing while a
-// check runs, which reads the installed versions too; the timer's check
-// when one is due (dueRun, its retry included); else a local refresh.
-function openedRun(checking, due) {
-  if (checking) return ""
-  return due ? "full" : "local"
 }
 
 // --- rows ------------------------------------------------------------------------

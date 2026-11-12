@@ -924,6 +924,12 @@ printf '%s 0\n' "$(( $(date +%s) - 300 ))" >"$due_attempt"
 same "--if-due: a check that wrote nothing failed: its retry" '0|ran|true' "$(due_run)"
 due_status 3600
 same "--if-due: a start ahead of the clock (it was set back): a check" '0|ran|false' "$(due_run)"
+# Its one line on stdout says a check runs (Main.qml's runIfDue); none
+# when it is not due.
+due_status -3580
+due_out=$(env "${run_env[@]}" timeout -k 5 120 "$root/bin/omabump-check" --no-notify --if-due --interval 3600 2>/dev/null)
+same "--if-due: says due on stdout, then nothing more, and nothing when not due" 'due|' \
+  "$due_out|$(env "${run_env[@]}" timeout -k 5 120 "$root/bin/omabump-check" --no-notify --if-due --interval 3600 2>/dev/null)"
 due_status -3580
 loc_hold 8
 same "--if-due: another check holds the lock: exit 75, no mise call" '75|none|false' "$(due_run)"

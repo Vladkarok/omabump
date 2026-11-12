@@ -31,7 +31,8 @@
 # --if-due runs a check only when one is due, SEC (the widget's interval
 # setting) after the last one started, or the retry of one that failed:
 # the widget's timer and the panel opening ask with it. Exit 76 when none
-# is due, with nothing written: see "whether a check is due" below.
+# is due, with nothing written: see "whether a check is due" below. A run
+# that found one due says "due" on stdout before it checks.
 #
 # --local reads the installed versions again and nothing else, without the
 # network: see local_refresh below.
@@ -207,6 +208,8 @@ if (( if_due )); then
   fi
   if [[ -n $last_s ]] && (( now_s >= last_s && now_s - last_s < window - 30 )); then exit "$not_due_exit"; fi
   printf '%s %s\n' "$now_s" "$retry" >"$attempt_file"
+  # The widget's word that a check runs: until then it shows none.
+  echo due
 fi
 
 # Only a check or a local refresh makes these, and only under the lock: any
