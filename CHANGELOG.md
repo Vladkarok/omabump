@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.14 (2026-11-13)
+## 0.1.14 (2026-11-12)
 
 - When a check runs is decided by the checker, under its lock, instead of by each bar's panel: every minute, and when the panel opens, each bar asks `bin/omabump-check --if-due`, which runs a check only when one is due by the times in status.json and otherwise exits 76 having written nothing. The bars on several monitors now agree on when a check is due. A check killed outright is retried about five minutes after it started, by the next bar to find its lock free, instead of after ten minutes of waiting for its "checking" mark to go stale. A check that died before it wrote anything counts as failed by its attempt (`check-attempt` in the state directory), so it is retried once, not every minute. The panel shows no "Checking…" for a question that finds no check due.
 - Ask agent is gone, with Copy prompt (`c`) and `bin/omabump-prompt`. It started your default coding agent on a row Omabump cannot update, and `omarchy-agent` starts most agents without their own approval prompts, so the agent could run commands on the system without asking, for a case where the row's note already says how the app updates. Such a row now has no action: `Enter` does nothing on it and the cursor's first-action logic skips it; its note and tooltip stay. Until you restart the shell after this Update, the 0.1.13 panel it loaded keeps its Ask agent; for this release `bin/omabump-prompt` stays as a stub that starts nothing and makes that row's note say to restart the shell.
