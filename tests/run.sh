@@ -37,11 +37,14 @@ if [[ ${1:-} != --part ]]; then
     echo "$n" >"$counts"
     OMABUMP_TEST_COUNTS=$counts bash "$root/tests/run.sh" --part "$p"
     rc=$?
-    # A part that stopped half way wrote no count: that is a failure too.
-    if read -r part_n part_failed <"$counts" && [[ -n ${part_failed:-} ]]; then
+    # A part that stopped half way never marked its count as the end: that
+    # is a failure too, after the tests it ran.
+    part_n="" part_failed="" part_end=""
+    read -r part_n part_failed part_end <"$counts"
+    if [[ $part_end == end ]]; then
       n=$part_n failed=$(( failed + part_failed ))
     else
-      n=$(( n + 1 )) failed=$(( failed + 1 ))
+      n=$(( ${part_n:-$n} + 1 )) failed=$(( failed + ${part_failed:-0} + 1 ))
       echo "FAIL $n - $p ran to the end: exit $rc"
     fi
     echo "# $p: $(secs "$part_start") s"
@@ -89,8 +92,10 @@ pgit_net() { echo "pgit_net called in a test" >&2; return 1; }
 counts=${OMABUMP_TEST_COUNTS:-/dev/null}
 n=$(<"$counts") failed=0
 n=${n:-0}
-pass() { n=$((n + 1)); echo "ok $n - $1"; }
-fail() { n=$((n + 1)) failed=$((failed + 1)); echo "FAIL $n - $1${2:+: $2}"; }
+# Each test writes the count, so a part that stops half way still hands on
+# the number and the failures it reached.
+pass() { n=$((n + 1)); echo "ok $n - $1"; echo "$n $failed" >"$counts"; }
+fail() { n=$((n + 1)) failed=$((failed + 1)); echo "FAIL $n - $1${2:+: $2}"; echo "$n $failed" >"$counts"; }
 # check <name> <command...>: the command must succeed.
 check() { local name=$1; shift; if "$@" >/dev/null; then pass "$name"; else fail "$name"; fi; }
 # refuse <name> <command...>: the command must fail.
@@ -104,7 +109,7 @@ hexsum() { printf '%s' "$2" | "${1}sum" | cut -d' ' -f1; }
 b64sum() { printf '%s' "$1" | python3 -c 'import base64, hashlib, sys; print(base64.b64encode(hashlib.sha512(sys.stdin.buffer.read()).digest()).decode())'; }
 
 # The part's last test number and its failures, for the run that started it.
-finish() { echo "$n $failed" >"$counts"; exit $(( failed > 0 )); }
+finish() { echo "$n $failed end" >"$counts"; exit $(( failed > 0 )); }
 # unit is the rest of this file.
 case $part in
   unit) ;;

@@ -514,7 +514,16 @@ test("iconPath: the light twin on a light surface, nothing unsafe", () => {
     ["assets/codex.svg", "assets/codex-light.svg", "", ""])
 })
 
+// Panel.qml calls luminance and clamp itself; no other function here does.
+test("luminance: black is 0, white is 1", () => {
+  same([m.luminance({ r: 0, g: 0, b: 0 }), m.luminance({ r: 1, g: 1, b: 1 }), m.luminance({ r: 0.5, g: 0.5, b: 0.5 }) < 0.5], [0, 1, true])
+})
+
 // --- panel text ----------------------------------------------------------------------------
+
+test("clamp", () => {
+  same([m.clamp(5, 0, 3), m.clamp(-1, 0, 3), m.clamp(2, 0, 3)], [3, 0, 2])
+})
 
 test("keyAction: CapsLock J and K move the cursor, Shift+K skips", () => {
   const shift = m.shiftModifier
