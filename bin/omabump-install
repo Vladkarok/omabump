@@ -232,13 +232,15 @@ mkpkg() { run_unlocked makepkg --config "$cache_dir/makepkg.conf" "$@"; }
 # or download until the run is done with those files: a run that ends
 # meanwhile, by an error or a signal, says they stay. ($? cannot tell: bash
 # runs this trap for a signal with $? still the last command's status.)
-# self_before is set only while install_self moves the plugin clone
-# (self_apply), which holds Ctrl-C and the like until its step is done and
-# rolls back itself; anything else that ends the run there puts the clone
-# back from here. staged_copy names the root-owned copy in $staging_dir
-# from the call to sudo install that writes it (stage_and_install). A run
-# that ends with it there, pacman not running (TERM or the terminal closed
-# end this script at once), removes it with sudo -n. That works only while
+# self_before is set from install_self's merge until the new version passed
+# validation (self_merge): a run stopped meanwhile, by Ctrl-C or the
+# terminal closing, puts the clone back from here. The merge takes under a
+# second, the validation longer, and either cut short would leave a plugin
+# no release names or one never validated. staged_copy names the
+# root-owned copy in $staging_dir from the call to sudo install that writes
+# it (stage_and_install). A run that ends with it there, pacman not
+# running (TERM or the terminal closed end this script at once), removes
+# it with sudo -n. That works only while
 # the terminal is still open (TERM, Ctrl-C): sudo by default keeps your
 # password for the terminal it asked in, and once that terminal is closed
 # this script has none, so sudo -n finds no password and nothing can ask.
@@ -270,7 +272,7 @@ on_exit() {
       && later=" (the next Update of $label removes it too)"
   fi
   (( restore_clone )) && pkgs_restore "$pkg"
-  [[ -z $self_before ]] || self_rollback "the update stopped part way"
+  [[ -z $self_before ]] || self_undo "the update stopped part way"
   if [[ -n $left ]] && (( pacman_running )); then
     echo "omabump: pacman may still be reading the staged copy, so it stays in $left; once pacman has ended, remove it with: sudo rm -f -- $left$later" >&2
   elif [[ -n $left && ! -e $left ]]; then
@@ -921,88 +923,32 @@ install_mise() {
   target_version=$now
 }
 
-# Set by self_apply: what its merge creates, and whether a signal came.
-self_new=() self_stop=0
-
-# self_git for the steps that must not stop part way, the merge and the
-# rollback: git under timeout, in a process group of its own that Ctrl-C
-# and a closing terminal do not reach, and with nothing that passes INT or
-# HUP on to it (self_git runs through run_killable, which stops git on
-# either). Each step is still bounded by the timeout. A signal that comes
-# meanwhile runs self_apply's trap once git is done.
-self_git_held() { run_unlocked timeout -k 10 120 env GIT_ALLOW_PROTOCOL=https GIT_TERMINAL_PROMPT=0 git "${git_safe[@]}" -C "$plugin_dir" "$@" </dev/null; }
-
 # Fast-forwards the plugin clone from the commit $1 to $self_target and
-# validates the result with the command "${@:2}" <plugin dir>. From the
-# merge until the validation passed, any end of the run (a merge that fails
-# part way, a failed validation, Ctrl-C, the terminal closing, kill) puts
-# the clone back at $1 through self_rollback: never a half-updated plugin.
-self_apply() {
-  local before=$1 added=() p rc=0
+# validates the result with "${@:2}" <plugin dir>; if either fails,
+# self_undo puts the clone back at $1.
+self_merge() {
+  self_before=$1
   shift
-  # What the merge creates: each path the release adds that is not on disk
-  # now, cut to its top-most directory that is not on disk either. The
-  # rollback removes these whole, since git status shows neither ignored
-  # files nor empty directories. A path already on disk is an ignored file
-  # of yours (status was clean), which the merge overwrites as git does and
-  # the rollback leaves.
-  mapfile -d '' -t added < <(self_git diff -z --name-only --no-renames --diff-filter=A "$before" "$self_target")
-  wait "$!" || die "git diff failed in $plugin_dir; nothing changed"
-  self_new=()
-  for p in "${added[@]}"; do
-    [[ -e $plugin_dir/$p || -L $plugin_dir/$p ]] && continue
-    while [[ $p == */* && ! -e $plugin_dir/${p%/*} && ! -L $plugin_dir/${p%/*} ]]; do p=${p%/*}; done
-    self_new+=("$p")
-  done
-  self_before=$before self_stop=0
-  # A signal waits for the step it comes in: the merge runs through
-  # self_git_held, out of reach of Ctrl-C, a closing terminal and a TERM
-  # sent to this script, so stopping at once would roll back under a merge
-  # that carries on and lands. The rollback's git runs the same way, so a
-  # second Ctrl-C cannot cut its reset short and leave the release in
-  # place. Each step is bounded, the merge by self_git_held's timeout.
-  trap 'self_stop=1' HUP INT TERM
-  self_git_held merge -q --ff-only "$self_target" || rc=$?
-  (( ! self_stop )) || self_rollback "the update stopped part way"
-  (( rc == 0 )) || self_rollback "git merge --ff-only $self_target failed"
-  run_unlocked "$@" "$plugin_dir" </dev/null || rc=$?
-  (( ! self_stop )) || self_rollback "the update stopped part way"
-  (( rc == 0 )) || self_rollback "the new version failed validation"
+  self_git merge -q --ff-only "$self_target" || self_undo "git merge --ff-only $self_target failed"
+  run_unlocked "$@" "$plugin_dir" </dev/null || self_undo "the new version failed validation"
   self_before=""
-  trap - HUP INT TERM
 }
 
-# Puts the plugin clone back at self_before, HEAD and work tree: a merge
-# that stopped part way can leave files of the release that are not in the
-# index yet, so what the merge created (self_new) goes too, ignored files
-# included. Exits with $1 and whether that worked.
-self_rollback() {
+# Puts the plugin clone back at self_before and exits with $1. git clean
+# -fd removes the new files a merge stopped part way left untracked; not
+# -x, which would delete ignored files of yours too.
+self_undo() {
   local before=$self_before
   self_before=""
-  if self_restore "$before"; then
-    die "$1; rolled back to ${before:0:12}"
+  if self_git reset -q --hard "$before" && self_git clean -qfd; then
+    die "$1; rolled back to ${before:0:12}, the old version is still installed"
   fi
-  die "$1, and the rollback did not finish; see git -C $plugin_dir status, and restore it with: git -C $plugin_dir reset --hard $before"
-}
-
-# True once the clone is at $1 with a clean work tree and nothing the merge
-# created is left. git runs held (self_git_held): Ctrl-C or the terminal
-# closing during the rollback waits for it.
-self_restore() {
-  local p
-  self_git_held reset -q --hard "$1" || return 1
-  if (( ${#self_new[@]} )); then
-    self_git_held --literal-pathspecs clean -qfdx -- "${self_new[@]}" || return 1
-  fi
-  for p in "${self_new[@]}"; do
-    [[ ! -e $plugin_dir/$p && ! -L $plugin_dir/$p ]] || return 1
-  done
-  [[ $(self_git_held rev-parse HEAD) == "$1" && -z $(self_git_held status --porcelain) ]]
+  die "$1, and the rollback failed; see git -C $plugin_dir status, and restore it with: git -C $plugin_dir reset --hard $before"
 }
 
 # Omabump itself: the plugin's own clone, fast-forwarded to the commit the
 # release tag names (self_plan) once you have read its log and answered y,
-# then validated as Omarchy's updater does; self_apply rolls it back if the
+# then validated as Omarchy's updater does; self_merge rolls it back if the
 # merge or the validation fails. `omarchy plugin update` would install the
 # repository's HEAD instead. The function exits, so nothing of this file is
 # read after the merge replaced it.
@@ -1025,7 +971,7 @@ install_self() {
   echo
   if (( prepare )); then
     echo "Would ask: Update Omabump to $latest? [y/N]"
-    echo "Would run: git merge --ff-only $self_target in $plugin_dir, ${validate[*]} $plugin_dir (if either fails or the run is stopped before the validation passed: git reset --hard to the installed commit, and what the merge created removed), omarchy-shell shell rescanPlugins"
+    echo "Would run: git merge --ff-only $self_target in $plugin_dir, ${validate[*]} $plugin_dir (if either fails or the run is stopped before the validation passed: git reset --hard to the installed commit and git clean -fd), omarchy-shell shell rescanPlugins"
     exit 0
   fi
   before=$(self_git rev-parse HEAD) || die "git rev-parse HEAD failed in $plugin_dir"
@@ -1035,7 +981,7 @@ install_self() {
   # so a rollback below can never discard an edit made while it waited.
   [[ $(self_git rev-parse HEAD) == "$before" ]] || die "the plugin clone moved while waiting; nothing changed, run Update again"
   [[ -z $(self_git status --porcelain) ]] || die "the plugin clone has local changes now; nothing changed"
-  self_apply "$before" "${validate[@]}"
+  self_merge "$before" "${validate[@]}"
   run_unlocked omarchy-shell shell rescanPlugins >/dev/null 2>&1 </dev/null || true
   "$plugin_dir/bin/omabump-check" --no-notify --wait || true
   # rescanPlugins finds the plugin again but QML it already loaded can stay
