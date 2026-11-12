@@ -105,6 +105,9 @@ refuse "Model.js compares no versions" grep -qiE 'vercmp\(|rpmvercmp' "$root/Mod
 # A skip leaves the settings only once a run read it and found it over.
 check "Model.js drops a skip by the skipEnded field bin/omabump-check writes" grep -q 'app.skipEnded' "$root/Model.js"
 check "bin/omabump-check writes skipEnded into every checked row" grep -q 'skipped: \$skipped, skipEnded: \$skipEnded' "$root/bin/omabump-check"
+# A row shortens the release-age hold clause by its words (Model.holdNote).
+check "bin/omabump-check words the hold clause as Model.holdNote reads it" \
+  grep -q 'note="omarchy-pkgs holds new releases for $(( (hold + 3599) / 3600 )) h, Update from $(date' "$root/bin/omabump-check"
 same "Model.js caps the quiet settings where load_quiet does" "$quiet_max" \
   "$(sed -n 's/^var quietMax = \([0-9]*\)$/\1/p' "$root/Model.js")"
 

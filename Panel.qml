@@ -27,7 +27,10 @@ Panel {
   readonly property bool lightSurface: Model.luminance(surface) >= 0.5
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property string glyph: ""
-  readonly property string fallbackMark: ""
+  // A row without a logo: a terminal for a CLI tool, a window for an app,
+  // Omabump's own mark for its row.
+  readonly property string cliMark: ""
+  readonly property string appMark: "󰘔"
 
   // The bar's plugin facade (PluginBarApi) as var: Panel types bar as a
   // bare QtObject, which has none of its members.
@@ -539,7 +542,9 @@ Panel {
           boundsBehavior: Flickable.StopAtBounds
           flickableDirection: Flickable.VerticalFlick
           interactive: contentHeight > height
-          ScrollBar.vertical: ScrollBar { id: scrollBar; policy: ScrollBar.AsNeeded }
+          // Shown whenever the rows run past the card, so the list says it
+          // scrolls before it is scrolled.
+          ScrollBar.vertical: ScrollBar { id: scrollBar; policy: panelFlick.interactive ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff }
 
           Column {
             id: body
@@ -858,8 +863,8 @@ Panel {
   }
 
   // One line per app: mark, name, version. A second dim line only for an
-  // exception. The row's action shows only while it holds the cursor, in
-  // place of the version.
+  // exception. The row's buttons show only while it holds the cursor, in
+  // place of the version, which then leads the second line.
   component AppRow: CursorSurface {
     id: appRow
     property var app: null
@@ -871,7 +876,8 @@ Panel {
     readonly property bool muted: Model.isMuted(checker.mutedApps, app)
     readonly property bool quiet: Model.isQuiet(checker.mutedApps, checker.skippedVersions, app)
     readonly property bool skipped: Model.isSkipped(checker.skippedVersions, app)
-    readonly property string extra: Model.extraLine(app, app ? root.actionNotes[app.pkg] : "")
+    readonly property string note: Model.extraLine(app, app ? root.actionNotes[app.pkg] : "")
+    readonly property string extra: hasCursor ? Model.versionText(app) + (note !== "" ? " · " + note : "") : note
     property bool actionHovered: false
     onShowActionChanged: if (!showAction) actionHovered = false
 
@@ -924,7 +930,7 @@ Panel {
           textFormat: Text.PlainText
           anchors.centerIn: parent
           visible: mark.status !== Image.Ready
-          text: root.fallbackMark
+          text: !appRow.app ? "" : appRow.app.source === "mise" ? root.cliMark : appRow.app.source === "self" ? root.glyph : root.appMark
           color: root.foreground
           font.family: root.fontFamily
           font.pixelSize: Style.font.icon
@@ -955,12 +961,15 @@ Panel {
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
+          // Two lines, so the end of a note (a date, a version) shows.
+          wrapMode: Text.Wrap
+          maximumLineCount: 2
           elide: Text.ElideRight
         }
       }
 
       Row {
-        visible: !appRow.showAction
+        visible: !appRow.hasCursor
         Layout.alignment: Qt.AlignVCenter
         spacing: Style.spacing.sm
 
@@ -1004,7 +1013,7 @@ Panel {
         foreground: root.urgent
         fontFamily: root.fontFamily
         fontSize: Style.font.bodySmall
-        tooltipText: appRow.app ? Model.installedText(appRow.app) + " → " + appRow.app.latest + ", in a terminal  Enter" : ""
+        tooltipText: appRow.app ? Model.versionText(appRow.app) + ", in a terminal  Enter" : ""
         onHovered: function(on) { appRow.actionHovered = on }
         onClicked: root.updateApp(appRow.app)
       }
