@@ -39,11 +39,17 @@ function refreshIntervalSec(settings) {
 
 // A version as mise or a feed prints it: skip_version_ok in
 // bin/omabump-common, which load_quiet applies to every skip it reads.
-// skipToggled refuses to store one it would drop: the panel would show
-// that skip while the checker never applies it.
+// skippedVersions drops one it refuses and skipToggled refuses to store
+// one: the panel would show that skip while the checker never applies it.
 function skipVersionOk(v) {
   return typeof v === "string" && v.length <= 64 && /^[0-9A-Za-z][A-Za-z0-9._+~-]*$/.test(v) && v.indexOf("..") === -1
 }
+
+// load_quiet reads only the first quietMax strings of each setting, and
+// drops the ones it refuses after that cut, not before. The bar may hand
+// the skips over in another key order than shell.json has, so only past
+// the cap could the two keep different ones.
+var quietMax = 200
 
 // Rows the user muted (pkg ids): no badge, no count, no notification. Only
 // listed rows are looked up in it, and every row's id is one load_quiet
@@ -52,8 +58,11 @@ function mutedApps(settings) {
   var list = setting(settings, "mutedApps", [])
   var out = []
   if (!isList(list)) return out
-  for (var i = 0; i < list.length; i++)
-    if (typeof list[i] === "string" && out.indexOf(list[i]) === -1) out.push(list[i])
+  for (var i = 0, n = 0; i < list.length && n < quietMax; i++) {
+    if (typeof list[i] !== "string") continue
+    n++
+    if (out.indexOf(list[i]) === -1) out.push(list[i])
+  }
   return out
 }
 
@@ -63,7 +72,12 @@ function skippedVersions(settings) {
   var map = setting(settings, "skippedVersions", {})
   var out = {}
   if (!map || typeof map !== "object" || isList(map)) return out
-  for (var pkg in map) if (typeof map[pkg] === "string") out[pkg] = map[pkg]
+  var n = 0
+  for (var pkg in map) {
+    if (typeof map[pkg] !== "string") continue
+    if (n++ >= quietMax) break
+    if (skipVersionOk(map[pkg])) out[pkg] = map[pkg]
+  }
   return out
 }
 
@@ -111,18 +125,21 @@ function isSkipped(skipped, app) {
 // A row that signals nothing: muted, or at a skipped version.
 function isQuiet(muted, skipped, app) { return isMuted(muted, app) || isSkipped(skipped, app) }
 
-// Whether the settings keep the skip of version for pkg: while it applies,
-// and while the last check cannot tell. That is a row it did not list
-// (hidden by Show mise tools, not installed now) and one that failed, is
-// stale, is being checked, was not checked or has no newest version.
+// Whether the settings keep the skip of version for pkg: until the last
+// check or local refresh read that very skip and found it over (the row's
+// skipEnded, from skip_over in bin/omabump-common), so a skip no run has
+// read yet stays whatever its version. Kept too while the last check
+// cannot tell: a row it did not list (hidden by Show mise tools, not
+// installed now) and one that failed, is stale, is being checked, was not
+// checked or has no newest version.
 function skipKept(apps, pkg, version) {
   var app = appFor(apps, pkg)
   if (!app || app.checking === true || app.stale === true || app.unchecked === true
     || String(app.error || "") !== "" || String(app.latest || "") === "") return true
-  return skipHolds(app, version)
+  return String(app.skipEnded || "") !== String(version)
 }
 
-// The skips a settings write keeps: one goes once its row shows it no
+// The skips a settings write keeps: one goes once a run found it no
 // longer applies (a newer release than the skipped one, or that version or
 // a later one installed); one the last check cannot judge stays.
 function liveSkips(apps, skips) {

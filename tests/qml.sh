@@ -120,6 +120,11 @@ check "a Refresh's run counts as one without the wait too (refreshRunning)" grep
 check "Model.js reads the skipped field bin/omabump-check writes" grep -q 'app.skipped === true' "$root/Model.js"
 check "bin/omabump-check writes skipped into every checked row" grep -q 'muted: \$muted, skipped: \$skipped' "$root/bin/omabump-check"
 refuse "Model.js compares no versions" grep -qiE 'vercmp\(|rpmvercmp' "$root/Model.js"
+# A skip leaves the settings only once a run read it and found it over.
+check "Model.js drops a skip by the skipEnded field bin/omabump-check writes" grep -q 'app.skipEnded' "$root/Model.js"
+check "bin/omabump-check writes skipEnded into every checked row" grep -q 'skipped: \$skipped, skipEnded: \$skipEnded' "$root/bin/omabump-check"
+same "Model.js caps the quiet settings where load_quiet does" "$quiet_max" \
+  "$(sed -n 's/^var quietMax = \([0-9]*\)$/\1/p' "$root/Model.js")"
 
 # status.json's runError: the checker writes the field (tests/check.sh runs
 # it), and Model.js must read the same name.
@@ -186,6 +191,29 @@ else
   same "Model.skipVersionOk accepts the versions skip_version_ok accepts" \
     "$(for v in "${model_versions[@]}"; do if skip_version_ok "$v"; then echo true; else echo false; fi; done)" \
     "$(for v in "${model_versions[@]}"; do jq -cn --arg v "$v" '[$v]'; done | model_call skipVersionOk)"
+
+  # load_quiet and Model.js read the same shell.json entry alike: wrong
+  # types, refused versions, and the cap on each setting. Prints
+  # load_quiet's mutes and skips, then Model.js's, one line each. The ids
+  # are ones app_id_ok keeps: no listed row has another.
+  model_quiet() {
+    local entry
+    jq '{plugins: [{id: "io.github.vladkarok.omabump"} + .]}' >"$shell_json"
+    load_quiet 2>/dev/null
+    echo "$(jq -c 'sort' <<<"$muted_json") $(jq -cS . <<<"$skipped_json")"
+    entry=$(jq -c '[.plugins[0]]' "$shell_json")
+    echo "$(model_call mutedApps <<<"$entry" | jq -c 'sort') $(model_call skippedVersions <<<"$entry" | jq -cS .)"
+  }
+  model_pair=$(jq -n '{mutedApps: ["a", 1, "mise:x", "a", "self:omabump", null],
+    skippedVersions: {a: "1.0", "mise:b": "2.0-beta.1", c: "1..2", d: 3, e: "", "self:omabump": "0.2.0", f: "v1 ", g: "1:2"}}' | model_quiet)
+  same "Model.js keeps the skips load_quiet keeps" "$(sed -n 1p <<<"$model_pair")" "$(sed -n 2p <<<"$model_pair")"
+  model_pair=$(jq -n '{mutedApps: ([range(150) | 7, "m\(.)"] + [range(100) | "ok\(.)"]),
+    skippedVersions: ([range(150) | {key: "bad-\(.)", value: "1..2"}, {key: "num-\(.)", value: 1}]
+      + [range(100) | {key: "ok-\(.)", value: "1.0"}] | from_entries)}' | model_quiet)
+  same "Model.js caps the mutes and skips as load_quiet does" "$(sed -n 1p <<<"$model_pair")" "$(sed -n 2p <<<"$model_pair")"
+  same "and the cap leaves 200 mutes and 50 skips" "200 50" "$(sed -n 2p <<<"$model_pair" | jq -rs '"\(.[0] | length) \(.[1] | length)"')"
+  rm -f "$shell_json"
+  load_quiet
 fi
 # --- the cursor under the pointer, in Qt ---------------------------------------
 

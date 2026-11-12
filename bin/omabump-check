@@ -112,8 +112,9 @@ elif ! flock -n 9; then
 fi
 # Muted rows (the panel's mutedApps setting) and rows at a version the user
 # skipped (skippedVersions) never notify; status.json still says the truth
-# about them, plus "muted" and "skipped": the panel compares no versions
-# and takes skipped as the answer to whether a skip still applies. They and
+# about them, plus "muted", "skipped" and "skipEnded": the panel compares
+# no versions and takes skipped as the answer to whether a skip still
+# applies, and skipEnded (skip_over) as the one to whether it may go. They and
 # the notify and showMise settings are read under the lock, so a run that
 # waited for it checks with
 # the settings as they are when it starts: the widget counts on a check
@@ -271,7 +272,8 @@ local_refresh() {
       continue
     fi
     name=$(clean_text "$name") installed=$(clean_text "$installed")
-    if local_row; then changes+=("$row"); fi
+    # The skip as these settings hold it, judged at the versions now.
+    if local_row; then changes+=("$(jq -c --arg e "$(skip_ended "$row")" '.skipEnded = $e' <<<"$row")"); fi
     if [[ -n $why ]]; then
       echo "omabump-check: $why; a full check is needed" >&2
       need_full=1
@@ -727,8 +729,10 @@ while IFS= read -r app; do
   row_switchable "$source" "$installed_name" "$pkg" "$installable" "$update" "$latest" "$installed" && switchable=true
 
   muted=$(jq --arg pkg "$pkg" 'index($pkg) != null' <<<"$muted_json")
-  skipped=false
-  row_skipped "$source" "$update" "$latest" "$(jq -r --arg pkg "$pkg" '.[$pkg] // ""' <<<"$skipped_json")" && skipped=true
+  skipped=false skip_end=""
+  skip=$(jq -r --arg pkg "$pkg" '.[$pkg] // ""' <<<"$skipped_json")
+  row_skipped "$source" "$update" "$latest" "$skip" && skipped=true
+  skip_over "$source" "$update" "$latest" "$skip" "$installed" && skip_end=$skip
   quiet=false
   [[ $muted == true || $skipped == true ]] && quiet=true
 
@@ -755,14 +759,14 @@ while IFS= read -r app; do
     --arg latest "$(clean_text "$latest")" --arg versionFrom "$from" --argjson update "$update" \
     --argjson installable "$installable" --arg error "$error" --arg note "$(clean_text "$note")" \
     --argjson stale "$stale" --argjson switchable "$switchable" --arg recipe "$(clean_text "$recipe")" \
-    --arg request "$(clean_text "$request")" --argjson muted "$muted" --argjson skipped "$skipped" --argjson unchecked "$unchecked" --argjson held "$held" --argjson omarchyUpdate "$omarchy_update" --argjson blocked "$is_blocked" \
+    --arg request "$(clean_text "$request")" --argjson muted "$muted" --argjson skipped "$skipped" --arg skipEnded "$skip_end" --argjson unchecked "$unchecked" --argjson held "$held" --argjson omarchyUpdate "$omarchy_update" --argjson blocked "$is_blocked" \
     --argjson selfUpdating "$self_updating" \
     --arg icon "$(jq -r '.icon // ""' <<<"$app")" --arg iconLight "$(jq -r '.iconLight // ""' <<<"$app")" \
     '{pkg: $pkg, label: $label, source: $source, installedName: $installedName,
       installed: $installed, latest: $latest, versionFrom: $versionFrom,
       updateAvailable: $update, installable: $installable, error: $error, note: $note,
       stale: $stale, switchable: $switchable, recipe: $recipe,
-      request: $request, muted: $muted, skipped: $skipped, unchecked: $unchecked, held: $held, omarchyUpdate: $omarchyUpdate, blocked: $blocked,
+      request: $request, muted: $muted, skipped: $skipped, skipEnded: $skipEnded, unchecked: $unchecked, held: $held, omarchyUpdate: $omarchyUpdate, blocked: $blocked,
       selfUpdating: $selfUpdating, icon: $icon, iconLight: $iconLight}')")
   write_status 0
 done < <(jq -c '.[]' <<<"$table"; echo "$self_app")

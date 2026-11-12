@@ -754,6 +754,20 @@ check "row_skipped: pacman, a rollback below the skipped version stays skipped (
 refuse "row_skipped: pacman, a newer release lights the row up again" row_skipped omarchy true 0.68.0 0.67.0
 refuse "row_skipped: no update, not skipped" row_skipped omarchy false 0.66.0 0.66.0
 refuse "row_skipped: nothing skipped" row_skipped omarchy true 0.66.0 ''
+check "skip_over: pacman, a newer release than the skipped one" skip_over omarchy true 0.68.0 0.67.0 0.65.0-1
+check "skip_over: pacman, the skipped version installed" skip_over omarchy false 0.67.0 0.67.0 1:0.67.0-2
+refuse "skip_over: pacman, a skip vercmp calls equal to the newest" skip_over omarchy true 0.66 0.66.0 0.65-1
+refuse "skip_over: pacman, a rollback below the skipped version" skip_over omarchy true 0.66.0 0.67.0 0.65.0-1
+refuse "skip_over: pacman, a skip of a version still to come" skip_over omarchy false 1.9 2.0 1.9-1
+check "skip_over: mise, another newest version" skip_over mise true 1.0.99 1.0.98 1.0.0
+check "skip_over: mise, at the skipped version" skip_over mise false 1.0.99 1.0.99 1.0.99
+refuse "skip_over: mise, the skipped version is the update" skip_over mise true 1.0.99 1.0.99 1.0.0
+refuse "skip_over: no newest version, no answer" skip_over omarchy false '' 0.67.0 0.68.0-1
+skipped_json='{"grok-bot": "0.66.0"}'
+same "skip_ended: the skip's version once it is over" '0.66.0|' \
+  "$(skip_ended '{"pkg": "grok-bot", "source": "omarchy", "updateAvailable": true, "latest": "0.67", "installed": "0.65-1"}')|$(
+    skip_ended '{"pkg": "grok-bot", "source": "omarchy", "updateAvailable": true, "latest": "0.66", "installed": "0.65-1"}')"
+skipped_json='{}'
 same "skip: the skipped version is recorded, not notified" record "$(announce_action omarchy true '' true 0.66.0 '')"
 same "skip: a newer release than the skipped one is notified once" send "$(announce_action omarchy true '' false 0.67.0 0.66.0)"
 same "skip: and not again" '' "$(announce_action omarchy true '' false 0.67.0 0.67.0)"

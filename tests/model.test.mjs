@@ -36,7 +36,7 @@ function row(fields) {
   return Object.assign({
     pkg: "app", label: "App", source: "omarchy", installedName: "app", installed: "1.0.0-1",
     latest: "1.0.0", versionFrom: "feed", updateAvailable: false, installable: true, error: "", note: "",
-    stale: false, switchable: false, recipe: "", request: "", muted: false, skipped: false,
+    stale: false, switchable: false, recipe: "", request: "", muted: false, skipped: false, skipEnded: "",
     unchecked: false, held: false, omarchyUpdate: false, blocked: false, selfUpdating: false, icon: "", iconLight: ""
   }, fields)
 }
@@ -94,9 +94,19 @@ test("mutedApps: a setting that is not a list is nothing", () => {
   same([m.mutedApps({ mutedApps: "a,b" }), m.mutedApps({ mutedApps: { a: 1 } }), m.mutedApps({})], [[], [], []])
 })
 
-test("skippedVersions: string versions only", () => {
-  same(m.skippedVersions({ skippedVersions: { a: "1.0", "mise:b": "2.0-beta.1", d: 3, e: null } }),
+test("skippedVersions: string versions only, and only ones load_quiet keeps", () => {
+  same(m.skippedVersions({ skippedVersions: { a: "1.0", "mise:b": "2.0-beta.1", d: 3, e: null, f: "1:2", g: "1".repeat(65) } }),
     { a: "1.0", "mise:b": "2.0-beta.1" })
+})
+
+test("mutedApps and skippedVersions: only the first quietMax strings count", () => {
+  const ids = Array.from({ length: 250 }, (_, i) => "app" + i)
+  same(m.mutedApps({ mutedApps: [7].concat(ids) }).length, 200)
+  same(m.mutedApps({ mutedApps: ids }).indexOf("app200"), -1)
+  const skips = {}
+  ids.forEach((id, i) => { skips[id] = i < 10 ? "1..2" : "1.0" })
+  const kept = m.skippedVersions({ skippedVersions: skips })
+  same([Object.keys(kept).length, kept.app10, kept.app199, "app200" in kept], [190, "1.0", "1.0", false])
 })
 
 test("skippedVersions: a list or a string is nothing", () => {
@@ -150,19 +160,29 @@ test("isSkipped and isQuiet: a skip counts only on a row with an update", () => 
   same([m.isQuiet([], skipped, update), m.isQuiet(["mise:claude"], {}, miseUpdate), m.isQuiet([], {}, update)], [true, true, false])
 })
 
-test("skipKept: kept while it holds, and while the last check cannot tell", () => {
-  const apps = [update, row({ pkg: "failed", error: "boom", latest: "2.0" }), row({ pkg: "stale", stale: true }),
-    row({ pkg: "busy", checking: true }), row({ pkg: "mise:u", source: "mise", unchecked: true, latest: "" }), row({ pkg: "nolatest", latest: "" }),
-    row({ pkg: "rolled", latest: "1.0.9", updateAvailable: true, skipped: true })]
+test("skipKept: kept until a run found that very skip over, and while the last check cannot tell", () => {
+  const ended = { skipEnded: "1.1.0" }
+  const apps = [update, row(Object.assign({ pkg: "failed", error: "boom", latest: "2.0" }, ended)), row(Object.assign({ pkg: "stale", stale: true }, ended)),
+    row(Object.assign({ pkg: "busy", checking: true }, ended)), row(Object.assign({ pkg: "mise:u", source: "mise", unchecked: true, latest: "" }, ended)),
+    row(Object.assign({ pkg: "nolatest", latest: "" }, ended)), row({ pkg: "rolled", latest: "1.0.9", updateAvailable: true, skipped: true })]
   same(["claude-desktop", "failed", "stale", "busy", "mise:u", "nolatest", "unlisted", "rolled"].map(p => m.skipKept(apps, p, "1.1.0")),
     [true, true, true, true, true, true, true, true])
-  // A newer release than the skip, or the skipped version installed.
-  same([m.skipKept(apps, "claude-desktop", "1.0.5"), m.skipKept([row({ installed: "1.1.0-1", latest: "1.1.0" })], "app", "1.1.0")], [false, false])
+  // A newer release than the skip, or the skipped version installed: the
+  // run that read the skip says so.
+  same([m.skipKept([Object.assign({}, update, { skipEnded: "1.0.5" })], "claude-desktop", "1.0.5"),
+    m.skipKept([row({ installed: "1.1.0-1", latest: "1.1.0", skipEnded: "1.1.0" })], "app", "1.1.0")], [false, false])
+  // A skip set by hand that no run has read yet stays, whatever its
+  // version: one vercmp calls equal to the newest, or one still to come.
+  // So does one set after the run that ended another.
+  const feed = row({ pkg: "grok-bot", installed: "0.65-1", latest: "0.66", updateAvailable: true })
+  same([m.skipKept([feed], "grok-bot", "0.66.0"), m.skipKept([row({ pkg: "grok-bot", installed: "0.65.0-1", latest: "0.65.0" })], "grok-bot", "0.66.0"),
+    m.skipKept([Object.assign({}, feed, { skipEnded: "0.65" })], "grok-bot", "0.66.0")], [true, true, true])
 })
 
-test("liveSkips: drops the skips their row shows are over", () => {
-  same(m.liveSkips([update, Object.assign({}, miseUpdate, { latest: "2.0.2" })],
+test("liveSkips: drops the skips a run found over", () => {
+  same(m.liveSkips([Object.assign({}, update, { skipEnded: "1.0.5" }), Object.assign({}, miseUpdate, { latest: "2.0.2", skipEnded: "2.0.1" })],
     { "claude-desktop": "1.0.5", "mise:claude": "2.0.1", other: "3.0" }), { other: "3.0" })
+  same(m.liveSkips([update], { "claude-desktop": "1.2.0" }), { "claude-desktop": "1.2.0" })
 })
 
 test("allMuted: every listed row of the source, and at least one", () => {
@@ -186,7 +206,7 @@ test("skipToggled: nothing without an update, a note for a version Omabump does 
 })
 
 test("quietText: listed rows only, and skips the settings keep", () => {
-  const apps = [update, miseUpdate, row({ pkg: "old", installed: "2.0-1", latest: "2.0", label: "Old" })]
+  const apps = [update, miseUpdate, row({ pkg: "old", installed: "2.0-1", latest: "2.0", label: "Old", skipEnded: "1.5" })]
   same(m.quietText(apps, ["mise:claude", "unlisted"], { "claude-desktop": "1.1.0", old: "1.5", gone: "1.0" }),
     "Muted: Claude Code · Skipped: Claude 1.1.0")
   same(m.quietText(apps, [], {}), "")
@@ -198,8 +218,11 @@ test("quietCleared: Clear keeps what the line leaves out", () => {
 })
 
 test("settingsEntry: the whole entry, id first, changes merged, dead skips dropped", () => {
-  same(m.settingsEntry("w", { id: "w", notify: true, skippedVersions: { "claude-desktop": "1.0.5" } }, { notify: false }, [update],
-    { "claude-desktop": "1.0.5" }), { id: "w", notify: false, skippedVersions: {} })
+  same(m.settingsEntry("w", { id: "w", notify: true, skippedVersions: { "claude-desktop": "1.0.5" } }, { notify: false },
+    [Object.assign({}, update, { skipEnded: "1.0.5" })], { "claude-desktop": "1.0.5" }), { id: "w", notify: false, skippedVersions: {} })
+  // A hand-set skip no check has read survives a write of another setting.
+  same(m.settingsEntry("w", { skippedVersions: { "claude-desktop": "1.2.0" } }, { mutedApps: ["a"] }, [update],
+    { "claude-desktop": "1.2.0" }), { id: "w", skippedVersions: { "claude-desktop": "1.2.0" }, mutedApps: ["a"] })
   same(m.settingsEntry("w", { showMise: true }, { mutedApps: ["a"] }, [update], {}), { id: "w", showMise: true, mutedApps: ["a"] })
   same(m.settingsEntry("w", {}, { skippedVersions: { "claude-desktop": "1.1.0" } }, [update], {}),
     { id: "w", skippedVersions: { "claude-desktop": "1.1.0" } })

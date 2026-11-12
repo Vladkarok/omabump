@@ -588,7 +588,7 @@ loc_status() {
     installed: $self, latest: $self}]
     | .apps |= map({label: "", installedName: "", installed: "", latest: "", versionFrom: "feed", updateAvailable: false,
     installable: true, error: "", note: "", stale: false, switchable: false, recipe: "", request: "",
-    muted: false, skipped: false, unchecked: false, held: false, omarchyUpdate: false, blocked: false, selfUpdating: false,
+    muted: false, skipped: false, skipEnded: "", unchecked: false, held: false, omarchyUpdate: false, blocked: false, selfUpdating: false,
     icon: "", iconLight: ""} + .)' \
     >"$run_dir/fixture.json" <<'JSON'
 {"schemaVersion": 1, "checkedAt": "2026-01-01T00:10:00+00:00", "checking": false, "startedAt": "2026-01-01T00:09:00+00:00",
@@ -648,6 +648,13 @@ same "--local: a held release once installed: no hold, Update back, the hold's c
   'false|false|true|Recipe from omarchy-pkgs 0123456789ab' "$(loc_row loc-held '"\(.updateAvailable)|\(.held)|\(.installable)|\(.note)"')"
 same "--local: an app no longer installed loses its row" '' "$(loc_row loc-gone .pkg)"
 same "--local: a row that did not move stays as it was" "$(loc_was loc-b)" "$(loc_row loc-b 'tojson')"
+# The panel drops a skip from the settings only on skipEnded.
+loc_status
+run_settings ', "skippedVersions": {"loc-a": "1.2", "loc-held": "1.2"}'
+local_run
+same "--local: a skip of the version now installed is over, one of a version still to come is not" \
+  '1.2|' "$(loc_row loc-a .skipEnded)|$(loc_row loc-held .skipEnded)"
+run_settings ''
 same "--local: notified.json and seen.json are never written" "$notified_md5|$seen_md5" \
   "$(md5sum <"$run_state/notified.json")|$(md5sum <"$run_state/seen.json")"
 rm -f "$run_state/notified.json" "$run_state/seen.json"
