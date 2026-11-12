@@ -863,8 +863,9 @@ Panel {
   }
 
   // One line per app: mark, name, version. A second dim line only for an
-  // exception. The row's buttons show only while it holds the cursor, in
-  // place of the version, which then leads the second line.
+  // exception. The row's action shows only while it holds the cursor, in
+  // place of the version. Nothing on the second line follows the cursor, so
+  // a row keeps its height as the cursor moves.
   component AppRow: CursorSurface {
     id: appRow
     property var app: null
@@ -876,8 +877,7 @@ Panel {
     readonly property bool muted: Model.isMuted(checker.mutedApps, app)
     readonly property bool quiet: Model.isQuiet(checker.mutedApps, checker.skippedVersions, app)
     readonly property bool skipped: Model.isSkipped(checker.skippedVersions, app)
-    readonly property string note: Model.extraLine(app, app ? root.actionNotes[app.pkg] : "")
-    readonly property string extra: hasCursor ? Model.versionText(app) + (note !== "" ? " · " + note : "") : note
+    readonly property string extra: Model.extraLine(app, app ? root.actionNotes[app.pkg] : "")
     property bool actionHovered: false
     onShowActionChanged: if (!showAction) actionHovered = false
 
@@ -961,15 +961,12 @@ Panel {
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
-          // Two lines, so the end of a note (a date, a version) shows.
-          wrapMode: Text.Wrap
-          maximumLineCount: 2
           elide: Text.ElideRight
         }
       }
 
       Row {
-        visible: !appRow.hasCursor
+        visible: !appRow.showAction
         Layout.alignment: Qt.AlignVCenter
         spacing: Style.spacing.sm
 
@@ -1013,7 +1010,7 @@ Panel {
         foreground: root.urgent
         fontFamily: root.fontFamily
         fontSize: Style.font.bodySmall
-        tooltipText: appRow.app ? Model.versionText(appRow.app) + ", in a terminal  Enter" : ""
+        tooltipText: appRow.app ? Model.installedText(appRow.app) + " → " + appRow.app.latest + ", in a terminal  Enter" : ""
         onHovered: function(on) { appRow.actionHovered = on }
         onClicked: root.updateApp(appRow.app)
       }

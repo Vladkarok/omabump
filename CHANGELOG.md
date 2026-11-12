@@ -2,8 +2,7 @@
 
 ## 0.1.15 (2026-11-12)
 
-- A row held by omarchy-pkgs' release-age hold says "Held until" and the date, instead of a note cut off before it. The second line of a row wraps to two lines, so the end of a longer note, such as the newest version under your mise settings, shows too. The tooltip still has the whole note.
-- The row under the cursor keeps its version: its buttons take the version's place, and "installed → newest" leads its second line.
+- A row held by omarchy-pkgs' release-age hold says "Held until" and the date, instead of a note cut off before it. The tooltip still has the whole note.
 - The list shows its scroll bar whenever it is longer than the panel, so it says it scrolls before you scroll it.
 - A desktop app without a logo shows a window mark instead of the terminal one the CLI tools have, and Omabump's own row shows Omabump's mark.
 - A check is cheaper: it starts about 330 processes where it started 820, and a local refresh about 170 where it started 550. What it writes to status.json is the same.
