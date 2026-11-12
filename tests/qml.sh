@@ -118,6 +118,16 @@ check "bin/omabump-check writes selfUpdating into every row" grep -q 'selfUpdati
 
 # A row without Update has no action at all: the panel starts no agent.
 refuse "the widget starts no coding agent" grep -qE 'omarchy-agent|omabump-prompt' "$root/Main.qml" "$root/Panel.qml"
+# 0.1.13's panel, still loaded after an Update until the shell restarts,
+# runs bin/omabump-prompt as its prompt script did: it gets an error to show
+# as the row's note, not an agent.
+# shellcheck disable=SC2016 # 0.1.13's prompt script, expanded by its bash
+same "bin/omabump-prompt tells a 0.1.13 panel to restart the shell" \
+  'error
+Omabump was updated; restart the shell to load its new panel: omarchy restart shell' \
+  "$(bash -c 'out=$("$1" "$2" 2>&1) || { printf "error\n%s" "$out"; exit 0; }; printf "ok\n%s" "$out"' \
+    omabump-prompt "$root/bin/omabump-prompt" omabump </dev/null)"
+refuse "bin/omabump-prompt starts no coding agent" grep -qE 'omarchy-agent|exec|launch' "$root/bin/omabump-prompt"
 
 # The widget reads states from status.json's fields, never from the
 # checker's wording: no "Update check skipped" prefix for unchecked, no
