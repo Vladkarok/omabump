@@ -169,7 +169,7 @@ Item {
       mouseMove(win, 5, 5)
       wait(20)
       open()
-      wait(pointerGate.settleMs + 100)
+      tryCompare(pointerGate.settle, "running", false)
       win.rowHovers = 0
     }
 
@@ -267,7 +267,7 @@ Item {
       settleHover(220, y)
       verify(win.rowHovers > 0, "the rows heard the pointer")
       compare(card.rowIndex, 2)
-      wait(pointerGate.settleMs + 100)
+      tryCompare(pointerGate.settle, "running", false)
       for (var i = 0; i < 3; i++) {
         card.apps = sample()
         settleHover(220, y)
@@ -286,7 +286,7 @@ Item {
       wait(30)
       open()
       settleHover(220, fy)
-      wait(pointerGate.settleMs + 100)
+      tryCompare(pointerGate.settle, "running", false)
       // The footer goes: the card shrinks toward the bar, and the list's
       // last rows come under the resting pointer.
       var hovers = win.rowHovers

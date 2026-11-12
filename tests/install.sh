@@ -193,7 +193,7 @@ echo "validate $*" >>"$STUB_LOG/calls"
 case ${STUB_VALIDATE:-ok} in
   fail) exit 1 ;;
   # As Ctrl-C would: the installer running this stops while it waits.
-  term) kill -TERM "$PPID"; sleep 1 ;;
+  term) kill -TERM "$PPID"; sleep 0.2 ;;
 esac
 EOF
 # shellcheck disable=SC2016 # expanded by the stub, not here
