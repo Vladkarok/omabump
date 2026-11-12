@@ -14,11 +14,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: bash -n
-        run: for f in bin/omabump-common bin/omabump-check bin/omabump-install bin/omabump-prompt .github/scripts/pin-watch tests/*.sh; do bash -n "$f"; done
+        run: for f in bin/omabump-common bin/omabump-check bin/omabump-install .github/scripts/pin-watch tests/*.sh; do bash -n "$f"; done
       - name: JSON
         run: for f in manifest.json apps.json pins.json; do jq . "$f" >/dev/null; done
       - name: shellcheck
-        run: docker run --rm -v "$PWD":/mnt koalaman/shellcheck:v0.11.0 bin/omabump-common bin/omabump-check bin/omabump-install bin/omabump-prompt tests/run.sh tests/qml.sh tests/check.sh tests/install.sh tests/pin-watch.sh .github/scripts/pin-watch
+        run: docker run --rm -v "$PWD":/mnt koalaman/shellcheck:v0.11.0 bin/omabump-common bin/omabump-check bin/omabump-install tests/run.sh tests/qml.sh tests/check.sh tests/install.sh tests/pin-watch.sh .github/scripts/pin-watch
 
   test:
     # The suite compares versions with vercmp, which comes with pacman, and

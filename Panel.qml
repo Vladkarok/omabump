@@ -59,8 +59,8 @@ Panel {
   // (Model.cursorIndex): the cursor follows that app when the list changes.
   property string cursorPkg: ""
   property bool cursorMoved: false
-  // What the last Ask agent or Copy prompt did, by pkg, shown as the row's
-  // second line until the panel closes.
+  // Why the last Skip did nothing, by pkg, shown as the row's second line
+  // until the panel closes.
   property var actionNotes: ({})
 
   // The settings view swaps in for the app list. Its rows are the check
@@ -295,30 +295,9 @@ Panel {
     actionNotes = notes
   }
 
-  // Enter: Update when the plugin can install the row, else Ask agent.
+  // Enter: Update when the plugin can install the row, else nothing.
   function primaryAction(app) {
-    var action = Model.primaryAction(app)
-    if (action === "ask") promptFor(app, "ask")
-    else if (action === "update") updateApp(app)
-  }
-
-  // mode "ask" opens the default agent with the prompt (or copies it when no
-  // default agent is set), "copy" only copies it.
-  function promptFor(app, mode) {
-    if (!Model.askable(app) || promptProcess.running) return
-    promptProcess.pkg = app.pkg
-    promptProcess.command = ["bash", "-c", promptProcess.script, "omabump-prompt", checker.promptScript, app.pkg, mode]
-    promptProcess.running = true
-  }
-
-  // omarchy-agent-prompt is the public way in, the one the agents panel
-  // uses; omarchy-agent --prompt is its internal flag.
-  function promptDone(pkg, output) {
-    var outcome = Model.promptOutcome(output)
-    if (outcome.prompt !== undefined) {
-      Util.execArgv(["omarchy-agent-prompt", outcome.prompt])
-      root.close()
-    } else setActionNote(pkg, outcome.note)
+    if (Model.primaryAction(app) === "update") updateApp(app)
   }
 
   function iconUrl(app) {
@@ -369,23 +348,6 @@ Panel {
   Main {
     id: checker
     settings: root.settings
-  }
-
-  Process {
-    id: promptProcess
-    property string pkg: ""
-    // The first output line says what happened (Model.promptOutcome).
-    // wl-copy stays behind to serve the clipboard, so its output goes to
-    // /dev/null or the collector would never see the end of the stream.
-    readonly property string script: 'out=$("$1" "$2" 2>&1) || { printf "error\\n%s" "$out"; exit 0; }\n'
-      + 'if [[ $3 == ask && -n $(omarchy-default-agent 2>/dev/null) ]]; then printf "agent\\n%s" "$out"; exit 0; fi\n'
-      + 'printf %s "$out" | wl-copy >/dev/null 2>&1 || { echo error; echo "wl-copy failed"; exit 0; }\n'
-      + '[[ $3 == ask ]] && echo noagent || echo copied\n'
-    running: false
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.promptDone(promptProcess.pkg, text)
-    }
   }
 
   Timer {
@@ -464,12 +426,11 @@ Panel {
         var action = Model.keyAction(t, modifiers, root.settingsOpen, root.cursorActive)
         // A row's own action keeps the cursor on that row, though muting or
         // skipping it takes its action away (Model.cursorIndex).
-        if (["copy", "switch", "mute", "skip"].indexOf(action) >= 0) root.cursorMoved = true
+        if (["switch", "mute", "skip"].indexOf(action) >= 0) root.cursorMoved = true
         if (action === "down" || action === "up") root.cursorKey(action === "down" ? 1 : -1)
         else if (action === "settings") root.showSettings(!root.settingsOpen, true)
         else if (action === "back") root.showSettings(false, false)
         else if (action === "refresh") root.refreshNow()
-        else if (action === "copy") root.promptFor(root.selectedApp(), "copy")
         else if (action === "switch") root.switchApp(root.selectedApp())
         else if (action === "mute") root.toggleMute(root.selectedApp())
         else if (action === "skip") root.toggleSkip(root.selectedApp())
@@ -905,9 +866,8 @@ Panel {
     property int rowIndex: 0
     readonly property bool hasUpdate: !!app && app.updateAvailable === true
     readonly property bool updatable: Model.updatable(app)
-    readonly property bool askable: Model.askable(app)
     readonly property bool switchable: Model.switchable(app) && !updatable
-    readonly property bool showAction: hasCursor && (updatable || askable || switchable)
+    readonly property bool showAction: hasCursor && (updatable || switchable)
     readonly property bool muted: Model.isMuted(checker.mutedApps, app)
     readonly property bool quiet: Model.isQuiet(checker.mutedApps, checker.skippedVersions, app)
     readonly property bool skipped: Model.isSkipped(checker.skippedVersions, app)
@@ -1060,30 +1020,6 @@ Panel {
         tooltipText: appRow.app ? "Replace " + appRow.app.installedName + " with " + appRow.app.pkg + " in a terminal; pacman asks first  w" : ""
         onHovered: function(on) { appRow.actionHovered = on }
         onClicked: root.switchApp(appRow.app)
-      }
-
-      PanelActionButton {
-        visible: appRow.showAction && appRow.askable
-        Layout.alignment: Qt.AlignVCenter
-        iconText: "󰆏"
-        tooltipText: "Copy prompt  c"
-        foreground: root.foreground
-        fontFamily: root.fontFamily
-        onHovered: function(on) { appRow.actionHovered = on }
-        onClicked: root.promptFor(appRow.app, "copy")
-      }
-
-      Button {
-        visible: appRow.showAction && appRow.askable
-        Layout.alignment: Qt.AlignVCenter
-        text: "Ask agent"
-        bordered: true
-        foreground: root.urgent
-        fontFamily: root.fontFamily
-        fontSize: Style.font.bodySmall
-        tooltipText: "Open your default agent with a prompt to plan the update; it may change the system  Enter"
-        onHovered: function(on) { appRow.actionHovered = on }
-        onClicked: root.promptFor(appRow.app, "ask")
       }
 
       PanelActionButton {

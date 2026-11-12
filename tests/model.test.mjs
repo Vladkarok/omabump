@@ -435,22 +435,22 @@ test("updatable: an update the plugin installs", () => {
   same([m.updatable(update), m.updatable(indicator), m.updatable(row({})), m.updatable(null)], [true, false, false, false])
 })
 
-test("askable: an update with no install path, or a mise tool held below a newer release", () => {
-  same([m.askable(indicator), m.askable(update), m.askable(pinnedNoRoute), m.askable(Object.assign({}, pinnedNoRoute, { error: "x" })),
-    m.askable(row({ source: "self", installable: false, updateAvailable: true })), m.askable(Object.assign({}, indicator, { held: true })),
-    m.askable(Object.assign({}, indicator, { omarchyUpdate: true })), m.askable(Object.assign({}, indicator, { blocked: true })), m.askable(null)],
+test("noRoute: an update with no install path, or a mise tool held below a newer release", () => {
+  same([m.noRoute(indicator), m.noRoute(update), m.noRoute(pinnedNoRoute), m.noRoute(Object.assign({}, pinnedNoRoute, { error: "x" })),
+    m.noRoute(row({ source: "self", installable: false, updateAvailable: true })), m.noRoute(Object.assign({}, indicator, { held: true })),
+    m.noRoute(Object.assign({}, indicator, { omarchyUpdate: true })), m.noRoute(Object.assign({}, indicator, { blocked: true })), m.noRoute(null)],
     [true, false, true, false, false, false, false, false, false])
 })
 
-test("askable: not a mise row a local refresh found at another version, with no check of it yet", () => {
-  same([m.askable(Object.assign({}, pinnedNoRoute, { installed: "1.1", unchecked: true })),
-    m.askable(Object.assign({}, pinnedNoRoute, { installed: "1.1" }))], [false, true])
+test("noRoute: not a mise row a local refresh found at another version, with no check of it yet", () => {
+  same([m.noRoute(Object.assign({}, pinnedNoRoute, { installed: "1.1", unchecked: true })),
+    m.noRoute(Object.assign({}, pinnedNoRoute, { installed: "1.1" }))], [false, true])
 })
 
-test("hasAction and primaryAction: Update, Ask agent or Switch", () => {
+test("hasAction and primaryAction: Update or Switch; a row with no install route has none", () => {
   const sw = row({ installedName: "app-bin", switchable: true })
-  same([update, indicator, sw, row({})].map(a => m.hasAction(a)), [true, true, true, false])
-  same([update, indicator, sw, null].map(a => m.primaryAction(a)), ["update", "ask", "", ""])
+  same([update, indicator, pinnedNoRoute, sw, row({})].map(a => m.hasAction(a)), [true, false, false, true, false])
+  same([update, indicator, sw, null].map(a => m.primaryAction(a)), ["update", "", "", ""])
 })
 
 // An app installed as its self-updating AppImage, as the checker writes it:
@@ -468,10 +468,10 @@ test("switchable: the checker's switchable, never for a self-updating app", () =
     m.switchable(Object.assign({}, appImage, { switchable: true })), m.switchable(null)], [true, false, false, false])
 })
 
-test("a self-updating app: no Update, Switch or Ask agent, whatever else the row says", () => {
+test("a self-updating app: no Update or Switch, whatever else the row says", () => {
   const odd = Object.assign({}, appImage, { installable: true, switchable: true })
   same([appImage, odd, Object.assign({}, appImage, { updateAvailable: false, latest: "0.1.0" })]
-    .map(a => [m.updatable(a), m.askable(a), m.hasAction(a), m.primaryAction(a)]),
+    .map(a => [m.updatable(a), m.noRoute(a), m.hasAction(a), m.primaryAction(a)]),
     [[false, false, false, ""], [false, false, false, ""], [false, false, false, ""]])
   same(m.firstActionIndex([appImage, update], [], {}), 1)
 })
@@ -509,14 +509,17 @@ test("allMuted: a self-updating app takes no route of its source, so it never ke
 })
 
 test("firstActionIndex: the first row with something to do that is not quiet", () => {
-  same([m.firstActionIndex([row({}), update, indicator], [], {}), m.firstActionIndex([row({}), update, indicator], ["claude-desktop"], {}),
+  const sw = row({ pkg: "sw", installedName: "sw-bin", switchable: true })
+  same([m.firstActionIndex([row({}), update, sw], [], {}), m.firstActionIndex([row({}), update, sw], ["claude-desktop"], {}),
     m.firstActionIndex([row({})], [], {}), m.firstActionIndex([], [], {})], [1, 2, 0, 0])
+  // A row with no install route has nothing to do.
+  same([m.firstActionIndex([indicator, update], [], {}), m.firstActionIndex([row({}), indicator], [], {})], [1, 0])
 })
 
 test("cursorIndex: the app moved to by hand while listed, else the first row with something to do", () => {
   const plain = row({ pkg: "a" }), moved = [update, plain, indicator]
-  same([m.cursorIndex(moved, "a", true, [], {}), m.cursorIndex([plain, indicator], "claude-desktop", true, [], {}),
-    m.cursorIndex([plain, update], "a", false, [], {}), m.cursorIndex([], "a", true, [], {})], [1, 1, 1, 0])
+  same([m.cursorIndex(moved, "a", true, [], {}), m.cursorIndex([plain, indicator, update], "gone", true, [], {}),
+    m.cursorIndex([plain, update], "a", false, [], {}), m.cursorIndex([], "a", true, [], {})], [1, 2, 1, 0])
 })
 
 const renamed = row({ pkg: "chatgpt", installedName: "chatgpt-desktop", installed: "1.0.0-1", latest: "1.1.0", updateAvailable: true, note: "Recipe at abc" })
@@ -549,10 +552,10 @@ test("installedText: no pkgrel, unless it is the only difference; mise as is", (
 })
 
 test("extraLine: the row's exception, in order", () => {
-  same([m.extraLine(row({ checking: true, error: "e" }), "n"), m.extraLine(row({ error: "e" }), "Prompt copied"),
+  same([m.extraLine(row({ checking: true, error: "e" }), "n"), m.extraLine(row({ error: "e" }), "Cannot skip 1..2: not a version Omabump stores"),
     m.extraLine(row({ error: "e", note: "x" }), ""), m.extraLine(renamed, undefined), m.extraLine(indicator, ""),
     m.extraLine(row({ stale: true }), ""), m.extraLine(row({}), ""), m.extraLine(null, "")],
-    ["Checking…", "Prompt copied", "Check failed: e", "Installed as chatgpt-desktop", "No install route", "Last known version", "", ""])
+    ["Checking…", "Cannot skip 1..2: not a version Omabump stores", "Check failed: e", "Installed as chatgpt-desktop", "No install route", "Last known version", "", ""])
 })
 
 test("sourceLabel: where the newest version came from", () => {
@@ -599,13 +602,6 @@ test("luminance: black is 0, white is 1", () => {
   same([m.luminance({ r: 0, g: 0, b: 0 }), m.luminance({ r: 1, g: 1, b: 1 }), m.luminance({ r: 0.5, g: 0.5, b: 0.5 }) < 0.5], [0, 1, true])
 })
 
-test("promptOutcome: the wrapper's first line says what happened", () => {
-  same([m.promptOutcome("agent\nplan this\nplease"), m.promptOutcome("copied\n"), m.promptOutcome("noagent"),
-    m.promptOutcome("error\nno check has run yet\n"), m.promptOutcome("error\n"), m.promptOutcome("")], [
-    { prompt: "plan this\nplease" }, { note: "Prompt copied" }, { note: "No default agent set, prompt copied" },
-    { note: "Prompt failed: no check has run yet" }, { note: "Prompt failed: error" }, { note: "Prompt failed: no output" }])
-})
-
 // --- panel text ----------------------------------------------------------------------------
 
 test("clamp", () => {
@@ -624,7 +620,7 @@ test("keyAction: CapsLock J and K move the cursor, Shift+K skips", () => {
 test("keyAction: the panel's letter keys, in the settings view and without a cursor", () => {
   const keys = ["s", "S", "\b", "r", "R", "c", "C", "w", "W", "m", "M", "x", "k"]
   same(keys.map(k => m.keyAction(k, 0, false, true)),
-    ["settings", "settings", "", "refresh", "refresh", "copy", "copy", "switch", "switch", "mute", "mute", "", ""])
+    ["settings", "settings", "", "refresh", "refresh", "", "", "switch", "switch", "mute", "mute", "", ""])
   same(keys.map(k => m.keyAction(k, 0, true, true)), ["settings", "settings", "back", "", "", "", "", "", "", "", "", "", ""])
   same(keys.map(k => m.keyAction(k, 0, false, false)), ["settings", "settings", "", "refresh", "refresh", "", "", "", "", "", "", "", ""])
 })
@@ -634,7 +630,7 @@ test("hintText: the keys the cursor's row takes", () => {
     m.hintText(false, indicator, 3, [], {}), m.hintText(false, sameVersion, 3, [], {}), m.hintText(false, row({}), 3, [], {}),
     m.hintText(false, null, 3, [], {}), m.hintText(false, null, 0, [], {})], [
     "Space change · Esc back", "Enter update · K skip · m mute · Esc close", "Enter update · K unskip · m unmute · Esc close",
-    "Enter ask agent · c copy prompt · K skip · m mute", "w switch package · m mute · Esc close",
+    "↑↓ select · r refresh · s settings · K skip · m mute", "w switch package · m mute · Esc close",
     "↑↓ select · r refresh · s settings · m mute", "↑↓ select · r refresh · s settings", "r refresh · s settings"])
 })
 

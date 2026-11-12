@@ -661,7 +661,7 @@ while IFS= read -r app; do
   esac
   # apps.json can turn Omabump's Update off for a row (updateBlocked says
   # why): a known problem in what Update would install. The versions still
-  # show and still notify; only the route is closed, and Ask agent with it.
+  # show and still notify; only the route is closed.
   # An app that updates itself has no Update to turn off.
   blocked=$(jq -r '.updateBlocked // ""' <<<"$app")
   if [[ -n $blocked && $source != self && $self_updating == false ]]; then

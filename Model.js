@@ -475,8 +475,7 @@ function openedRun(checking, due) {
 
 // An app installed as a copy that updates itself (the checker's
 // selfUpdating: its AppImage or its npm package): its own updater replaces
-// the copy, so the row has no Update, no Switch and no Ask agent, whatever
-// else it says.
+// the copy, so the row has no Update and no Switch, whatever else it says.
 function selfUpdating(app) { return !!app && app.selfUpdating === true }
 
 function updatable(app) { return !!app && app.updateAvailable === true && app.installable === true && !selfUpdating(app) }
@@ -490,11 +489,12 @@ function switchable(app) { return !!app && app.switchable === true && !selfUpdat
 // Or a mise tool whose request holds it below a newer release. Not a
 // release omarchy-pkgs still holds (held): Update comes back by itself.
 // Not an AUR package omarchy update already updates (omarchyUpdate, its
-// note says so), nor an app that updates itself: there is nothing to plan.
-// Not a row no check has read (unchecked): a local refresh found a mise
-// tool at another version than its newest one was known for, and the
-// check it asked for says.
-function askable(app) {
+// note says so), nor an app that updates itself: those have a way to
+// update. Not a row no check has read (unchecked): a local refresh found a
+// mise tool at another version than its newest one was known for, and the
+// check it asked for says. Such a row has no action; its second line says
+// why (extraLine).
+function noRoute(app) {
   if (!app || app.installable === true || app.source === "self" || app.held === true
     || app.omarchyUpdate === true || app.blocked === true || app.unchecked === true || selfUpdating(app)) return false
   if (app.updateAvailable === true) return true
@@ -502,12 +502,11 @@ function askable(app) {
     && String(app.latest || "") !== "" && app.latest !== app.installed
 }
 
-function hasAction(app) { return updatable(app) || askable(app) || switchable(app) }
+function hasAction(app) { return updatable(app) || switchable(app) }
 
 // What Enter does: "update" when the plugin can install the row, else
-// "ask" (Ask agent) when an agent can plan it, else nothing.
+// nothing.
 function primaryAction(app) {
-  if (askable(app)) return "ask"
   return updatable(app) ? "update" : ""
 }
 
@@ -572,8 +571,8 @@ function installedText(app) {
   return app.updateAvailable === true && short === String(app.latest || "") ? full : short
 }
 
-// The second line of a row: exceptions only. actionNote is what the last
-// Ask agent or Copy prompt did for it.
+// The second line of a row: exceptions only. actionNote is why the last
+// Skip did nothing (skipToggled's note).
 function extraLine(app, actionNote) {
   if (!app) return ""
   if (app.checking === true) return "Checking…"
@@ -581,7 +580,7 @@ function extraLine(app, actionNote) {
   if (String(app.error || "") !== "") return "Check failed: " + app.error
   var note = shortNote(app)
   if (note !== "") return note
-  if (askable(app)) return "No install route"
+  if (noRoute(app)) return "No install route"
   if (app.stale === true) return "Last known version"
   return ""
 }
@@ -655,21 +654,6 @@ function luminance(c) {
   return 0.2126 * channel(c.r) + 0.7152 * channel(c.g) + 0.0722 * channel(c.b)
 }
 
-// What bin/omabump-prompt's wrapper printed: the first line says what
-// happened, agent (the prompt follows), copied, noagent (copied instead)
-// or error (the message follows). { prompt } for the agent, { note } for
-// the row otherwise.
-function promptOutcome(output) {
-  output = String(output || "")
-  var newline = output.indexOf("\n")
-  var kind = newline < 0 ? output.trim() : output.substring(0, newline)
-  var rest = newline < 0 ? "" : output.substring(newline + 1)
-  if (kind === "agent") return { prompt: rest }
-  if (kind === "copied") return { note: "Prompt copied" }
-  if (kind === "noagent") return { note: "No default agent set, prompt copied" }
-  return { note: "Prompt failed: " + (rest.trim() || kind || "no output") }
-}
-
 // --- panel text ------------------------------------------------------------------
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)) }
@@ -690,7 +674,6 @@ function keyAction(text, modifiers, settingsOpen, cursorActive) {
   if (settingsOpen) return ""
   if (text === "r" || text === "R") return "refresh"
   if (!cursorActive) return ""
-  if (text === "c" || text === "C") return "copy"
   if (text === "w" || text === "W") return "switch"
   if (text === "m" || text === "M") return "mute"
   return text === "K" ? "skip" : ""
@@ -700,7 +683,6 @@ function hintText(settingsOpen, app, rowCount, muted, skipped) {
   if (settingsOpen) return "Space change · Esc back"
   var mute = app ? (isMuted(muted, app) ? " · m unmute" : " · m mute") : ""
   if (app && app.updateAvailable === true) mute = (isSkipped(skipped, app) ? " · K unskip" : " · K skip") + mute
-  if (askable(app)) return "Enter ask agent · c copy prompt" + mute
   if (updatable(app)) return "Enter update" + mute + " · Esc close"
   if (switchable(app)) return "w switch package" + mute + " · Esc close"
   return (rowCount > 0 ? "↑↓ select · " : "") + "r refresh · s settings" + mute

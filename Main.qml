@@ -30,7 +30,6 @@ Item {
     .replace(/^file:\/\//, "").replace(/[?#].*$/, ""))
   readonly property string checkScript: binDir + "/omabump-check"
   readonly property string installScript: binDir + "/omabump-install"
-  readonly property string promptScript: binDir + "/omabump-prompt"
   // A run that waits for the lock runs this before the checker's deadline
   // (runCheck): $1 the checker's lock, $2 how long to wait for it
   // (lockWaitSec), then the command. It takes the lock and lets go at once,
