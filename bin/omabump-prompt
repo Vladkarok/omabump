@@ -1,7 +1,7 @@
 #!/bin/bash
 # 0.1.14 removed Ask agent and Copy prompt. A panel loaded before Update
 # moved the clone to 0.1.14 still runs this file for them until the shell
-# restarts; it shows this message as the row's note. Starts nothing. Goes
-# in the next release.
+# restarts; it shows this message as the row's note. Starts nothing. Stays
+# while users may still update from 0.1.13.
 echo "Omabump was updated; restart the shell to load its new panel: omarchy restart shell" >&2
 exit 1

@@ -18,7 +18,7 @@ jobs:
       - name: JSON
         run: for f in manifest.json apps.json pins.json; do jq . "$f" >/dev/null; done
       - name: shellcheck
-        run: docker run --rm -v "$PWD":/mnt koalaman/shellcheck:v0.11.0 bin/omabump-common bin/omabump-check bin/omabump-install tests/run.sh tests/model.sh tests/qml.sh tests/check.sh tests/install.sh tests/pin-watch.sh .github/scripts/pin-watch
+        run: docker run --rm -v "$PWD":/mnt koalaman/shellcheck:v0.11.0 bin/omabump-common bin/omabump-check bin/omabump-install bin/omabump-prompt tests/run.sh tests/model.sh tests/qml.sh tests/check.sh tests/install.sh tests/pin-watch.sh .github/scripts/pin-watch
 
   test:
     # The suite compares versions with vercmp, which comes with pacman, and

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.15 (2026-11-12)
+
+- A row held by omarchy-pkgs' release-age hold says "Held until" and the date, instead of a note cut off before it. The second line of a row wraps to two lines, so the end of a longer note, such as the newest version under your mise settings, shows too. The tooltip still has the whole note.
+- The row under the cursor keeps its version: its buttons take the version's place, and "installed → newest" leads its second line.
+- The list shows its scroll bar whenever it is longer than the panel, so it says it scrolls before you scroll it.
+- A desktop app without a logo shows a window mark instead of the terminal one the CLI tools have, and Omabump's own row shows Omabump's mark.
+- A check is cheaper: it starts about 330 processes where it started 820, and a local refresh about 170 where it started 550. What it writes to status.json is the same.
+- `bin/omabump-prompt` stays as the stub 0.1.14 left, for a 0.1.13 panel still loaded when you update; CI now runs shellcheck on it too.
+
 ## 0.1.14 (2026-11-12)
 
 - When a check runs is decided by the checker, under its lock, instead of by each bar's panel: every minute, and when the panel opens, each bar asks `bin/omabump-check --if-due`, which runs a check only when one is due by the times in status.json and otherwise exits 76 having written nothing. The bars on several monitors now agree on when a check is due. A check killed outright is retried about five minutes after it started, by the next bar to find its lock free, instead of after ten minutes of waiting for its "checking" mark to go stale. A check that died before it wrote anything counts as failed by its attempt (`check-attempt` in the state directory), so it is retried once, not every minute. The panel shows no "Checking…" for a question that finds no check due.
