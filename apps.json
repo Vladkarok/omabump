@@ -101,7 +101,8 @@
     "feed": {
       "type": "github-release",
       "repo": "peteonrails/voxtype"
-    }
+    },
+    "updateBlocked": "voxtype 1.2 needs worker binaries the pinned recipe does not install; waiting for omarchy-pkgs#2518"
   },
   {
     "pkg": "zcode",

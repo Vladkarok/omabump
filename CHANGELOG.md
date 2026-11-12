@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.11 (2026-11-12)
+
+- Update is off for voxtype-bin until [omarchy-pkgs#2518](https://github.com/omacom/omarchy-pkgs/pull/2518) is merged and pinned. Since voxtype 1.2.0 every voxtype binary runs GGUF models, its new default Parakeet model among them, through a worker binary shipped beside it (`*.gguf-worker`), and the recipe at the pinned omarchy-pkgs commit lists only the files 1.1 had. Every file that recipe names still exists in the 1.2.1 release, so the build does not fail: once the recipe's 24-hour hold on 1.2.1 is over (2026-11-11 21:23 UTC at the earliest), Update in 0.1.10 and older builds and installs it without its workers. If you ran that Update, `sudo pacman -S voxtype-bin` puts the repo's package back. The row still shows its versions and notifies; Update and Ask agent are gone, and the row says why. `omarchy update` installs 1.2 as soon as the [omarchy] repo has it.
+
 ## 0.1.10 (2026-11-08)
 
 - Update refuses a package whose files pacman would install with an owner other than root. pacman installs each file with the numeric owner its package records, and a vendor archive unpacked without `--no-same-owner` keeps the IDs of the machine that packed it: omarchy-pkgs found 222 files of bitwarden's aarch64 build owned by 1001:1001, which on your machine is the second account, able to replace them. Every file must be root's, in group root, tty, ftp or games, the rule omarchy-pkgs' own builds follow since 98353c6b. Update builds newer releases than theirs, here, so it checks for itself: a vendor download before sudo (and under `--prepare`), and every staged copy, built or downloaded, again. The message names the first entries and their owners, and the package stays in `~/.cache/omabump/packages`. omarchy-pkgs' builds of all its other packages pass.
