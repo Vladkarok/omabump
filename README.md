@@ -87,23 +87,49 @@ Omarchy's settings schema has no array or object type, so `mutedApps` and `skipp
 
 ## Supported apps
 
-| Package | App | Route |
+| App | Package | Route |
 |---|---|---|
-| `claude-desktop` | Claude Desktop | omarchy |
-| `openai-codex-desktop` | Codex (also found as AUR `chatgpt-desktop`) | omarchy |
-| `t3code-bin` | T3 Code | omarchy as the `t3code-bin` package; once Omarchy's migration 1792345511 replaces it with T3 Code's self-updating app, the row shows that app's version and no Update (it updates itself) |
-| `hermes-desktop` | Hermes | omarchy, no Update until the recipe has an upstream watch |
-| `grok-bot` | Grok | omarchy |
-| `lmstudio-bin` | LM Studio | omarchy |
-| `openclaw` | OpenClaw | omarchy as the `openclaw` package, no Update (it is the seed of OpenClaw's own copy); once Omarchy's migration 1792334754 sets that copy up in `~/.openclaw`, the row shows its version and no Update (it updates itself) |
-| `perplexity` | Perplexity | omarchy |
-| `zcode` | ZCode (also found as AUR `z-code-bin`) | vendor |
-| `antigravity` | Antigravity (or `antigravity-appimage`) | indicator, version from the AUR; `omarchy update` updates it |
-| `antigravity-ide` | Antigravity IDE | indicator, version from the AUR; `omarchy update` updates it |
-| `kimi-bin` | Kimi | indicator, version from Moonshot's update feed |
-| `trae-bin` | Trae | indicator, version from the AUR; `omarchy update` updates it |
+| <img src="assets/claude.svg" width="16" height="16" alt=""> Claude Desktop | `claude-desktop` | omarchy |
+| <picture><source media="(prefers-color-scheme: light)" srcset="assets/codex-light.svg"><img src="assets/codex.svg" width="16" height="16" alt=""></picture> Codex (also found as AUR `chatgpt-desktop`) | `openai-codex-desktop` | omarchy |
+| <picture><source media="(prefers-color-scheme: light)" srcset="assets/t3code-light.svg"><img src="assets/t3code.svg" width="16" height="16" alt=""></picture> T3 Code | `t3code-bin` | omarchy as the `t3code-bin` package; once Omarchy's migration 1792345511 replaces it with T3 Code's self-updating app, the row shows that app's version and no Update (it updates itself) |
+| <picture><source media="(prefers-color-scheme: light)" srcset="assets/hermes-light.svg"><img src="assets/hermes.svg" width="16" height="16" alt=""></picture> Hermes | `hermes-desktop` | omarchy, no Update until the recipe has an upstream watch |
+| <picture><source media="(prefers-color-scheme: light)" srcset="assets/grok-light.svg"><img src="assets/grok.svg" width="16" height="16" alt=""></picture> Grok | `grok-bot` | omarchy |
+| <picture><source media="(prefers-color-scheme: light)" srcset="assets/lmstudio-light.svg"><img src="assets/lmstudio.svg" width="16" height="16" alt=""></picture> LM Studio | `lmstudio-bin` | omarchy |
+| <picture><source media="(prefers-color-scheme: light)" srcset="assets/openclaw-light.svg"><img src="assets/openclaw.svg" width="16" height="16" alt=""></picture> OpenClaw | `openclaw` | omarchy as the `openclaw` package, no Update (it is the seed of OpenClaw's own copy); once Omarchy's migration 1792334754 sets that copy up in `~/.openclaw`, the row shows its version and no Update (it updates itself) |
+| <picture><source media="(prefers-color-scheme: light)" srcset="assets/perplexity-light.svg"><img src="assets/perplexity.svg" width="16" height="16" alt=""></picture> Perplexity | `perplexity` | omarchy |
+| <picture><source media="(prefers-color-scheme: light)" srcset="assets/zcode-light.svg"><img src="assets/zcode.svg" width="16" height="16" alt=""></picture> ZCode (also found as AUR `z-code-bin`) | `zcode` | vendor |
+| <picture><source media="(prefers-color-scheme: light)" srcset="assets/antigravity-light.svg"><img src="assets/antigravity.svg" width="16" height="16" alt=""></picture> Antigravity (or `antigravity-appimage`) | `antigravity` | indicator, version from the AUR; `omarchy update` updates it |
+| <picture><source media="(prefers-color-scheme: light)" srcset="assets/antigravity-light.svg"><img src="assets/antigravity.svg" width="16" height="16" alt=""></picture> Antigravity IDE | `antigravity-ide` | indicator, version from the AUR; `omarchy update` updates it |
+| <picture><source media="(prefers-color-scheme: light)" srcset="assets/kimi-light.svg"><img src="assets/kimi.svg" width="16" height="16" alt=""></picture> Kimi | `kimi-bin` | indicator, version from Moonshot's update feed |
+| <picture><source media="(prefers-color-scheme: light)" srcset="assets/trae-light.svg"><img src="assets/trae.svg" width="16" height="16" alt=""></picture> Trae | `trae-bin` | indicator, version from the AUR; `omarchy update` updates it |
 
-mise tools, listed when mise has them installed and active: Claude Code, Codex CLI, Crush, OpenCode, Grok CLI, Copilot CLI, Cursor CLI, Pi, Oh My Pi, Ori, Antigravity CLI, Amp, Qwen Code, Kilo, Kiro CLI, Devin CLI, DeepSeek Harness, MiniMax Code, Command Code, Freebuff, Muse Code, Kimi CLI, Gemini CLI, Jules and herdr ([how they are found](docs/internals.md#how-cli-tools-are-found)). An agent Omarchy adds later needs an entry: until a release has it, add one to your own `apps.json`.
+mise tools, listed when mise has them installed and active ([how they are found](docs/internals.md#how-cli-tools-are-found)):
+<img src="assets/claude.svg" width="14" height="14" alt=""> Claude Code,
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/codex-light.svg"><img src="assets/codex.svg" width="14" height="14" alt=""></picture> Codex CLI,
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/crush-light.svg"><img src="assets/crush.svg" width="14" height="14" alt=""></picture> Crush,
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/opencode-light.svg"><img src="assets/opencode.svg" width="14" height="14" alt=""></picture> OpenCode,
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/grok-light.svg"><img src="assets/grok.svg" width="14" height="14" alt=""></picture> Grok CLI,
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/copilot-light.svg"><img src="assets/copilot.svg" width="14" height="14" alt=""></picture> Copilot CLI,
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/cursor-light.svg"><img src="assets/cursor.svg" width="14" height="14" alt=""></picture> Cursor CLI,
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/pi-light.svg"><img src="assets/pi.svg" width="14" height="14" alt=""></picture> Pi,
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/oh-my-pi-light.svg"><img src="assets/oh-my-pi.svg" width="14" height="14" alt=""></picture> Oh My Pi,
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/ori-light.svg"><img src="assets/ori.svg" width="14" height="14" alt=""></picture> Ori,
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/antigravity-light.svg"><img src="assets/antigravity.svg" width="14" height="14" alt=""></picture> Antigravity CLI,
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/amp-light.svg"><img src="assets/amp.svg" width="14" height="14" alt=""></picture> Amp,
+<img src="assets/qwen.svg" width="14" height="14" alt=""> Qwen Code,
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/kilo-light.svg"><img src="assets/kilo.svg" width="14" height="14" alt=""></picture> Kilo,
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/kiro-light.svg"><img src="assets/kiro.svg" width="14" height="14" alt=""></picture> Kiro CLI,
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/devin-light.svg"><img src="assets/devin.svg" width="14" height="14" alt=""></picture> Devin CLI,
+<img src="assets/deepseek.svg" width="14" height="14" alt=""> DeepSeek Harness,
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/minimax-light.svg"><img src="assets/minimax.svg" width="14" height="14" alt=""></picture> MiniMax Code,
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/commandcode-light.svg"><img src="assets/commandcode.svg" width="14" height="14" alt=""></picture> Command Code,
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/freebuff-light.svg"><img src="assets/freebuff.svg" width="14" height="14" alt=""></picture> Freebuff,
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/muse-light.svg"><img src="assets/muse.svg" width="14" height="14" alt=""></picture> Muse Code,
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/kimi-light.svg"><img src="assets/kimi.svg" width="14" height="14" alt=""></picture> Kimi CLI,
+<img src="assets/gemini.svg" width="14" height="14" alt=""> Gemini CLI,
+<img src="assets/jules.svg" width="14" height="14" alt=""> Jules, and
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/herdr-light.svg"><img src="assets/herdr.svg" width="14" height="14" alt=""></picture> herdr.
+An agent Omarchy adds later needs an entry: until a release has it, add one to your own `apps.json`.
 
 ## Adding an app
 
