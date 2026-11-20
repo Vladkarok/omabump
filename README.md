@@ -160,4 +160,4 @@ Omarchy 4.0.0 r6692 (host and a lab VM), Quickshell 0.3.1, x86_64.
 
 MIT, see [LICENSE](LICENSE).
 
-`assets/claude.svg`, `assets/codex.svg` and `assets/codex-light.svg` are copied from Omarchy's first-party Agents plugin, MIT licensed. The marks belong to their owners. The ZCode and T3 Code marks are plain letter shapes drawn for this plugin.
+Most marks in `assets/` are copied from Omarchy's first-party Agents plugin or extracted from Omarchy's icon font (`omarchy.ttf`), MIT licensed; `gemini.svg` and `trae*.svg` are from LobeHub `lobe-icons` (MIT), `jules.svg` is from `theSVG` (MIT), and `herdr*.svg` is drawn for this plugin. All brand marks belong to their respective owners.

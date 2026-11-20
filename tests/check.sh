@@ -705,6 +705,20 @@ same "--local: the new row in table order" 'loc-a loc-b loc-held loc-gone loc-ne
   "$(run_status '[.apps[].pkg] | join(" ")')"
 same "--local: the new row has every field a check writes" "$(jq -c '.apps[0] | keys' "$run_dir/fixture.json")" "$(loc_row loc-new 'keys | tojson')"
 
+# Icons updated in apps.json (a plugin update, a user override) land on
+# existing rows on the next local refresh without asking for a full check.
+loc_status
+loc_same
+jq 'map(if .pkg == "loc-a" then . + {icon: "assets/a.svg", iconLight: "assets/a-light.svg"} else . end)' \
+  "$run_dir/config/omarchy/omabump/apps.json" >"$run_dir/apps-icons.json"
+mv "$run_dir/apps-icons.json" "$run_dir/config/omarchy/omabump/apps.json"
+local_run; rc=$?
+same "--local: existing rows pick up updated icons from apps.json without a check" "0|assets/a.svg|assets/a-light.svg" \
+  "$rc|$(loc_row loc-a '"\(.icon)|\(.iconLight)"')"
+jq 'map(if .pkg == "loc-a" then del(.icon, .iconLight) else . end)' \
+  "$run_dir/config/omarchy/omabump/apps.json" >"$run_dir/apps-icons.json"
+mv "$run_dir/apps-icons.json" "$run_dir/config/omarchy/omabump/apps.json"
+
 # Omabump updated outside its Update (omarchy plugin update, a git pull):
 # its row follows manifest.json as the others follow pacman.
 loc_status
