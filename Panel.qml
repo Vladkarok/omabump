@@ -30,7 +30,7 @@ Panel {
   // A row without a logo: a terminal for a CLI tool, a window for an app,
   // Omabump's own mark for its row.
   readonly property string cliMark: ""
-  readonly property string appMark: "󰘔"
+  readonly property string appMark: "󰣆"
 
   // The bar's plugin facade (PluginBarApi) as var: Panel types bar as a
   // bare QtObject, which has none of its members.
@@ -916,6 +916,7 @@ Panel {
         Layout.alignment: Qt.AlignVCenter
         implicitWidth: Style.font.icon
         implicitHeight: Style.font.icon
+        opacity: appRow.muted ? 0.55 : 1
 
         Image {
           id: mark
@@ -924,6 +925,7 @@ Panel {
           sourceSize.width: Style.font.icon * 2
           sourceSize.height: Style.font.icon * 2
           fillMode: Image.PreserveAspectFit
+          mipmap: true
         }
 
         Text {

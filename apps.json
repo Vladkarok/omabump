@@ -46,7 +46,9 @@
     "feed": {
       "type": "github-release",
       "repo": "NousResearch/hermes-agent"
-    }
+    },
+    "icon": "assets/hermes.svg",
+    "iconLight": "assets/hermes-light.svg"
   },
   {
     "pkg": "grok-bot",
@@ -59,7 +61,9 @@
         "aarch64": "https://api2.cursor.sh/updates/api/update/linux-arm64/sand/0.0.0/00000000-0000-0000-0000-000000000000/stable"
       },
       "path": ".version"
-    }
+    },
+    "icon": "assets/grok.svg",
+    "iconLight": "assets/grok-light.svg"
   },
   {
     "pkg": "lmstudio-bin",
@@ -69,7 +73,9 @@
       "type": "regex",
       "url": "https://lmstudio.ai/download",
       "pattern": "\"linux\":\\{\"x64\":\\{\"version\":\"([0-9.]+)\""
-    }
+    },
+    "icon": "assets/lmstudio.svg",
+    "iconLight": "assets/lmstudio-light.svg"
   },
   {
     "pkg": "openclaw",
@@ -82,7 +88,9 @@
     },
     "npmPackage": "~/.openclaw/tools/node/lib/node_modules/openclaw",
     "selfUpdate": "run openclaw update",
-    "updateBlocked": "Omarchy moves OpenClaw to ~/.openclaw, where it updates itself: omarchy update, or omarchy-install-openclaw-cli --now"
+    "updateBlocked": "Omarchy moves OpenClaw to ~/.openclaw, where it updates itself: omarchy update, or omarchy-install-openclaw-cli --now",
+    "icon": "assets/openclaw.svg",
+    "iconLight": "assets/openclaw-light.svg"
   },
   {
     "pkg": "perplexity",
@@ -92,7 +100,9 @@
       "type": "apt-index",
       "url": "https://packages.perplexity.ai/deb/dists/stable/main/binary-amd64/Packages",
       "package": "perplexity"
-    }
+    },
+    "icon": "assets/perplexity.svg",
+    "iconLight": "assets/perplexity-light.svg"
   },
   {
     "pkg": "zcode",
@@ -129,7 +139,9 @@
     "feed": {
       "type": "aur-rpc",
       "name": "antigravity"
-    }
+    },
+    "icon": "assets/antigravity.svg",
+    "iconLight": "assets/antigravity-light.svg"
   },
   {
     "pkg": "antigravity-ide",
@@ -138,7 +150,9 @@
     "feed": {
       "type": "aur-rpc",
       "name": "antigravity-ide"
-    }
+    },
+    "icon": "assets/antigravity.svg",
+    "iconLight": "assets/antigravity-light.svg"
   },
   {
     "pkg": "kimi-bin",
@@ -147,7 +161,9 @@
     "feed": {
       "type": "latest-yml",
       "url": "https://kimi-img.moonshot.cn/app/upgrade/latest.yml"
-    }
+    },
+    "icon": "assets/kimi.svg",
+    "iconLight": "assets/kimi-light.svg"
   },
   {
     "pkg": "trae-bin",
@@ -156,7 +172,9 @@
     "feed": {
       "type": "aur-rpc",
       "name": "trae-bin"
-    }
+    },
+    "icon": "assets/trae.svg",
+    "iconLight": "assets/trae-light.svg"
   },
   {
     "pkg": "mise:claude",
@@ -165,7 +183,8 @@
     "tool": [
       "claude",
       "npm:@anthropic-ai/claude-code"
-    ]
+    ],
+    "icon": "assets/claude.svg"
   },
   {
     "pkg": "mise:codex",
@@ -174,7 +193,9 @@
     "tool": [
       "codex",
       "npm:@openai/codex"
-    ]
+    ],
+    "icon": "assets/codex.svg",
+    "iconLight": "assets/codex-light.svg"
   },
   {
     "pkg": "mise:gemini",
@@ -184,7 +205,8 @@
       "gemini",
       "gemini-cli",
       "npm:@google/gemini-cli"
-    ]
+    ],
+    "icon": "assets/gemini.svg"
   },
   {
     "pkg": "mise:jules",
@@ -193,13 +215,16 @@
     "tool": [
       "jules",
       "npm:@google/jules"
-    ]
+    ],
+    "icon": "assets/jules.svg"
   },
   {
     "pkg": "mise:antigravity-cli",
     "label": "Antigravity CLI",
     "source": "mise",
-    "tool": "antigravity-cli"
+    "tool": "antigravity-cli",
+    "icon": "assets/antigravity.svg",
+    "iconLight": "assets/antigravity-light.svg"
   },
   {
     "pkg": "mise:qwen",
@@ -209,7 +234,8 @@
       "qwen",
       "qwen-code",
       "npm:@qwen-code/qwen-code"
-    ]
+    ],
+    "icon": "assets/qwen.svg"
   },
   {
     "pkg": "mise:kimi-cli",
@@ -219,7 +245,9 @@
       "kimi-cli",
       "pipx:kimi-cli",
       "npm:@moonshot-ai/kimi-code"
-    ]
+    ],
+    "icon": "assets/kimi.svg",
+    "iconLight": "assets/kimi-light.svg"
   },
   {
     "pkg": "mise:crush",
@@ -228,7 +256,9 @@
     "tool": [
       "crush",
       "npm:@charmland/crush"
-    ]
+    ],
+    "icon": "assets/crush.svg",
+    "iconLight": "assets/crush-light.svg"
   },
   {
     "pkg": "mise:opencode",
@@ -237,7 +267,9 @@
     "tool": [
       "opencode",
       "npm:opencode-ai"
-    ]
+    ],
+    "icon": "assets/opencode.svg",
+    "iconLight": "assets/opencode-light.svg"
   },
   {
     "pkg": "mise:amp",
@@ -246,13 +278,17 @@
     "tool": [
       "amp",
       "npm:@sourcegraph/amp"
-    ]
+    ],
+    "icon": "assets/amp.svg",
+    "iconLight": "assets/amp-light.svg"
   },
   {
     "pkg": "mise:herdr",
     "label": "herdr",
     "source": "mise",
-    "tool": "herdr"
+    "tool": "herdr",
+    "icon": "assets/herdr.svg",
+    "iconLight": "assets/herdr-light.svg"
   },
   {
     "pkg": "mise:grok-cli",
@@ -261,7 +297,9 @@
     "tool": [
       "grok",
       "npm:@xai-official/grok"
-    ]
+    ],
+    "icon": "assets/grok.svg",
+    "iconLight": "assets/grok-light.svg"
   },
   {
     "pkg": "mise:copilot",
@@ -270,13 +308,17 @@
     "tool": [
       "copilot",
       "npm:@github/copilot"
-    ]
+    ],
+    "icon": "assets/copilot.svg",
+    "iconLight": "assets/copilot-light.svg"
   },
   {
     "pkg": "mise:cursor-agent",
     "label": "Cursor CLI",
     "source": "mise",
-    "tool": "cursor-agent"
+    "tool": "cursor-agent",
+    "icon": "assets/cursor.svg",
+    "iconLight": "assets/cursor-light.svg"
   },
   {
     "pkg": "mise:pi",
@@ -285,66 +327,87 @@
     "tool": [
       "pi",
       "npm:@mariozechner/pi-coding-agent"
-    ]
+    ],
+    "icon": "assets/pi.svg",
+    "iconLight": "assets/pi-light.svg"
   },
   {
     "pkg": "mise:oh-my-pi",
     "label": "Oh My Pi",
     "source": "mise",
-    "tool": "github:can1357/oh-my-pi"
+    "tool": "github:can1357/oh-my-pi",
+    "icon": "assets/oh-my-pi.svg",
+    "iconLight": "assets/oh-my-pi-light.svg"
   },
   {
     "pkg": "mise:ori",
     "label": "Ori",
     "source": "mise",
-    "tool": "github:OpenRouterLabs/ori-releases"
+    "tool": "github:OpenRouterLabs/ori-releases",
+    "icon": "assets/ori.svg",
+    "iconLight": "assets/ori-light.svg"
   },
   {
     "pkg": "mise:kilo",
     "label": "Kilo",
     "source": "mise",
-    "tool": "npm:@kilocode/cli"
+    "tool": "npm:@kilocode/cli",
+    "icon": "assets/kilo.svg",
+    "iconLight": "assets/kilo-light.svg"
   },
   {
     "pkg": "mise:kiro-cli",
     "label": "Kiro CLI",
     "source": "mise",
-    "tool": "http:kiro-cli"
+    "tool": "http:kiro-cli",
+    "icon": "assets/kiro.svg",
+    "iconLight": "assets/kiro-light.svg"
   },
   {
     "pkg": "mise:devin",
     "label": "Devin CLI",
     "source": "mise",
-    "tool": "http:devin"
+    "tool": "http:devin",
+    "icon": "assets/devin.svg",
+    "iconLight": "assets/devin-light.svg"
   },
   {
     "pkg": "mise:dsh",
     "label": "DeepSeek Harness",
     "source": "mise",
-    "tool": "npm:@deepseek-ai/dsh"
+    "tool": "npm:@deepseek-ai/dsh",
+    "icon": "assets/deepseek.svg"
   },
   {
     "pkg": "mise:mcode",
     "label": "MiniMax Code",
     "source": "mise",
-    "tool": "npm:@minimax-ai/code"
+    "tool": "npm:@minimax-ai/code",
+    "icon": "assets/minimax.svg",
+    "iconLight": "assets/minimax-light.svg"
   },
   {
     "pkg": "mise:commandcode",
     "label": "Command Code",
     "source": "mise",
-    "tool": "npm:command-code"
+    "tool": "npm:command-code",
+    "icon": "assets/commandcode.svg",
+    "iconLight": "assets/commandcode-light.svg"
   },
   {
     "pkg": "mise:freebuff",
     "label": "Freebuff",
     "source": "mise",
-    "tool": "npm:freebuff"
+    "tool": "npm:freebuff",
+    "icon": "assets/freebuff.svg",
+    "iconLight": "assets/freebuff-light.svg"
   },
   {
     "pkg": "mise:muse",
     "label": "Muse Code",
     "source": "mise",
-    "tool": "muse"
+    "tool": "muse",
+    "icon": "assets/muse.svg",
+    "iconLight": "assets/muse-light.svg"
   }
 ]

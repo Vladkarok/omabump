@@ -403,10 +403,12 @@ local_refresh() {
 
   out=$(mktemp "$tmp/.status.XXXXXX")
   printf '%s\n' "${changes[@]}" | jq -s --slurpfile prevs "$tmp/previous.json" --argjson order "$order" \
+    --argjson icons "$(jq -c 'map({key: .pkg, value: {icon: (.icon // "" | tostring), iconLight: (.iconLight // "" | tostring)}}) | from_entries' <<<"$app_table")" \
     --arg inventory "$at" "$jq_row_order"'
     $prevs[0] as $prev
     | reduce .[] as $c ($prev.apps;
         if any(.[]; .pkg == $c.pkg) then map(if .pkg == $c.pkg then $c else . end) else . + [$c] end)
+    | map(if $icons[.pkg] then . + $icons[.pkg] else . end)
     | $prev + {inventoryAt: $inventory, apps: (map(select(._drop != true)) | row_order($order))}' >"$out"
   mv -f "$out" "$status_file"
   (( ! need_full )) || exit "$full_check_exit"

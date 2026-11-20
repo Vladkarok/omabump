@@ -1046,6 +1046,12 @@ same "every pkg in apps.json is unique" '[]' "$(jq -c 'map(.pkg) | group_by(.) |
 vendor_ok=1
 while IFS= read -r app; do vendor_checksum_declared "$app" || vendor_ok=0; done < <(jq -c '.[] | select(.source == "vendor-pkg")' "$root/apps.json")
 check "every vendor-pkg in apps.json names a checksum source" test "$vendor_ok" = 1
+same "every app in apps.json names an icon" '[]' "$(jq -c '[.[] | select((.icon // "") == "") | .pkg]' "$root/apps.json")"
+icons_missing=()
+while IFS= read -r icon_path; do
+  [[ $icon_path == assets/*.svg && $icon_path != *..* && -f $root/$icon_path && ! -L $root/$icon_path ]] || icons_missing+=("$icon_path")
+done < <(jq -r '.[] | (.icon // empty), (.iconLight // empty)' "$root/apps.json" | sort -u)
+same "every icon in apps.json is a regular SVG under assets/" "" "${icons_missing[*]}"
 check "pins.json pins a 40-hex commit" jq -e '.omarchyPkgs.commit | test("^[0-9a-f]{40}$")' "$root/pins.json"
 # Omarchy names each agent's mise tool in /etc/mise/conf.d/omarchy-tools.toml;
 # the key mise ls reports is that name, so the table must carry it.
