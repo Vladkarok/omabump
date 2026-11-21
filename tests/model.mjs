@@ -6,7 +6,10 @@
 //
 // calls a Model.js function once per line of stdin, each line a JSON array
 // of its arguments, and prints each answer as one line of JSON: how
-// tests/qml.sh sets the widget's rules against the scripts'.
+// tests/model.sh and tests/qml.sh set the widget's rules against the
+// scripts'. For a value that is no function, it prints that value as JSON
+// and reads no stdin: how tests/qml.sh reads the numbers and words Model.js
+// reads bin/omabump-check by.
 import fs from "node:fs"
 import path from "node:path"
 import vm from "node:vm"
@@ -25,9 +28,13 @@ export function loadModel() {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const model = loadModel()
   const name = process.argv[2]
-  if (typeof model[name] !== "function") {
-    console.error(`model.mjs: Model.js has no function ${name}`)
+  if (!Object.prototype.hasOwnProperty.call(model, name) || model[name] === undefined) {
+    console.error(`model.mjs: Model.js defines no ${name}`)
     process.exit(2)
+  }
+  if (typeof model[name] !== "function") {
+    process.stdout.write(JSON.stringify(model[name]) + "\n")
+    process.exit(0)
   }
   const out = []
   for (const line of fs.readFileSync(0, "utf8").split("\n")) {
