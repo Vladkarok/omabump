@@ -3,7 +3,7 @@
 ## 0.1.16 (2026-11-20)
 
 - Every shipped desktop app and mise CLI now has its own SVG mark in `assets/`, with dark and light variants where needed, instead of falling back to the generic box or terminal glyph. T3 Code and ZCode also get cleaner marks.
-- A row without a custom logo falls back to an app grid glyph (`󰣆`) instead of a hollow rectangle (`󰘔`); icons dim on muted rows and use mipmap smoothing.
+- A row without a custom logo falls back to a filled window glyph (`󰣆`) instead of the outlined one (`󰘔`); icons dim on muted rows and use mipmap smoothing.
 - Local refreshes (`--local`, run when the panel opens) now copy updated `icon` and `iconLight` paths from `apps.json` onto existing rows, so new or overridden icons show up right away without waiting for the next hourly check.
 - Updated `preview.png` and the README's supported apps list with the new icons.
 
