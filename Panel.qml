@@ -928,14 +928,25 @@ Panel {
           mipmap: true
         }
 
+        // Centred by its ink: a Nerd Font icon draws wider than its one-cell
+        // advance, so centring the advance puts it off the column the
+        // marks share.
         Text {
+          id: fallbackMark
           textFormat: Text.PlainText
-          anchors.centerIn: parent
+          x: (parent.width - fallbackInk.tightBoundingRect.width) / 2 - fallbackInk.tightBoundingRect.x
+          y: (parent.height - fallbackInk.tightBoundingRect.height) / 2 - fallbackInk.tightBoundingRect.y - baselineOffset
           visible: mark.status !== Image.Ready
           text: !appRow.app ? "" : appRow.app.source === "mise" ? root.cliMark : appRow.app.source === "self" ? root.glyph : root.appMark
           color: root.foreground
           font.family: root.fontFamily
           font.pixelSize: Style.font.icon
+
+          TextMetrics {
+            id: fallbackInk
+            font: fallbackMark.font
+            text: fallbackMark.text
+          }
         }
       }
 
