@@ -300,6 +300,41 @@ test("checkOutcome: a lock wait that gave up ran nothing, a checker that found t
     ["notRun", "left", "notDue", "ok", "ok", "failed", "failed", "failed"])
 })
 
+test("the checker's protocol: its words, and a deadline that ends a check before anyone stops waiting for it", () => {
+  same([m.startedWord, m.dueWord, m.checkDeadlineSec, m.killAfterSec, m.lockWaitSec, m.localDeadlineSec],
+    ["started", "due", 600, 10, 660, 120])
+  assert.ok(m.checkDeadlineSec + m.killAfterSec <= m.lockWaitSec)
+})
+
+test("waitScript: built from lockBusyExit and startedWord, as it was written out", () => {
+  same(m.waitScript,
+    'flock -E 75 -w "$2" "$1" true 2>/dev/null; (( $? == 75 )) && exit 75; echo started; shift 2; exec "$@"')
+})
+
+test("checkCommand: the checker under the deadline, its flags by the settings", () => {
+  const o = { wait: false, ifDue: false, intervalSec: 3600, notify: true, showMise: true }
+  same(m.checkCommand("/c", "/l", o), ["timeout", "-k", "10", "600", "/c"])
+  same(m.checkCommand("/c", "/l", Object.assign({}, o, { notify: false, showMise: false })),
+    ["timeout", "-k", "10", "600", "/c", "--no-notify", "--no-mise"])
+  same(m.checkCommand("/c", "/l", Object.assign({}, o, { ifDue: true, intervalSec: 900 })),
+    ["timeout", "-k", "10", "600", "/c", "--if-due", "--interval", "900"])
+})
+
+test("checkCommand: a wait for the lock comes before the deadline, and the checker never gets --wait", () => {
+  const o = { wait: true, ifDue: false, intervalSec: 3600, notify: true, showMise: false }
+  same(m.checkCommand("/c", "/l", o),
+    ["bash", "-c", m.waitScript, "omabump-wait", "/l", "660", "timeout", "-k", "10", "600", "/c", "--no-mise"])
+  for (const wait of [false, true]) for (const ifDue of [false, true]) for (const flag of [false, true]) {
+    const command = m.checkCommand("/c", "/l", { wait, ifDue, intervalSec: 60, notify: flag, showMise: flag })
+    assert.ok(!command.includes("--wait"), JSON.stringify(command))
+  }
+})
+
+test("localCommand: the local refresh under its own deadline", () => {
+  same([m.localCommand("/c", true), m.localCommand("/c", false)],
+    [["timeout", "-k", "10", "120", "/c", "--local"], ["timeout", "-k", "10", "120", "/c", "--local", "--no-mise"]])
+})
+
 test("queuedRunWaits: not behind a check that completed, behind any other end", () => {
   same(["ok", "failed", "left", "notRun"].map(outcome => m.queuedRunWaits(outcome)), [false, true, true, true])
 })

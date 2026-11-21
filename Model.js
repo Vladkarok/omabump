@@ -354,6 +354,50 @@ var lockBusyExit = 75
 // (not_due_exit there): it ran nothing and wrote nothing.
 var notDueExit = 76
 
+// The words a check's run says on stdout (Main.qml's checkProcess):
+// waitScript's that its wait is over and the check starts, and
+// bin/omabump-check --if-due's that a check is due and runs.
+var startedWord = "started"
+var dueWord = "due"
+
+// A check's overall deadline: checkDeadlineSec, then TERM, then KILL
+// killAfterSec later (timeout -k). Other waiters count on a check ending by
+// then: the installer's refresh (bin/omabump-check --wait) and another
+// bar's waitScript wait lockWaitSec for it, which is longer. Every wait for
+// the lock comes before the deadline (waitScript), so it bounds the check
+// alone, and a wait that gives up says so (lockBusyExit) instead of ending
+// in the deadline's kill.
+var checkDeadlineSec = 600
+var killAfterSec = 10
+// How long a run waits for a check holding the lock (waitScript): as long
+// as the checker's own --wait (flock -w in bin/omabump-check).
+var lockWaitSec = 660
+
+// What a run that waits for the lock runs before the checker's deadline
+// (checkCommand): $1 the checker's lock, $2 how long to wait for it, then
+// the command. It takes the lock and lets go at once, says startedWord on
+// stdout and runs the command. A lock still held after the wait is left
+// be, and the script exits lockBusyExit having run nothing; a lock file
+// that cannot be opened (no check has made its directory yet) has no check
+// behind it. With today's values:
+//   flock -E 75 -w "$2" "$1" true 2>/dev/null; (( $? == 75 )) && exit 75; echo started; shift 2; exec "$@"
+var waitScript = "flock -E " + lockBusyExit + ' -w "$2" "$1" true 2>/dev/null; (( $? == ' + lockBusyExit
+  + " )) && exit " + lockBusyExit + "; echo " + startedWord + '; shift 2; exec "$@"'
+
+// The command line of this shell's check (Main.qml's runCheck), under the
+// deadline. o.wait: wait for a check that holds lockPath first
+// (waitScript), instead of leaving at once on it; the checker itself never
+// gets --wait. o.ifDue: run only when a check is due, by o.intervalSec
+// (--if-due). o.notify and o.showMise false pass --no-notify and --no-mise.
+function checkCommand(checkScript, lockPath, o) {
+  var command = ["timeout", "-k", String(killAfterSec), String(checkDeadlineSec), checkScript]
+  if (!o.notify) command.push("--no-notify")
+  if (!o.showMise) command.push("--no-mise")
+  if (o.ifDue) command.push("--if-due", "--interval", String(o.intervalSec))
+  if (o.wait) command = ["bash", "-c", waitScript, "omabump-wait", lockPath, String(lockWaitSec)].concat(command)
+  return command
+}
+
 // What a check's exit means for this shell (Main.qml's onExited). Both
 // "notRun" and "left" ran nothing. "notRun": waitScript gave up on the
 // lock (waited: it had not said "started"), held past its wait by checks
@@ -431,6 +475,18 @@ var localIntervalSec = 300
 var localFullExit = 80
 var localNoStatusExit = 81
 var localRetryExit = 82
+
+// A local refresh's deadline, then KILL killAfterSec later: a check that
+// finds one holding the lock waits for it as long as that (flock -w in
+// bin/omabump-check).
+var localDeadlineSec = 120
+
+// The command line of a local refresh (Main.qml's localRefresh).
+function localCommand(checkScript, showMise) {
+  var command = ["timeout", "-k", String(killAfterSec), String(localDeadlineSec), checkScript, "--local"]
+  if (!showMise) command.push("--no-mise")
+  return command
+}
 
 // What a local refresh's exit means (Main.qml's localProcess): "done";
 // "full", a row changed in a way only a check reads, or there is no
