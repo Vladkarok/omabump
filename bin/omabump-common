@@ -222,14 +222,28 @@ skip_over() {
   else newer "$3" "$4" || ! newer "$4" "$(upstream_part "$5")"; fi
 }
 
-# A row's skipEnded: the version of its skip in the settings (load_quiet)
-# when skip_over says it is over, else "". $1 the row.
+# The settings' word on the row of the id $1 (load_quiet): sets muted,
+# skipped (row_skipped), skip_end (the skip's version when skip_over says
+# it is over, else "") and quiet (muted or skipped). $2 source, $3 update
+# (true/false), $4 latest, $5 installed version.
+row_quiet() {
+  local skip
+  muted=false skipped=false skip_end="" quiet=false
+  row_muted "$1" && muted=true
+  skip=$(jq -r --arg pkg "$1" '.[$pkg] // ""' <<<"$skipped_json")
+  row_skipped "$2" "$3" "$4" "$skip" && skipped=true
+  skip_over "$2" "$3" "$4" "$skip" "$5" && skip_end=$skip
+  [[ $muted == false && $skipped == false ]] || quiet=true
+}
+
+# A row's skipEnded (row_quiet's skip_end), the row given as JSON in $1,
+# on stdout; nothing when no skip is over.
 skip_ended() {
-  local pkg source update latest installed skip
+  local pkg source update latest installed muted skipped skip_end quiet
   IFS=$'\x1f' read -r pkg source update latest installed < <(jq -r '
     [.pkg, .source // "", .updateAvailable == true, .latest // "", .installed // ""] | map(tostring) | join("\u001f")' <<<"$1")
-  skip=$(jq -r --arg pkg "$pkg" '.[$pkg] // ""' <<<"$skipped_json")
-  if skip_over "$source" "$update" "$latest" "$skip" "$installed"; then echo "$skip"; fi
+  row_quiet "$pkg" "$source" "$update" "$latest" "$installed"
+  [[ -z $skip_end ]] || echo "$skip_end"
 }
 
 # What to do about a row's newer version once per version: "send" a
@@ -815,11 +829,20 @@ mise_field() {
 # mise_outdated_table could not read.
 mise_entry_ok() { ! jq -e --arg t "$2" '.[$t]? | objects | .odd == true' <<<"$1" >/dev/null 2>&1; }
 
-# What the check shows for a mise row whose active key is $1 at version $2.
-# mise decides: an entry in `mise outdated` is a version `mise up` will
-# install; one only in the --bump table lies outside the request. Sets
-# latest, from, note, installable, mise_update, request, feed_error and
-# unchecked (a key on no allowed backend: no newest version is known).
+# What the check shows for a mise row whose active key is $1 at version $2,
+# and what Update installs. mise decides: an entry in `mise outdated` is a
+# version `mise up` will install; one only in the --bump table lies outside
+# the request. Sets latest, from, note, installable, mise_update, request,
+# feed_error and unchecked (a key on no allowed backend: no newest version
+# is known), and mise_state, the outcome in one word:
+#   unchecked  not on an allowed backend; note says why
+#   error      no answer to go by; feed_error says why
+#   update     latest is the version `mise up` reaches
+#   pinned     latest exists outside the request (request), note says so
+#   current    nothing newer; latest is the installed version
+# Call it in the calling shell, never in a subshell: it answers through
+# these variables.
+mise_state=""
 mise_row() {
   local key=$1 have=$2
   latest="" from=mise note="" installable=true mise_update=false request="" feed_error="" unchecked=false
@@ -854,6 +877,11 @@ mise_row() {
       latest=$have
     fi
   fi
+  if [[ $unchecked == true ]]; then mise_state=unchecked
+  elif [[ -n $feed_error ]]; then mise_state=error
+  elif [[ $mise_update == true ]]; then mise_state=update
+  elif [[ $installable == false ]]; then mise_state=pinned
+  else mise_state=current; fi
 }
 
 # Prints "<tool> <active version>" for the first of the app's tool names that
@@ -868,7 +896,7 @@ mise_active() {
 #
 # An app may be installed as a copy that updates itself instead of a
 # package, and Omabump only reads its version: the row has no Update
-# (bin/omabump-check, self_row) and the installer refuses one.
+# (self_row, under rows below) and the installer refuses one.
 #
 #   appImage    the vendor's self-updating AppImage. Omarchy's migration
 #               1792345511 replaced the t3code-bin package with T3 Code's
@@ -1604,4 +1632,156 @@ recipe_version() {
   [[ -z $epoch || $epoch =~ ^[0-9]+$ ]] || { echo "unreadable epoch in the recipe" >&2; return 1; }
   [[ $epoch == 0 ]] && epoch=""
   echo "$name ${epoch:+$epoch:}$ver-$rel"
+}
+
+# --- rows ----------------------------------------------------------------------
+#
+# A row of status.json is what is known about one app: what is installed,
+# the newest version and where it came from, what Update can do, and why
+# not. The rules that turn those facts into a row live here, and only here:
+# the check derives every row with them (row_derive, then row_json), the
+# local refresh re-derives a row from the last check's when the installed
+# version moved (local_row in bin/omabump-check), and Update asks them
+# what the panel showed and whether its route reaches anything newer
+# (row_newer, row_past, mise_row, update_blocked). What a route reads (a
+# feed, a recipe, mise's tables) stays with its reader; these take its
+# answers.
+
+# The installed version $1 as a row compares it with its newest known
+# version, which came from $2 (the row's versionFrom): a feed knows only
+# upstream's version, so it is the installed one less epoch and pkgrel;
+# from anywhere else, the version as it is. Update compares full versions
+# where it installs (guard_version in bin/omabump-install).
+row_have() { if [[ $2 == feed ]]; then upstream_part "$1"; else printf '%s\n' "$1"; fi; }
+
+# True when the newest version $1, from $3, is newer than the installed $2
+# (row_have): the row's update.
+row_newer() { newer "$1" "$(row_have "$2" "$3")"; }
+
+# True when the installed $1 is past the newest known version $2, from $3
+# (row_have): a release no check has seen.
+row_past() { newer "$(row_have "$1" "$3")" "$2"; }
+
+# Why apps.json turned Omabump's Update off for the app $1 (its
+# updateBlocked), on stdout; fails when it did not. An app installed as a
+# copy that updates itself ($2 true) has no Update to turn off. Omabump's
+# own row (self_app) carries none.
+update_blocked() {
+  local why
+  [[ $2 != true ]] || return 1
+  why=$(jq -r '.updateBlocked // ""' <<<"$1")
+  [[ -n $why ]] && printf '%s\n' "$why"
+}
+
+# Installed under another name (chatgpt-desktop, z-code-bin): Update
+# replaces it when a newer version exists, Switch does it at the same one,
+# so a row is switchable when it has no update and the installed version is
+# not past the newest. $1 source, $2 installed name, $3 pkg, $4 installable,
+# $5 update, $6 latest, $7 installed.
+row_switchable() {
+  [[ ($1 == omarchy || $1 == vendor-pkg) && $2 != "$3" && $4 == true && $5 != true && -n $6 ]] \
+    && ! row_past "$7" "$6" feed
+}
+
+# The row of an app installed as a copy that updates itself (installed_app
+# names it by its path): its own updater replaces it, so the row has no
+# route, and its note says how the app updates (self_update_text). $1 the
+# app, $2 its label, $3 the copy's path as installed_app names it, $4 its
+# version (empty when unknown), $5 the newest known. Sets update, unchecked
+# and note. A release version (version_ok: no "-", and a digit first)
+# compares with the feed's by vercmp as it is, since a copy has no pkgrel.
+# A pre-release (0.1.1-nightly.20261019.1) is compared with nothing: a
+# feed's version never has a "-", so it is a release of another channel,
+# and vercmp would take the suffix for a pkgrel and call
+# 0.1.1-nightly.x the same as 0.1.1. Nor is a version with a letter first
+# (continuous, as some CI builds name theirs): vercmp ranks it below every
+# numeric one, an update forever. Such a row, or one whose version is
+# unknown, never claims an update and never reads as current (unchecked),
+# and its note says why first.
+self_row() {
+  local app=$1 label=$2 name=$3 have=$4 latest=$5 why=""
+  update=false unchecked=false
+  if [[ -z $have ]]; then
+    unchecked=true
+    if [[ $name == "$(jq -r '.npmPackage // "" | strings' <<<"$app")" ]]; then why="Version unknown: its package.json names none"
+    elif command -v 7z >/dev/null; then why="Version unknown: 7z could not read it from the AppImage"
+    else why="Version unknown: install 7zip to read it (sudo pacman -S --needed 7zip)"; fi
+  elif [[ $have != [0-9]* ]]; then
+    unchecked=true why="Not a release number, not compared with the feed's"
+  elif ! version_ok "$have"; then
+    unchecked=true why="Pre-release build, not compared with the feed's stable releases"
+  elif [[ -n $latest ]] && newer "$latest" "$have"; then
+    update=true
+  fi
+  note="${why:+$why; }Updates itself: $(self_update_text "$app" "$label")"
+}
+
+# The recipe holds a release for its min_release_age (.omarchy/package.json,
+# hold seconds), and Update could not reach it before then. Until the
+# window has passed, counted from the first check that saw the version
+# (seen_since), the row has no Update and does not notify: held, not
+# installable, and the hold's clause first in its note. Reads pkg, latest,
+# hold, now, update and installable; may set held, installable and note.
+# Once the release is installed, a local refresh takes the clause off again
+# (hold_clause_re in bin/omabump-check).
+# shellcheck disable=SC2154 # the row's fields, the caller's variables
+row_hold() {
+  local ends
+  [[ $update == true && $installable == true ]] && (( hold > 0 )) || return 0
+  ends=$(( $(seen_since "$pkg" "$latest" "$now") + hold ))
+  (( now < ends )) || return 0
+  held=true installable=false
+  note="omarchy-pkgs holds new releases for $(( (hold + 3599) / 3600 )) h, Update from $(date -d "@$ends" '+%b %-d %H:%M')${note:+; $note}"
+}
+
+# The rest of a check's row once its route and its feed (or mise) have
+# been read. Reads pkg, source, app, label, installed_name, installed,
+# latest, from, mise_update (mise's answer, a mise row's update),
+# self_updating, hold and now, and the route's installable, note, held and
+# unchecked. Sets update (row_newer, or self_row for a copy that updates
+# itself), switchable (row_switchable), and muted, skipped, skip_end and
+# quiet (row_quiet); row_hold and self_row may change installable, held,
+# note and unchecked. Call it in the calling shell: it answers through
+# these variables.
+# shellcheck disable=SC2154 # the row's fields, the caller's variables
+row_derive() {
+  update=$mise_update
+  if [[ $self_updating == true ]]; then
+    self_row "$app" "$label" "$installed_name" "$installed" "$latest"
+  elif [[ -n $latest && $source != mise ]]; then
+    row_newer "$latest" "$installed" "$from" && update=true
+  fi
+  row_hold
+  switchable=false
+  row_switchable "$source" "$installed_name" "$pkg" "$installable" "$update" "$latest" "$installed" && switchable=true
+  row_quiet "$pkg" "$source" "$update" "$latest" "$installed"
+}
+
+# The row as status.json holds it, on stdout as one line of JSON: the one
+# place a whole row is built. Its fields are these variables (true/false
+# for a flag): pkg, label, source, installed_name, installed, latest, from
+# (versionFrom), update (updateAvailable), installable, error, note, stale,
+# switchable, recipe, request, muted, skipped, skip_end (skipEnded),
+# unchecked, held, omarchy_update, blocked (the reason, "" when Update is
+# not off), self_updating, and the icon and iconLight of the entry app.
+# Every string from a feed, mise, pacman or apps.json goes through
+# clean_text on its way in.
+# shellcheck disable=SC2154 # the row's fields, the caller's variables
+row_json() {
+  jq -cn --arg pkg "$pkg" --arg label "$(clean_text "$label")" --arg source "$source" \
+    --arg installedName "$(clean_text "$installed_name")" --arg installed "$(clean_text "$installed")" \
+    --arg latest "$(clean_text "$latest")" --arg versionFrom "$from" --argjson update "$update" \
+    --argjson installable "$installable" --arg error "$(clean_text "$error")" --arg note "$(clean_text "$note")" \
+    --argjson stale "$stale" --argjson switchable "$switchable" --arg recipe "$(clean_text "$recipe")" \
+    --arg request "$(clean_text "$request")" --argjson muted "$muted" --argjson skipped "$skipped" \
+    --arg skipEnded "$skip_end" --argjson unchecked "$unchecked" --argjson held "$held" \
+    --argjson omarchyUpdate "$omarchy_update" --arg blocked "$blocked" --argjson selfUpdating "$self_updating" \
+    --argjson app "$app" \
+    '{pkg: $pkg, label: $label, source: $source, installedName: $installedName,
+      installed: $installed, latest: $latest, versionFrom: $versionFrom,
+      updateAvailable: $update, installable: $installable, error: $error, note: $note,
+      stale: $stale, switchable: $switchable, recipe: $recipe,
+      request: $request, muted: $muted, skipped: $skipped, skipEnded: $skipEnded, unchecked: $unchecked,
+      held: $held, omarchyUpdate: $omarchyUpdate, blocked: ($blocked != ""),
+      selfUpdating: $selfUpdating, icon: ($app.icon // "" | tostring), iconLight: ($app.iconLight // "" | tostring)}'
 }

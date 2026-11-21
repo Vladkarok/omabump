@@ -255,18 +255,8 @@ find "$cache_dir/scratch" -mindepth 1 -maxdepth 1 -name 'tmp.??????????' -mmin +
 jq_row_order='
   def row_order($order): sort_by([.source == "self", .source == "mise", (.pkg as $p | $order | index($p) // 1e9)]);'
 
-# The clause the release-age hold (below) puts first in a row's note.
+# The clause the release-age hold (row_hold) puts first in a row's note.
 hold_clause_re='^omarchy-pkgs holds new releases for [0-9]+ h, Update from [^;]*(; |$)'
-
-# Installed under another name (chatgpt-desktop, z-code-bin): Update
-# replaces it when a newer version exists, Switch does it at the same one,
-# so a row is switchable when it has no update and the installed version is
-# not past the newest. $1 source, $2 installed name, $3 pkg, $4 installable,
-# $5 update, $6 latest, $7 installed.
-row_switchable() {
-  [[ ($1 == omarchy || $1 == vendor-pkg) && $2 != "$3" && $4 == true && $5 != true && -n $6 ]] \
-    && ! newer "$(upstream_part "$7")" "$6"
-}
 
 # Each app of the table $1, then Omabump itself, as one line of its pkg,
 # source, entry and what installed_from reads of it (jq_app_facts, from
@@ -277,39 +267,6 @@ table_lines() {
   # shellcheck disable=SC2016 # jq variables, not the shell's
   jq -r --argjson self "$self_app" --slurpfile ls <(printf '%s\n' "$mise_ls_json") "$jq_app_facts"'
     (.[], $self) | [.pkg, .source, tojson, app_facts($ls[0])] | join("\u001f")' <<<"$1"
-}
-
-# The row of an app installed as a copy that updates itself (installed_app
-# names it by its path): its own updater replaces it, so the row has no
-# route, and its note says how the app updates (self_update_text). $1 the
-# app, $2 its label, $3 the copy's path as installed_app names it, $4 its
-# version (empty when unknown), $5 the newest known. Sets update, unchecked
-# and note. A release version (version_ok: no "-", and a digit first)
-# compares with the feed's by vercmp as it is, since a copy has no pkgrel.
-# A pre-release (0.1.1-nightly.20261019.1) is compared with nothing: a
-# feed's version never has a "-", so it is a release of another channel,
-# and vercmp would take the suffix for a pkgrel and call
-# 0.1.1-nightly.x the same as 0.1.1. Nor is a version with a letter first
-# (continuous, as some CI builds name theirs): vercmp ranks it below every
-# numeric one, an update forever. Such a row, or one whose version is
-# unknown, never claims an update and never reads as current (unchecked),
-# and its note says why first.
-self_row() {
-  local app=$1 label=$2 name=$3 have=$4 latest=$5 why=""
-  update=false unchecked=false
-  if [[ -z $have ]]; then
-    unchecked=true
-    if [[ $name == "$(jq -r '.npmPackage // "" | strings' <<<"$app")" ]]; then why="Version unknown: its package.json names none"
-    elif command -v 7z >/dev/null; then why="Version unknown: 7z could not read it from the AppImage"
-    else why="Version unknown: install 7zip to read it (sudo pacman -S --needed 7zip)"; fi
-  elif [[ $have != [0-9]* ]]; then
-    unchecked=true why="Not a release number, not compared with the feed's"
-  elif ! version_ok "$have"; then
-    unchecked=true why="Pre-release build, not compared with the feed's stable releases"
-  elif [[ -n $latest ]] && newer "$latest" "$have"; then
-    update=true
-  fi
-  note="${why:+$why; }Updates itself: $(self_update_text "$app" "$label")"
 }
 
 # --- a local refresh (--local) -------------------------------------------------
@@ -447,29 +404,23 @@ local_pacman_busy() {
 
 # The row of $app ($pkg, $source) now that it is installed as $name at
 # $installed, from its last row $prev, by the rules a check applies to the
-# versions it knows: sets row, and why when only a check can read the rest.
-# Fails, row unset, when the row stays as it is.
+# versions it knows (the rows section of omabump-common): sets row, and why
+# when only a check can read the rest. Fails, row unset, when the row stays
+# as it is.
 local_row() {
-  local p_source p_name p_installed p_latest p_from p_installable p_held p_unchecked p_self p_unread have update held=false
-  local installable unhold=false switchable=false label muted blocked=false self=false unchecked note
+  local p_source p_name p_installed p_latest p_from p_installable p_held p_unchecked p_self p_unread
+  local update held=false installable unhold=false switchable=false past=false self=false blocked unchecked note
   row="" why=""
   self_updating_name "$name" && self=true
   if [[ $prev == '{}' ]]; then
     # Installed since the last check: what it is, not yet what is newer.
+    local label installed_name=$name latest="" from="" error="" stale=false recipe="" request=""
+    local omarchy_update=false self_updating=$self muted skipped skip_end quiet
+    update=false installable=false unchecked=true note="Not checked yet"
     label=$(jq -r '.label // .pkg' <<<"$app")
-    muted=false
-    row_muted "$pkg" && muted=true
-    [[ $self == true || -z $(jq -r '.updateBlocked // ""' <<<"$app") ]] || blocked=true
-    row=$(jq -cn --arg pkg "$pkg" --arg label "$(clean_text "$label")" --arg source "$source" \
-      --arg installedName "$name" --arg installed "$installed" --argjson muted "$muted" --argjson blocked "$blocked" \
-      --argjson selfUpdating "$self" \
-      --argjson app "$app" \
-      '{pkg: $pkg, label: $label, source: $source, installedName: $installedName,
-        installed: $installed, latest: "", versionFrom: "",
-        updateAvailable: false, installable: false, error: "", note: "Not checked yet",
-        stale: false, switchable: false, recipe: "",
-        request: "", muted: $muted, skipped: false, unchecked: true, held: false, omarchyUpdate: false, blocked: $blocked,
-        selfUpdating: $selfUpdating, icon: ($app.icon // "" | tostring), iconLight: ($app.iconLight // "" | tostring)}')
+    row_quiet "$pkg" "$source" false "" "$installed"
+    blocked=$(update_blocked "$app" "$self") || blocked=""
+    row=$(row_json)
     why="$pkg${installed:+ $installed} is installed since the last check"
     return 0
   fi
@@ -494,11 +445,11 @@ local_row() {
   # recipe, omarchy update's AUR route, and updateBlocked's mark, which an
   # app that updates itself never carries.
   if [[ $self != "$p_self" ]]; then
-    [[ $self == true || -z $(jq -r '.updateBlocked // ""' <<<"$app") ]] || blocked=true
-    row=$(jq -c --arg name "$name" --arg installed "$installed" --argjson self "$self" --argjson blocked "$blocked" '
+    blocked=$(update_blocked "$app" "$self") || blocked=""
+    row=$(jq -c --arg name "$name" --arg installed "$installed" --argjson self "$self" --arg blocked "$blocked" '
       . + {installedName: $name, installed: $installed, selfUpdating: $self, updateAvailable: false, installable: false,
            switchable: false, held: false, skipped: false, unchecked: true, note: "Not checked yet",
-           recipe: "", omarchyUpdate: false, blocked: $blocked}' <<<"$prev")
+           recipe: "", omarchyUpdate: false, blocked: ($blocked != "")}' <<<"$prev")
     why="$pkg is installed as $name now"
     return 0
   fi
@@ -510,12 +461,13 @@ local_row() {
       why="$pkg${installed:+ $installed} is not checked yet"
       return 0
     fi
-    # Its version against the newest known, by the rules a check applies
-    # (self_row): its own updater moved it.
+    # Its version against the newest known, as a check reads it (self_row):
+    # its own updater moved it.
     self_row "$app" "$(jq -r '.label // .pkg' <<<"$app")" "$name" "$installed" "$p_latest"
     # Past the newest version known: a release no check has seen, which only
-    # a check can compare with the feed's newest. Unread until one does.
-    if [[ $unchecked == false && -n $p_latest ]] && newer "$installed" "$p_latest"; then
+    # a check can compare with the feed's newest. Unread until one does. A
+    # copy has no pkgrel: its version as it is, as self_row compares it.
+    if [[ $unchecked == false && -n $p_latest ]] && row_past "$installed" "$p_latest" ""; then
       update=false unchecked=true note="Not checked yet"
       why="$pkg $installed is past the last known $p_latest"
     fi
@@ -544,29 +496,30 @@ local_row() {
     return 0
   fi
 
-  # A feed knows only upstream's version, as in the check.
-  have=$installed
-  [[ $p_from != feed ]] || have=$(upstream_part "$installed")
+  # The installed version against the newest known, as a check compares
+  # them (row_newer).
   update=false
-  if [[ -n $p_latest ]] && newer "$p_latest" "$have"; then update=true; fi
+  if [[ -n $p_latest ]] && row_newer "$p_latest" "$installed" "$p_from"; then update=true; fi
   # A hold is on a release not installed yet; once it is, the row is the
   # check's again: Update (the hold came only after it) and its note.
   installable=$p_installable
   if [[ $update == false && $p_held == true ]]; then installable=true unhold=true; fi
   [[ $update == true ]] && held=$p_held
   row_switchable "$source" "$name" "$pkg" "$installable" "$update" "$p_latest" "$installed" && switchable=true
+  # Past the newest version known: a release no check has seen, as for a
+  # self-updating copy above. What the check knew about the route
+  # (installable, omarchy update's AUR route) stays: a check that finds the
+  # omarchy-pkgs clone busy keeps it from here.
+  if [[ -n $p_latest ]] && row_past "$installed" "$p_latest" "$p_from"; then past=true; fi
   row=$(jq -c --arg name "$name" --arg installed "$installed" --argjson update "$update" --argjson held "$held" \
-    --argjson installable "$installable" --argjson switchable "$switchable" --argjson unhold "$unhold" --arg re "$hold_clause_re" '
+    --argjson installable "$installable" --argjson switchable "$switchable" --argjson unhold "$unhold" \
+    --argjson past "$past" --arg re "$hold_clause_re" '
     . + {installedName: $name, installed: $installed, updateAvailable: $update, held: $held,
          installable: $installable, switchable: $switchable}
     | if $update then . else .skipped = false end
-    | if $unhold then .note = (.note | strings // "" | sub($re; "")) else . end' <<<"$prev")
-  if [[ -n $p_latest ]] && newer "$have" "$p_latest"; then
-    # A release no check has seen, as for a self-updating copy above. What
-    # the check knew about the route (installable, omarchy update's AUR
-    # route) stays: a check that finds the omarchy-pkgs clone busy keeps it
-    # from here.
-    row=$(jq -c '. + {updateAvailable: false, switchable: false, skipped: false, unchecked: true, note: "Not checked yet"}' <<<"$row")
+    | if $unhold then .note = (.note | strings // "" | sub($re; "")) else . end
+    | if $past then . + {updateAvailable: false, switchable: false, skipped: false, unchecked: true, note: "Not checked yet"} else . end' <<<"$prev")
+  if [[ $past == true ]]; then
     why="$pkg $installed is past the last known $p_latest"
   elif [[ $name != "$p_name" ]]; then
     why="$pkg is installed as $name now"
@@ -801,16 +754,12 @@ while IFS=$'\x1f' read -r pkg source app facts; do
   # apps.json can turn Omabump's Update off for a row (updateBlocked says
   # why): a known problem in what Update would install. The versions still
   # show and still notify; only the route is closed.
-  # An app that updates itself has no Update to turn off.
-  blocked=$(jq -r '.updateBlocked // ""' <<<"$app")
-  if [[ -n $blocked && $source != self && $self_updating == false ]]; then
+  if blocked=$(update_blocked "$app" "$self_updating"); then
     installable=false
     note="Update off: $blocked${note:+; $note}"
   else
     blocked=""
   fi
-  is_blocked=false
-  [[ -z $blocked ]] || is_blocked=true
 
   # Everything but mise reads its newest version from the feed in apps.json.
   if [[ $source != mise ]]; then
@@ -837,42 +786,11 @@ while IFS=$'\x1f' read -r pkg source app facts; do
   error=$(clean_text "${error//;/; }")
   error=${error:0:240}
 
-  # A feed knows only upstream's version, so it is compared with the
-  # installed one less epoch and pkgrel. The installer compares full versions.
-  update=$mise_update
-  if [[ $self_updating == true ]]; then
-    self_row "$app" "$label" "$installed_name" "$installed" "$latest"
-  elif [[ -n $latest && $source != mise ]]; then
-    have=$installed
-    [[ $from == feed ]] && have=$(upstream_part "$installed")
-    newer "$latest" "$have" && update=true
-  fi
-
-  # The recipe holds a release for its min_release_age (.omarchy/package.json),
-  # and Update could not reach it before then. Until the window has passed
-  # the row has no Update and does not notify. Once the release is
-  # installed, a local refresh takes the clause off again (hold_clause_re).
-  if [[ $update == true && $installable == true ]] && (( hold > 0 )); then
-    hold_until=$(( $(seen_since "$pkg" "$latest" "$now") + hold ))
-    if (( now < hold_until )); then
-      held=true installable=false
-      note="omarchy-pkgs holds new releases for $(( (hold + 3599) / 3600 )) h, Update from $(date -d "@$hold_until" '+%b %-d %H:%M')${note:+; $note}"
-    fi
-  fi
-
-  # The panel words a switch from installedName, updateAvailable and
-  # switchable, so the note holds only the rest.
-  switchable=false
-  row_switchable "$source" "$installed_name" "$pkg" "$installable" "$update" "$latest" "$installed" && switchable=true
-
-  muted=false
-  row_muted "$pkg" && muted=true
-  skipped=false skip_end=""
-  skip=$(jq -r --arg pkg "$pkg" '.[$pkg] // ""' <<<"$skipped_json")
-  row_skipped "$source" "$update" "$latest" "$skip" && skipped=true
-  skip_over "$source" "$update" "$latest" "$skip" "$installed" && skip_end=$skip
-  quiet=false
-  [[ $muted == true || $skipped == true ]] && quiet=true
+  # The update, a release-age hold, the switch and the settings' mute and
+  # skip, by the rules every row follows (row_derive). The panel words a
+  # switch from installedName, updateAvailable and switchable, so the note
+  # holds only the rest.
+  row_derive
 
   announced=$(jq -r --arg pkg "$pkg" '.[$pkg] // ""' <<<"$notified")
   action=""
@@ -890,22 +808,7 @@ while IFS=$'\x1f' read -r pkg source app facts; do
     fi
   fi
 
-  # Every string from a feed, mise, pacman or apps.json goes through
-  # clean_text on its way into status.json.
-  rows+=("$(jq -cn --arg pkg "$pkg" --arg label "$(clean_text "$label")" --arg source "$source" \
-    --arg installedName "$(clean_text "$installed_name")" --arg installed "$(clean_text "$installed")" \
-    --arg latest "$(clean_text "$latest")" --arg versionFrom "$from" --argjson update "$update" \
-    --argjson installable "$installable" --arg error "$error" --arg note "$(clean_text "$note")" \
-    --argjson stale "$stale" --argjson switchable "$switchable" --arg recipe "$(clean_text "$recipe")" \
-    --arg request "$(clean_text "$request")" --argjson muted "$muted" --argjson skipped "$skipped" --arg skipEnded "$skip_end" --argjson unchecked "$unchecked" --argjson held "$held" --argjson omarchyUpdate "$omarchy_update" --argjson blocked "$is_blocked" \
-    --argjson selfUpdating "$self_updating" \
-    --argjson app "$app" \
-    '{pkg: $pkg, label: $label, source: $source, installedName: $installedName,
-      installed: $installed, latest: $latest, versionFrom: $versionFrom,
-      updateAvailable: $update, installable: $installable, error: $error, note: $note,
-      stale: $stale, switchable: $switchable, recipe: $recipe,
-      request: $request, muted: $muted, skipped: $skipped, skipEnded: $skipEnded, unchecked: $unchecked, held: $held, omarchyUpdate: $omarchyUpdate, blocked: $blocked,
-      selfUpdating: $selfUpdating, icon: ($app.icon // "" | tostring), iconLight: ($app.iconLight // "" | tostring)}')")
+  rows+=("$(row_json)")
   write_status 0
 done < <(table_lines "$table")
 

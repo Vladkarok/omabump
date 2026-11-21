@@ -98,16 +98,37 @@ same "Model.js reads --local's exits by the numbers bin/omabump-check gives" \
 # The checker decides whether a skip applies and writes it as each row's
 # skipped; Model.js reads that field and compares no versions itself.
 # tests/check.sh reads the fields the checker writes and tests/model.test.mjs
-# feeds Model.js rows with them, so only these say both use one name.
+# feeds Model.js rows with them, so only these say both use one name. The
+# rows are the checker's own: row_derive and row_json, which build every
+# row a check writes, run here on an omarchy row.
+# qml_row <installed> <latest> <hold seconds> <jq filter>: that row, with
+# a skip of 1.2 in the settings, through the filter; the release first
+# seen now.
+# shellcheck disable=SC2034 # the row's fields, read by row_derive and row_json
+qml_row() {
+  local pkg=qml-app source=omarchy app='{"pkg": "qml-app", "label": "Qml App"}' label="Qml App"
+  local installed_name=qml-app installed=$1 latest=$2 from=feed mise_update=false self_updating=false
+  local hold=$3 now=1767225600 installable=true note="" held=false unchecked=false
+  local error="" stale=false recipe="" request="" omarchy_update=false blocked=""
+  local muted_json='[]' skipped_json='{"qml-app": "1.2"}' seen_file=$scratch/qml-seen.json
+  local update switchable muted skipped skip_end quiet
+  mkdir -p "$state_dir"
+  rm -f "$seen_file"
+  row_derive
+  row_json | jq -r "$4"
+}
 check "Model.js reads the skipped field bin/omabump-check writes" grep -q 'app.skipped === true' "$root/Model.js"
-check "bin/omabump-check writes skipped into every checked row" grep -q 'muted: \$muted, skipped: \$skipped' "$root/bin/omabump-check"
+same "the rows a check writes (row_json) carry skipped" true "$(qml_row 1.0-1 1.2 0 .skipped)"
 refuse "Model.js compares no versions" grep -qiE 'vercmp\(|rpmvercmp' "$root/Model.js"
 # A skip leaves the settings only once a run read it and found it over.
 check "Model.js drops a skip by the skipEnded field bin/omabump-check writes" grep -q 'app.skipEnded' "$root/Model.js"
-check "bin/omabump-check writes skipEnded into every checked row" grep -q 'skipped: \$skipped, skipEnded: \$skipEnded' "$root/bin/omabump-check"
+same "the rows a check writes (row_json) carry skipEnded" '1.2|' \
+  "$(qml_row 1.0-1 1.3 0 .skipEnded)|$(qml_row 1.0-1 1.2 0 .skipEnded)"
 # A row shortens the release-age hold clause by its words (Model.holdNote).
-check "bin/omabump-check words the hold clause as Model.holdNote reads it" \
-  grep -q 'note="omarchy-pkgs holds new releases for $(( (hold + 3599) / 3600 )) h, Update from $(date' "$root/bin/omabump-check"
+qml_hold_re=$(sed -n 's|^var holdNote = /\(.*\)/$|\1|p' "$root/Model.js")
+qml_held=$(qml_row 1.0-1 1.3 86400 .note)
+check "a check (row_hold) words the hold clause as Model.holdNote reads it" \
+  bash -c '[[ -n $1 && $2 =~ $1 ]]' _ "$qml_hold_re" "$qml_held"
 same "Model.js caps the quiet settings where load_quiet does" "$quiet_max" \
   "$(sed -n 's/^var quietMax = \([0-9]*\)$/\1/p' "$root/Model.js")"
 
@@ -117,7 +138,7 @@ check "Model.js reads the runError field bin/omabump-check writes" grep -q 'file
 check "bin/omabump-check writes runError into status.json" grep -q 'runError: \$rerr' "$root/bin/omabump-check"
 check "Model.js reads the selfUpdating field bin/omabump-check writes" \
   grep -q 'function selfUpdating(app) { return !!app && app.selfUpdating === true }' "$root/Model.js"
-check "bin/omabump-check writes selfUpdating into every row" grep -q 'selfUpdating: \$selfUpdating, icon' "$root/bin/omabump-check"
+same "the rows a check writes (row_json) carry selfUpdating" false "$(qml_row 1.0-1 1.2 0 .selfUpdating)"
 
 # A row without Update has no action at all: the panel starts no agent.
 refuse "the widget starts no coding agent" grep -qE 'omarchy-agent|omabump-prompt' "$root/Main.qml" "$root/Panel.qml"

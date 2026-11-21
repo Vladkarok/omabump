@@ -166,7 +166,8 @@ fi
 clear_staged_left
 # apps.json turned Update off for this app (updateBlocked): a known problem in
 # what it would install. The check shows the same reason on the row.
-blocked=$(jq -r '.updateBlocked // ""' <<<"$app")
+# Not a copy that updates itself: that was refused above.
+blocked=$(update_blocked "$app" false) || blocked=""
 [[ -z $blocked ]] || refuse "Update of $label is off in Omabump: $(term_safe <<<"$blocked" | tr '\t\n' '  ' | sed 's/ *$//')"
 
 installed_name="" installed=""
@@ -333,7 +334,7 @@ panel_reached() {
   [[ -n $shown ]] || return 0
   if string_versions "$source"; then
     [[ $1 == "$shown" || $1 != "$(panel_row installed)" || $(panel_row updateAvailable) != true ]]
-  elif newer "$shown" "$(upstream_part "$1")"; then
+  elif row_newer "$shown" "$1" feed; then
     return 1
   fi
 }
@@ -498,7 +499,7 @@ check_target() {
     # nothing_newer, unless the recipe reaches the version the panel showed
     # and the app has not: then an epoch installed, or a pkgrel above the
     # recipe's, is what stops Update, and guard_version's message names it.
-    if panel_reached "$now" || newer "$shown" "$(upstream_part "$target_version")"; then
+    if panel_reached "$now" || row_newer "$shown" "$target_version" feed; then
       nothing_newer "$now" "omarchy-pkgs' recipe reaches $target_version" "the vendor's feed shows"
     fi
   fi
@@ -802,7 +803,7 @@ install_vendor_pkg() {
   # An Update the feed has nothing newer for downloads nothing, so it ends
   # here: the package's URL and its checksum (a second request, for some
   # vendors) cannot fail it.
-  if (( ! switch )) && [[ -n $installed ]] && ! newer "$latest" "$(upstream_part "$installed")"; then
+  if (( ! switch )) && [[ -n $installed ]] && ! row_newer "$latest" "$installed" feed; then
     rm -f "$feed_file"
     nothing_newer "$installed" "the vendor's feed gives $latest now" "it gave at the last check"
   fi
@@ -812,7 +813,7 @@ install_vendor_pkg() {
   rm -f "$feed_file"
   read -r algo want <<<"$sum"
   echo "Published $algo: $want"
-  if (( switch )) && [[ -n $installed ]] && newer "$(upstream_part "$installed")" "$latest"; then
+  if (( switch )) && [[ -n $installed ]] && row_past "$installed" "$latest" feed; then
     refuse "$latest is older than the installed $installed_name $installed; nothing to do"
   fi
   file=$PKGDEST/${url##*/}
@@ -860,33 +861,24 @@ install_vendor_pkg() {
 # mise outdated finds the version the configured request reaches (an exact
 # pin or a range), the same policy the check used, and like it runs with no
 # release-age cooldown; mise install puts in exactly that version, so the
-# target shown in the panel is the one installed here.
+# target shown in the panel is the one installed here. What mise's answer
+# means is the check's own reading of it (mise_row), here for the one tool.
 install_mise() {
-  local tool=$installed_name target request now
+  local tool=$installed_name target now
+  local latest from note installable mise_update request feed_error unchecked
   [[ -n $tool ]] || die "${mise_inventory_error:-mise has no active $label}"
   mise_load 1 "$tool"
-  mise_key_safe "$tool" || refuse "$(mise_skip_note "$tool"); Omabump updates mise tools on mise's own backends only. Update $tool with mise up yourself."
-  [[ -z $mise_error ]] || die "$mise_error"
-  [[ -z ${mise_fetch_failed[$tool]:-} ]] || die "mise could not fetch the versions of $tool: ${mise_fetch_failed[$tool]}"
-  # An entry mise_outdated_table could not read has no fields: read as such,
-  # it would say newest or held where the check (mise_row) says the answer
-  # could not be read. Each table is checked before its fields are read.
-  mise_entry_ok "$mise_outdated_json" "$tool" || die "mise outdated gave an entry for $tool that is not an object"
-  target=$(mise_field "$mise_outdated_json" "$tool" latest)
-  if [[ -z $target ]]; then
-    [[ -z $mise_bump_error ]] || die "$mise_bump_error"
-    mise_entry_ok "$mise_bump_json" "$tool" || die "mise outdated --bump gave an entry for $tool that is not an object"
-    # The release itself, as the panel's row shows it; bump is only the
-    # request rewritten to reach it.
-    request=$(mise_field "$mise_bump_json" "$tool" requested)
-    now=$(mise_field "$mise_bump_json" "$tool" latest)
-    [[ -n $now ]] || now=$(mise_field "$mise_bump_json" "$tool" bump)
-    if [[ -n $now && $now != "$installed" ]]; then
-      [[ $request == latest ]] && refuse "$label is held back at $installed by your mise settings ($now exists); mise up would not move it. See mise settings."
-      refuse "$label is held at $installed by its mise request '$request' ($now exists); mise up would not move it. Change the request with mise use."
-    fi
-    nothing_newer "$installed" "mise keeps $label at $installed" "mise showed at the last check"
-  fi
+  mise_row "$tool" "$installed"
+  case $mise_state in
+    unchecked) refuse "$note; Omabump updates mise tools on mise's own backends only. Update $tool with mise up yourself." ;;
+    error) die "$feed_error" ;;
+    pinned)
+      [[ $request == latest ]] && refuse "$label is held back at $installed by your mise settings ($latest exists); mise up would not move it. See mise settings."
+      refuse "$label is held at $installed by its mise request '$request' ($latest exists); mise up would not move it. Change the request with mise use." ;;
+    current) nothing_newer "$installed" "mise keeps $label at $installed" "mise showed at the last check" ;;
+    update) target=$latest ;;
+    *) die "no reading of mise's answer for $tool" ;;
+  esac
   # The version the request reaches now, as mise outdated just found it,
   # installed as it is: mise neither looks for the newest again nor lists
   # every release (mise_run, mise_versions_host), and the request in your

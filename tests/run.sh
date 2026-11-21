@@ -859,6 +859,115 @@ check "omabump-check takes no settings arguments" bash -c "! grep -q -- '--skipp
 rm -f "$shell_json"
 load_quiet
 
+# --- rows: what is known about an app, made a row ---------------------------------------
+
+# A feed knows only upstream's version: the installed one is compared less
+# epoch and pkgrel. A version from mise (or none) is compared as it is.
+check "row_newer: a feed's version against the installed one less epoch and pkgrel" row_newer 1.2 1:1.0-1 feed
+refuse "row_newer: the same versions, not from a feed, compare whole" row_newer 1.2 1:1.0-1 mise
+refuse "row_newer: a feed at the installed upstream version" row_newer 1.2 1.2-5 feed
+check "row_past: installed past what the feed knows" row_past 1.3-1 1.2 feed
+refuse "row_past: at it, by its upstream part" row_past 2:1.2-7 1.2 feed
+check "row_past: whole versions when not from a feed" row_past 2:1.2-7 1.2 mise
+
+same "update_blocked: the reason apps.json gives" 'a known problem' \
+  "$(update_blocked '{"pkg": "a", "source": "omarchy", "updateBlocked": "a known problem"}' false)"
+refuse "update_blocked: none for an app that updates itself" update_blocked '{"pkg": "a", "source": "omarchy", "updateBlocked": "x"}' true
+refuse "update_blocked: none for Omabump's own row" update_blocked "$self_app" false
+refuse "update_blocked: none without one" update_blocked '{"pkg": "a", "source": "omarchy", "updateBlocked": ""}' false
+
+# derived <source> <installed name> <installed> <latest> <from> <hold s> <seen s ago> [<app>]:
+# a row as a check's route would leave it (installable, the recipe's note),
+# through row_derive and row_json, at 2026-01-01 00:00 UTC, the release
+# first seen (seen.json) that many seconds before. Prints the row.
+derived() {
+  local pkg source installed_name installed latest from hold app label now installable note
+  local mise_update self_updating held unchecked error stale recipe request omarchy_update blocked
+  local muted_json='[]' skipped_json='{}' update switchable muted skipped skip_end quiet
+  local TZ=UTC; export TZ
+  local seen_file=$scratch/derived-seen.json
+  pkg=r-app source=$1 installed_name=$2 installed=$3 latest=$4 from=$5 hold=$6
+  app=${8:-'{"pkg": "r-app", "label": "R <App>", "icon": "assets/r.svg"}'}
+  label=$(jq -r '.label // .pkg' <<<"$app") now=1767225600 installable=true note="Recipe from omarchy-pkgs 0123456789ab"
+  mise_update=false self_updating=false held=false unchecked=false
+  error="" stale=false recipe="r-app 1.0-1" request="" omarchy_update=false blocked=""
+  # A copy that updates itself has no route: nothing installable, no note.
+  if self_updating_name "$installed_name"; then self_updating=true installable=false note=""; fi
+  jq -n --arg v "$latest" --argjson at $(( now - $7 )) '{"r-app": {version: $v, at: $at}}' >"$seen_file"
+  row_derive
+  row_json
+}
+mkdir -p "$state_dir"
+row_fields='"\(.updateAvailable)|\(.installable)|\(.held)|\(.switchable)|\(.unchecked)|\(.note)"'
+same "row: an omarchy row with an update, the whole row" \
+  '{"pkg":"r-app","label":"R ‹App›","source":"omarchy","installedName":"r-app","installed":"1.0-1","latest":"1.2","versionFrom":"feed","updateAvailable":true,"installable":true,"error":"","note":"Recipe from omarchy-pkgs 0123456789ab","stale":false,"switchable":false,"recipe":"r-app 1.0-1","request":"","muted":false,"skipped":false,"skipEnded":"","unchecked":false,"held":false,"omarchyUpdate":false,"blocked":false,"selfUpdating":false,"icon":"assets/r.svg","iconLight":""}' \
+  "$(derived omarchy r-app 1.0-1 1.2 feed 0 0)"
+same "row: the recipe holds the release: no Update, and the hold's clause first" \
+  'true|false|true|false|false|omarchy-pkgs holds new releases for 24 h, Update from Jan 2 00:00; Recipe from omarchy-pkgs 0123456789ab' \
+  "$(derived omarchy r-app 1.0-1 1.2 feed 86400 0 | jq -r "$row_fields")"
+same "row: a hold counts from when a check first saw the release" \
+  'true|false|true|false|false|omarchy-pkgs holds new releases for 2 h, Update from Jan 1 01:00; Recipe from omarchy-pkgs 0123456789ab' \
+  "$(derived omarchy r-app 1.0-1 1.2 feed 5400 1800 | jq -r "$row_fields")"
+same "row: a hold whose window has passed: Update as usual" \
+  'true|true|false|false|false|Recipe from omarchy-pkgs 0123456789ab' \
+  "$(derived omarchy r-app 1.0-1 1.2 feed 86400 86400 | jq -r "$row_fields")"
+same "row: the feed's version is the installed one's upstream part: no update" \
+  'false|true|false|false|false|Recipe from omarchy-pkgs 0123456789ab' \
+  "$(derived omarchy r-app 2:1.2-3 1.2 feed 86400 0 | jq -r "$row_fields")"
+same "row: installed under another name at the newest version: Switch" \
+  'false|true|false|true|false|Recipe from omarchy-pkgs 0123456789ab' \
+  "$(derived vendor-pkg r-app-bin 1.2-1 1.2 feed 0 0 | jq -r "$row_fields")"
+same "row: under another name and behind: Update replaces it, no Switch" \
+  'true|true|false|false|false|Recipe from omarchy-pkgs 0123456789ab' \
+  "$(derived vendor-pkg r-app-bin 1.1-1 1.2 feed 0 0 | jq -r "$row_fields")"
+# shellcheck disable=SC2088 # the path as apps.json writes it
+same "row: a copy that updates itself, compared as it is, its note says how" \
+  'true|false|false|false|false|Updates itself: run r update' \
+  "$(derived omarchy '~/.r/app' 1.1 1.2 feed 86400 0 '{"pkg": "r-app", "selfUpdate": "run r update"}' | jq -r "$row_fields")"
+# shellcheck disable=SC2088 # the path as apps.json writes it
+same "row: a copy at a pre-release: unchecked, and why" \
+  'false|false|false|false|true|Pre-release build, not compared with the feed'"'"'s stable releases; Updates itself: open r-app to update' \
+  "$(derived omarchy '~/.r/app' 1.3-nightly.1 1.2 feed 0 0 '{"pkg": "r-app"}' | jq -r "$row_fields")"
+# The settings' mute and skip, for a row with an update.
+# quiet_of <muted> <skipped>: row_quiet's answer for r-app at 1.0-1 with
+# 1.2 out, under those settings, as "muted|skipped|skip_end|quiet".
+quiet_of() {
+  local muted_json=$1 skipped_json=$2 muted skipped skip_end quiet
+  row_quiet r-app omarchy true 1.2 1.0-1
+  echo "$muted|$skipped|$skip_end|$quiet"
+}
+same "row_quiet: muted, a skip of the newest version, nothing over" 'true|true||true' \
+  "$(quiet_of '["r-app"]' '{"r-app": "1.2"}')"
+same "row_quiet: a skip of an older version is over" 'false|false|1.1|false' "$(quiet_of '[]' '{"r-app": "1.1"}')"
+
+# The mise ladder: mise_row's answer, which the check shows and Update acts
+# on, from given tables. Prints "state|latest|installable|update|request|note|error".
+mise_state_on() {
+  local latest from note installable mise_update request feed_error unchecked mise_state
+  local mise_safe_json=${4:-'{"t": true}'} mise_error=${5:-} mise_bump_error="" mise_outdated_json=$1 mise_bump_json=$2
+  local mise_backend_error="" fetch_failed_t=${6:-}
+  local -A mise_fetch_failed=() mise_held=()
+  [[ -z $fetch_failed_t ]] || mise_fetch_failed[t]=$fetch_failed_t
+  mise_row t "$3"
+  echo "$mise_state|$latest|$installable|$mise_update|$request|$note|$feed_error"
+}
+same "mise_row: a key on no allowed backend is unchecked" \
+  'unchecked||false|false||Update check skipped: not on a backend Omabump queries|' "$(mise_state_on '{}' '{}' 1.0 '{}')"
+same "mise_row: mise outdated failed: an error, no version" \
+  'error||true|false|||mise outdated failed: x' "$(mise_state_on '{}' '{}' 1.0 '' 'mise outdated failed: x')"
+same "mise_row: versions mise could not fetch: an error" \
+  'error||true|false|||mise could not fetch the versions of t: rate limited' "$(mise_state_on '{}' '{}' 1.0 '' '' 'rate limited')"
+same "mise_row: what mise up reaches is the update" \
+  'update|1.1|true|true|||' "$(mise_state_on '{"t": {"latest": "1.1"}}' '{}' 1.0)"
+same "mise_row: a pin below the newest release" \
+  'pinned|0.97.1|false|false|0.96|Pinned to 0.96, 0.97.1 exists|' \
+  "$(mise_state_on '{}' '{"t": {"bump": "0.97", "latest": "0.97.1", "requested": "0.96"}}' 0.96.0)"
+same "mise_row: a latest request your settings hold back" \
+  'pinned|2.0|false|false|latest|Held back by your mise settings, 2.0 exists|' \
+  "$(mise_state_on '{}' '{"t": {"latest": "2.0", "requested": "latest"}}' 1.0)"
+same "mise_row: nothing newer: current, at the installed version" \
+  'current|1.0|true|false|||' "$(mise_state_on '{}' '{}' 1.0)"
+
 # --- Omabump's own row ---------------------------------------------------------------
 
 check "app_id_ok: self:omabump" app_id_ok self:omabump
