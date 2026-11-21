@@ -277,6 +277,16 @@ function staleCount(apps, muted) {
   return count(apps, function(app) { return app.stale === true && !isMuted(muted, app) })
 }
 
+// Whether the bar shows its icon (Panel.qml's visible), s being Main.qml's
+// summary. Like the system update icon, it can stay out of the bar until
+// there is something to install (onlyWithUpdates). A failed check shows it
+// too, or a broken check would be invisible (a muted row's failure does
+// not, as mute promises). While the panel is open (IPC open/toggle) it
+// shows, so the panel has an anchor.
+function barIconShown(s, onlyWithUpdates, panelOpen) {
+  return !onlyWithUpdates || s.updateCount > 0 || s.checkFailed || s.errorCount > 0 || !!panelOpen
+}
+
 // --- status.json -----------------------------------------------------------------
 
 // status.json as the widget reads it, or null while it is empty. Throws on
@@ -314,6 +324,26 @@ function parseStatus(text, showMise) {
 var pollSec = 60
 
 // --- this shell's checks ------------------------------------------------------------
+
+// How long after this shell's last check ended an IPC refresh starts none.
+var ipcThrottleMs = 60000
+
+// What an IPC refresh does (Panel.qml's ipcRefresh). Anything on the
+// session bus can call it, so it may not keep this shell checking back to
+// back. "pending": a check that starts after the call is already on its
+// way (queued, or waiting for another check to end), and that one answers
+// it. "throttled": this shell's own check for a Refresh runs (running), or
+// its last check ended (lastEndMs) less than ipcThrottleMs ago with none
+// running now; it starts nothing. Else "refresh", as Refresh does: queued
+// behind the timer's check or one for a Show mise tools change, and after
+// another's (a terminal's, another monitor's) when one runs. pending,
+// running and checking are Main.qml's refreshPending, refreshRunning and
+// checking.
+function ipcRefreshAction(pending, running, checking, nowMs, lastEndMs) {
+  if (pending) return "pending"
+  if (running || !checking && nowMs - lastEndMs < ipcThrottleMs) return "throttled"
+  return "refresh"
+}
 
 // What a run that never took the lock exits with: Main.qml's waitScript
 // when the lock stayed held past its wait, and bin/omabump-check when it
@@ -620,6 +650,58 @@ function iconPath(app, lightSurface) {
 function luminance(c) {
   function channel(v) { return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4) }
   return 0.2126 * channel(c.r) + 0.7152 * channel(c.g) + 0.0722 * channel(c.b)
+}
+
+// --- the panel's layout ------------------------------------------------------------
+
+// Omabump's own row shows while a newer release exists or its check failed;
+// it hides while current.
+function selfRowShown(app) {
+  return !!app && app.source === "self" && (app.updateAvailable === true || String(app.error || "") !== "")
+}
+
+// The panel's rows by section (Panel.qml's three Repeaters): desktop apps,
+// then the mise CLIs, then Omabump's own row (selfRowShown). rows is all of
+// them in that order, the one the keyboard cursor walks across sections,
+// and offsets says where each section starts in it. Only the rows apps
+// holds: parseStatus already left out mise rows while Show mise tools is
+// off.
+function panelLayout(apps) {
+  var desktop = [], cli = [], plugin = []
+  for (var i = 0; i < apps.length; i++) {
+    var app = apps[i]
+    if (app.source === "mise") cli.push(app)
+    else if (app.source === "self") { if (selfRowShown(app)) plugin.push(app) }
+    else desktop.push(app)
+  }
+  return {
+    desktop: desktop, cli: cli, plugin: plugin,
+    rows: desktop.concat(cli).concat(plugin),
+    offsets: { desktop: 0, cli: desktop.length, plugin: desktop.length + cli.length }
+  }
+}
+
+// Where the cursor's row (index into layout.rows) sits: its section, its
+// index there, and whether it is that section's first row, whose header
+// comes into view with it. An index past the end lands past the end of the
+// last section.
+function rowPlace(layout, index) {
+  var section = index < layout.offsets.cli ? "desktop" : index < layout.offsets.plugin ? "cli" : "plugin"
+  var local = index - layout.offsets[section]
+  return { section: section, index: local, first: local === 0 && layout[section].length > 0 }
+}
+
+// The settings view's rows: the check interval dropdown, then the toggles
+// (toggleCount of them, from toggleOffset), then the quiet line with its
+// Clear button, shown only while it lists something (quietShown). lastRow
+// is the last row the cursor may reach.
+function settingsLayout(toggleCount, quietShown) {
+  return {
+    intervalRow: 0,
+    toggleOffset: 1,
+    quietRow: toggleCount + 1,
+    lastRow: toggleCount + (quietShown ? 1 : 0)
+  }
 }
 
 // --- panel text ------------------------------------------------------------------

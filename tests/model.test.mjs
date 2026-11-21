@@ -244,6 +244,21 @@ test("staleCount leaves muted rows out", () => {
   same(m.staleCount(rows, muted), 1)
 })
 
+test("barIconShown: always, unless only with updates; then for an update, a failure or an open panel", () => {
+  const s = (fields) => Object.assign({ updateCount: 0, checkFailed: false, errorCount: 0 }, fields)
+  same([m.barIconShown(s({}), false, false), m.barIconShown(s({}), true, false),
+    m.barIconShown(s({ updateCount: 1 }), true, false), m.barIconShown(s({ checkFailed: true }), true, false),
+    m.barIconShown(s({ errorCount: 1 }), true, false), m.barIconShown(s({}), true, true)],
+    [true, false, true, true, true, true])
+})
+
+test("barIconShown: quiet updates and muted failures do not show it (the counts leave them out)", () => {
+  const apps = [row({ pkg: "a", updateAvailable: true, latest: "2.0.0" }), row({ pkg: "b", error: "feed down" })]
+  const s = { updateCount: m.updateCount(apps, ["a", "b"], {}), checkFailed: false, errorCount: m.errorCount(apps, ["a", "b"]) }
+  same([m.barIconShown(s, true, false), m.barIconShown(Object.assign({}, s, { updateCount: m.updateCount(apps, [], {}) }), true, false)],
+    [false, true])
+})
+
 // --- status.json -------------------------------------------------------------------------
 
 test("parseStatus: an empty file is null, a broken one throws", () => {
@@ -302,6 +317,34 @@ test("answersError: a completed run that started after the failure, not one that
     m.answersError(Object.assign(status("2026-10-07T12:00:06Z"), { checking: true }), after),
     m.answersError(Object.assign(status("2026-10-07T12:00:06Z"), { runError: "killed" }), after),
     m.answersError(null, after)], [true, false, false, false, false, false])
+})
+
+test("ipcRefreshAction: a check on its way answers, whatever else holds", () => {
+  same([m.ipcRefreshAction(true, false, false, 1000, 1000), m.ipcRefreshAction(true, true, true, 1000, 1000)],
+    ["pending", "pending"])
+})
+
+test("ipcRefreshAction: throttled while this shell's Refresh check runs", () => {
+  same([m.ipcRefreshAction(false, true, true, 10 * 60000, 0), m.ipcRefreshAction(false, true, false, 10 * 60000, 0)],
+    ["throttled", "throttled"])
+})
+
+test("ipcRefreshAction: throttled for ipcThrottleMs after the last check ended, with none running", () => {
+  const end = 5000000
+  same(m.ipcThrottleMs, 60000)
+  same([m.ipcRefreshAction(false, false, false, end, end),
+    m.ipcRefreshAction(false, false, false, end + m.ipcThrottleMs - 1, end),
+    m.ipcRefreshAction(false, false, false, end + m.ipcThrottleMs, end),
+    m.ipcRefreshAction(false, false, false, end + m.ipcThrottleMs + 1, end),
+    // A clock set back reads as just now.
+    m.ipcRefreshAction(false, false, false, end - 1000, end),
+    // Never a check yet.
+    m.ipcRefreshAction(false, false, false, end, 0)],
+    ["throttled", "throttled", "refresh", "refresh", "throttled", "refresh"])
+})
+
+test("ipcRefreshAction: during another check it refreshes, inside the window too", () => {
+  same(m.ipcRefreshAction(false, false, true, 1000, 1000), "refresh")
 })
 
 test("showMiseRun: nothing before the first tick, queued behind this shell's check, else a waiting run", () => {
@@ -524,6 +567,88 @@ test("iconPath: the light twin on a light surface, nothing unsafe", () => {
 // Panel.qml calls luminance and clamp itself; no other function here does.
 test("luminance: black is 0, white is 1", () => {
   same([m.luminance({ r: 0, g: 0, b: 0 }), m.luminance({ r: 1, g: 1, b: 1 }), m.luminance({ r: 0.5, g: 0.5, b: 0.5 }) < 0.5], [0, 1, true])
+})
+
+// --- the panel's layout ----------------------------------------------------------------------
+
+const self = (fields) => row(Object.assign({ pkg: "self:omabump", label: "Omabump", source: "self" }, fields))
+const pkgsOf = (list) => list.map(app => app.pkg)
+function sections(layout) {
+  return { desktop: pkgsOf(layout.desktop), cli: pkgsOf(layout.cli), plugin: pkgsOf(layout.plugin),
+    rows: pkgsOf(layout.rows), offsets: layout.offsets }
+}
+
+test("selfRowShown: Omabump's own row with a newer release or a failed check, never another row", () => {
+  same([self({}), self({ updateAvailable: true }), self({ error: "feed down" }), self({ updateAvailable: false, error: "" }),
+    row({ updateAvailable: true }), row({ source: "mise", error: "x" })].map(app => m.selfRowShown(app)),
+    [false, true, true, false, false, false])
+  same(m.selfRowShown(null), false)
+})
+
+test("panelLayout: desktop apps, then mise CLIs, then the self row, each in the order the check listed", () => {
+  const apps = [row({ pkg: "mise:a", source: "mise" }), row({ pkg: "b" }), self({ updateAvailable: true }),
+    row({ pkg: "c", source: "vendor-pkg" }), row({ pkg: "mise:d", source: "mise" })]
+  same(sections(m.panelLayout(apps)), {
+    desktop: ["b", "c"], cli: ["mise:a", "mise:d"], plugin: ["self:omabump"],
+    rows: ["b", "c", "mise:a", "mise:d", "self:omabump"], offsets: { desktop: 0, cli: 2, plugin: 4 }
+  })
+})
+
+test("panelLayout: a current self row is left out of every section", () => {
+  const apps = [row({ pkg: "b" }), self({}), row({ pkg: "mise:a", source: "mise" })]
+  same(sections(m.panelLayout(apps)), {
+    desktop: ["b"], cli: ["mise:a"], plugin: [], rows: ["b", "mise:a"], offsets: { desktop: 0, cli: 1, plugin: 2 }
+  })
+})
+
+test("panelLayout: with Show mise tools off (parseStatus drops mise rows) the CLI section is empty", () => {
+  const text = JSON.stringify({ apps: [row({ pkg: "mise:a", source: "mise" }), row({ pkg: "b" }), self({ error: "x" })] })
+  same(sections(m.panelLayout(m.parseStatus(text, false).apps)), {
+    desktop: ["b"], cli: [], plugin: ["self:omabump"], rows: ["b", "self:omabump"], offsets: { desktop: 0, cli: 1, plugin: 1 }
+  })
+})
+
+test("panelLayout: no rows, and a QVariantList of rows", () => {
+  same(sections(m.panelLayout([])), { desktop: [], cli: [], plugin: [], rows: [], offsets: { desktop: 0, cli: 0, plugin: 0 } })
+  same(sections(m.panelLayout(variantList([row({ pkg: "mise:a", source: "mise" }), row({ pkg: "b" })]))),
+    { desktop: ["b"], cli: ["mise:a"], plugin: [], rows: ["b", "mise:a"], offsets: { desktop: 0, cli: 1, plugin: 2 } })
+})
+
+test("rowPlace: each section's edges, with all three sections", () => {
+  const layout = m.panelLayout([row({ pkg: "a" }), row({ pkg: "b" }), row({ pkg: "mise:c", source: "mise" }),
+    row({ pkg: "mise:d", source: "mise" }), self({ updateAvailable: true })])
+  same([0, 1, 2, 3, 4].map(i => m.rowPlace(layout, i)), [
+    { section: "desktop", index: 0, first: true }, { section: "desktop", index: 1, first: false },
+    { section: "cli", index: 0, first: true }, { section: "cli", index: 1, first: false },
+    { section: "plugin", index: 0, first: true }])
+})
+
+test("rowPlace: empty sections are passed over", () => {
+  // No desktop apps: row 0 is the first CLI.
+  const noDesktop = m.panelLayout([row({ pkg: "mise:c", source: "mise" }), self({ error: "x" })])
+  same([0, 1].map(i => m.rowPlace(noDesktop, i)),
+    [{ section: "cli", index: 0, first: true }, { section: "plugin", index: 0, first: true }])
+  // No CLIs: the self row follows the desktop apps.
+  const noCli = m.panelLayout([row({ pkg: "a" }), self({ error: "x" })])
+  same([0, 1].map(i => m.rowPlace(noCli, i)),
+    [{ section: "desktop", index: 0, first: true }, { section: "plugin", index: 0, first: true }])
+  // Only the self row.
+  same(m.rowPlace(m.panelLayout([self({ updateAvailable: true })]), 0), { section: "plugin", index: 0, first: true })
+})
+
+test("rowPlace: past the last row, or with no rows, no section's first row", () => {
+  const layout = m.panelLayout([row({ pkg: "a" }), row({ pkg: "mise:c", source: "mise" })])
+  same(m.rowPlace(layout, 2), { section: "plugin", index: 0, first: false })
+  same(m.rowPlace(layout, 3), { section: "plugin", index: 1, first: false })
+  same(m.rowPlace(m.panelLayout([]), 0), { section: "plugin", index: 0, first: false })
+})
+
+test("settingsLayout: the interval, the toggles, then the quiet line while it lists any", () => {
+  same([m.settingsLayout(0, false), m.settingsLayout(0, true), m.settingsLayout(3, false), m.settingsLayout(3, true)], [
+    { intervalRow: 0, toggleOffset: 1, quietRow: 1, lastRow: 0 },
+    { intervalRow: 0, toggleOffset: 1, quietRow: 1, lastRow: 1 },
+    { intervalRow: 0, toggleOffset: 1, quietRow: 4, lastRow: 3 },
+    { intervalRow: 0, toggleOffset: 1, quietRow: 4, lastRow: 4 }])
 })
 
 // --- panel text ----------------------------------------------------------------------------
