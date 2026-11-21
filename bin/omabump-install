@@ -310,12 +310,8 @@ guard_version() {
 # The field $1 of this app's row in the last check's status.json, which the
 # panel shows until the next check, on one line; true or false for a flag.
 # Nothing when no check ran, the file is not one the check wrote, or the
-# row or field is missing.
-panel_row() {
-  jq -r --arg pkg "$pkg" --arg f "$1" \
-    '[.apps[]? | objects | select(.pkg == $pkg)][0][$f] | select(type == "string" or type == "boolean") | tostring' \
-    "$status_file" 2>/dev/null | head -n1 | term_safe || true
-}
+# row or field is missing (status_field).
+panel_row() { status_field "$pkg" "$1" 2>/dev/null | head -n1 | term_safe || true; }
 
 # True when the version installed now, $1 (the full version on pacman
 # rows), has reached the one the panel shows for this app, the row's latest

@@ -111,7 +111,7 @@ qml_row() {
   local hold=$3 now=1767225600 installable=true note="" held=false unchecked=false
   local error="" stale=false recipe="" request="" omarchy_update=false blocked=""
   local muted_json='[]' skipped_json='{"qml-app": "1.2"}' seen_file=$scratch/qml-seen.json
-  local update switchable muted skipped skip_end quiet
+  local update switchable muted skipped skip_end quiet hold_clause unread=false
   mkdir -p "$state_dir"
   rm -f "$seen_file"
   row_derive
@@ -135,7 +135,16 @@ same "Model.js caps the quiet settings where load_quiet does" "$quiet_max" \
 # status.json's runError, and a row's selfUpdating, by the same name on
 # both sides: the panel offers no Update or Switch for a selfUpdating row.
 check "Model.js reads the runError field bin/omabump-check writes" grep -q 'file.runError' "$root/Model.js"
-check "bin/omabump-check writes runError into status.json" grep -q 'runError: \$rerr' "$root/bin/omabump-check"
+# status_write_check, which writes every check's status.json, into a file
+# of its own.
+qml_status=$(
+  # shellcheck disable=SC2034 # read by status_write_check
+  status_file=$scratch/qml-status.json run_tmp=$scratch
+  echo '{"apps": []}' >"$scratch/qml-prev.json"
+  printf '' | status_write_check 2 2026-01-01T00:00:00+00:00 2026-01-01T00:00:00+00:00 0 "The check stopped early (exit 143)" \
+    "" "" "" "" "$scratch/qml-prev.json" '[]'
+  jq -r .runError "$status_file")
+same "a check (status_write_check) writes runError into status.json" "The check stopped early (exit 143)" "$qml_status"
 check "Model.js reads the selfUpdating field bin/omabump-check writes" \
   grep -q 'function selfUpdating(app) { return !!app && app.selfUpdating === true }' "$root/Model.js"
 same "the rows a check writes (row_json) carry selfUpdating" false "$(qml_row 1.0-1 1.2 0 .selfUpdating)"

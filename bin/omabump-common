@@ -1721,17 +1721,20 @@ self_row() {
 # window has passed, counted from the first check that saw the version
 # (seen_since), the row has no Update and does not notify: held, not
 # installable, and the hold's clause first in its note. Reads pkg, latest,
-# hold, now, update and installable; may set held, installable and note.
-# Once the release is installed, a local refresh takes the clause off again
-# (hold_clause_re in bin/omabump-check).
+# hold, now, update and installable; sets hold_clause (the clause, "" when
+# none) and may set held, installable and note. Once the release is
+# installed, a local refresh takes the clause off again: the row's
+# holdClause says which words are the hold's.
 # shellcheck disable=SC2154 # the row's fields, the caller's variables
 row_hold() {
   local ends
+  hold_clause=""
   [[ $update == true && $installable == true ]] && (( hold > 0 )) || return 0
   ends=$(( $(seen_since "$pkg" "$latest" "$now") + hold ))
   (( now < ends )) || return 0
   held=true installable=false
-  note="omarchy-pkgs holds new releases for $(( (hold + 3599) / 3600 )) h, Update from $(date -d "@$ends" '+%b %-d %H:%M')${note:+; $note}"
+  hold_clause="omarchy-pkgs holds new releases for $(( (hold + 3599) / 3600 )) h, Update from $(date -d "@$ends" '+%b %-d %H:%M')"
+  note="$hold_clause${note:+; $note}"
 }
 
 # The rest of a check's row once its route and its feed (or mise) have
@@ -1740,9 +1743,9 @@ row_hold() {
 # self_updating, hold and now, and the route's installable, note, held and
 # unchecked. Sets update (row_newer, or self_row for a copy that updates
 # itself), switchable (row_switchable), and muted, skipped, skip_end and
-# quiet (row_quiet); row_hold and self_row may change installable, held,
-# note and unchecked. Call it in the calling shell: it answers through
-# these variables.
+# quiet (row_quiet), and hold_clause (row_hold); row_hold and self_row may
+# change installable, held, note and unchecked. Call it in the calling
+# shell: it answers through these variables.
 # shellcheck disable=SC2154 # the row's fields, the caller's variables
 row_derive() {
   update=$mise_update
@@ -1763,9 +1766,11 @@ row_derive() {
 # (versionFrom), update (updateAvailable), installable, error, note, stale,
 # switchable, recipe, request, muted, skipped, skip_end (skipEnded),
 # unchecked, held, omarchy_update, blocked (the reason, "" when Update is
-# not off), self_updating, and the icon and iconLight of the entry app.
-# Every string from a feed, mise, pacman or apps.json goes through
-# clean_text on its way in.
+# not off), self_updating, hold_clause (holdClause, row_hold's), unread
+# (written by a local refresh, read by no check since), and the icon and
+# iconLight of the entry app. Every string from a feed, mise, pacman or
+# apps.json goes through clean_text on its way in. The fields are listed
+# under status.json below.
 # shellcheck disable=SC2154 # the row's fields, the caller's variables
 row_json() {
   jq -cn --arg pkg "$pkg" --arg label "$(clean_text "$label")" --arg source "$source" \
@@ -1776,6 +1781,7 @@ row_json() {
     --arg request "$(clean_text "$request")" --argjson muted "$muted" --argjson skipped "$skipped" \
     --arg skipEnded "$skip_end" --argjson unchecked "$unchecked" --argjson held "$held" \
     --argjson omarchyUpdate "$omarchy_update" --arg blocked "$blocked" --argjson selfUpdating "$self_updating" \
+    --arg holdClause "$(clean_text "$hold_clause")" --argjson unread "$unread" \
     --argjson app "$app" \
     '{pkg: $pkg, label: $label, source: $source, installedName: $installedName,
       installed: $installed, latest: $latest, versionFrom: $versionFrom,
@@ -1783,5 +1789,149 @@ row_json() {
       stale: $stale, switchable: $switchable, recipe: $recipe,
       request: $request, muted: $muted, skipped: $skipped, skipEnded: $skipEnded, unchecked: $unchecked,
       held: $held, omarchyUpdate: $omarchyUpdate, blocked: ($blocked != ""),
-      selfUpdating: $selfUpdating, icon: ($app.icon // "" | tostring), iconLight: ($app.iconLight // "" | tostring)}'
+      selfUpdating: $selfUpdating, icon: ($app.icon // "" | tostring), iconLight: ($app.iconLight // "" | tostring),
+      holdClause: $holdClause, unread: $unread}'
+}
+
+# --- status.json -----------------------------------------------------------------
+#
+# The last check's result, status_file: what the panel shows, what the next
+# check keeps of a row whose feed failed, what the local refresh starts
+# from, and what Update compares with. The check writes it
+# (status_write_check) and the local refresh rewrites it
+# (status_write_local), each in one rename; every bash reader takes it
+# through status_load and a row of it through status_row, and the panel
+# reads it in Model.parseStatus. schemaVersion names the shape, and a file
+# of another one (or none) is no status.json to these readers.
+#
+# Version 1, the top level:
+#   schemaVersion  1
+#   checkedAt      when the last check ended; while one runs, the one before
+#   checking       true while a check runs (rows not read yet carry
+#                  "checking": true too); a killed run leaves it, and
+#                  startedAt tells the panel the run is stale
+#   startedAt      when the last (or running) check started
+#   inventoryAt    when the installed versions were last read: a finished
+#                  check's start, or a local refresh
+#   runError       why the check failed as a whole, "" when it did not
+#   retry          the run was the retry of a check that failed (--retry)
+#   omarchyPkgs    {commit, following, error, note}: the omarchy-pkgs pin
+#   miseError      why mise's inventory could not be read
+#   apps           the rows, in row_order
+# A row (row_json) has pkg, label, source, installedName, installed,
+# latest, versionFrom, updateAvailable, installable, error, note, stale,
+# switchable, recipe, request, muted, skipped, skipEnded, unchecked, held,
+# omarchyUpdate, blocked, selfUpdating, icon and iconLight, and since they
+# came holdClause and unread. A file from an older checker may lack the
+# later ones: inventoryAt, retry, selfUpdating, holdClause and unread. No
+# field is removed or renamed within a version: a panel still loaded from
+# an older release reads a newer checker's file.
+status_schema=1
+
+# The jq definitions for the file: status_ok, a status.json of this shape
+# with rows a reader can index (an object per row, its pkg a string);
+# status_row($pkg), the row of pkg, {} when there is none; row_order, the
+# order of the rows: desktop apps first, mise tools after them, each in
+# table order ($order, the pkg ids), then Omabump itself. And for a row:
+# row_unread and row_hold_clause, its unread and holdClause. A row 0.1.17
+# or earlier wrote has neither field, and said both in its note: "Not
+# checked yet" on an unchecked row, and the hold's clause first. Only for
+# such a row are they read from the note, so that a local refresh right
+# after an upgrade still takes a hold's clause off.
+# shellcheck disable=SC2016 # jq variables, not the shell's
+jq_status='
+  def status_ok: type == "object" and .schemaVersion == '"$status_schema"' and (.apps | type == "array")
+    and all(.apps[]; type == "object" and (.pkg | type == "string"));
+  def status_row($pkg): [.apps[] | select(.pkg == $pkg)][0] // {};
+  def row_order($order): sort_by([.source == "self", .source == "mise", (.pkg as $p | $order | index($p) // 1e9)]);
+  def row_unread: if has("unread") then .unread == true else .unchecked == true and .note == "Not checked yet" end;
+  def row_hold_clause: if has("holdClause") then .holdClause | strings // ""
+    else (.note | strings // "" | capture("^(?<c>omarchy-pkgs holds new releases for [0-9]+ h, Update from [^;]*)(; |$)").c) // "" end;'
+
+# Reads status_file into status_json when it is a status.json of this
+# shape (status_ok), and with $1 "finished" only when no check is running
+# or was killed running (checking). Fails, status_json "", otherwise:
+# missing, empty, not JSON, of another schemaVersion.
+status_json=""
+status_load() {
+  local text
+  status_json=""
+  [[ -s $status_file ]] || return 1
+  text=$(<"$status_file") || return 1
+  jq -e --arg finished "${1:-}" "$jq_status"' status_ok and ($finished != "finished" or .checking != true)' \
+    >/dev/null 2>&1 <<<"$text" || return 1
+  status_json=$text
+}
+
+# The row of the id $1 in the status.json text $2 (status_load's), through
+# the jq filter $3 (tojson by default), on stdout as raw text: {} when the
+# file has no such row.
+status_row() {
+  jq -r --arg pkg "$1" "$jq_status"' status_row($pkg) | '"${3:-tojson}" <<<"$2"
+}
+
+# The field $2 of the row of $1 in status.json as it is now (status_load),
+# as text, a flag as true or false; nothing when no check wrote the file,
+# or the row or field is missing or of another type.
+status_field() {
+  status_load || return 0
+  # shellcheck disable=SC2016 # jq variables, not the shell's
+  jq -r --arg pkg "$1" --arg f "$2" "$jq_status"' status_row($pkg)[$f]
+    | select(type == "string" or type == "boolean") | tostring' <<<"$status_json"
+}
+
+# Replaces status.json with a check's, in one rename. $1 is 0 while
+# checking, 1 for the final write, 2 when the run dies half way; $2
+# checkedAt, $3 startedAt, $4 retry (0 or 1), $5 runError ("" but on a run
+# that dies: every copy of the widget, and a run from a terminal, sees a
+# failed run, not only the one whose process exited non-zero), $6 the
+# omarchy-pkgs commit, $7 its error, $8 its note, $9 miseError, ${10} the
+# file of the status.json the run started from, ${11} the table's order
+# (a JSON array of pkg ids); the rows checked so far on stdin, one a line.
+# Until the final write, rows not checked yet keep their previous entry,
+# flagged "checking": true while the run lasts, so the panel shows progress
+# row by row. inventoryAt is the run's start once it is done, and stays the
+# last one's until then.
+status_write_check() {
+  local out
+  out=$(mktemp "${run_tmp:-$state_dir}/.status.XXXXXX")
+  # shellcheck disable=SC2016 # jq variables, not the shell's
+  jq -s --slurpfile prevs "${10}" --argjson order "${11}" \
+    --argjson final "$1" --arg at "$2" --arg started "$3" --argjson retry "$4" --arg rerr "$5" \
+    --arg commit "$6" --arg perr "$7" --arg pnote "$8" --arg merr "$9" \
+    --argjson following "$pkgs_follow" --argjson schema "$status_schema" "$jq_status"'
+    $prevs[0] as $prev
+    | (map(.pkg)) as $done
+    | (if $final == 1 then .
+       else . + [$prev.apps[] | select(.pkg as $p | $done | index($p) | not) | .checking = ($final == 0)] end)
+    | row_order($order)
+    | {schemaVersion: $schema, checkedAt: $at, checking: ($final == 0), startedAt: $started,
+       inventoryAt: (if $final == 1 then $started else ($prev.inventoryAt | strings) // "" end), runError: $rerr,
+       retry: ($retry == 1),
+       omarchyPkgs: {commit: $commit, following: ($following == 1), error: $perr, note: $pnote},
+       miseError: $merr, apps: .}' >"$out"
+  mv -f "$out" "$status_file"
+}
+
+# Replaces status.json with the local refresh's, in one rename: the
+# status.json in the file $1 with the changed rows on stdin, one a line,
+# put in place of its rows by pkg (a row not there yet is added, one with
+# "_drop": true goes), every row of the table in the file $2 taking its
+# icon and iconLight from it, and inventoryAt $3. Everything else stays as
+# the check left it: checkedAt and startedAt, which the widget counts the
+# next check from, included.
+status_write_local() {
+  local out
+  out=$(mktemp "${run_tmp:-$state_dir}/.status.XXXXXX")
+  # shellcheck disable=SC2016 # jq variables, not the shell's
+  jq -s --slurpfile prevs "$1" --slurpfile table "$2" --arg inventory "$3" "$jq_status"'
+    $prevs[0] as $prev
+    | ($table[0] | map(.pkg)) as $order
+    | ($table[0] | map({key: .pkg, value: {icon: (.icon // "" | tostring), iconLight: (.iconLight // "" | tostring)}})
+        | from_entries) as $icons
+    | reduce .[] as $c ($prev.apps;
+        if any(.[]; .pkg == $c.pkg) then map(if .pkg == $c.pkg then $c else . end) else . + [$c] end)
+    | map(if $icons[.pkg] then . + $icons[.pkg] else . end)
+    | $prev + {inventoryAt: $inventory, apps: (map(select(._drop != true)) | row_order($order))}' >"$out"
+  mv -f "$out" "$status_file"
 }

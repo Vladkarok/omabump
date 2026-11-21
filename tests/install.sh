@@ -599,6 +599,12 @@ says "install (vendor), nothing newer, status.json unreadable: says so" 'Test Ap
 shown testpkg 3.0.0 1.0.0-1
 inst testapp
 same "install (vendor), nothing newer, no row in status.json: a success" 0 "$irc"
+# A status.json of another schemaVersion is none either, whatever its row
+# says (here: a newer version than the feed's).
+shown testapp 2.1.0 2.0.0-1
+jq '.schemaVersion = 2' "$istatus" >"$istatus.new" && mv "$istatus.new" "$istatus"
+inst testapp
+same "install (vendor), nothing newer, status.json of another schemaVersion: a success" 0 "$irc"
 
 # The feed gives less than the panel showed (the vendor pulled 2.1.0):
 # Update cannot install it, and says which two versions it found.
