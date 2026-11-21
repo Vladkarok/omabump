@@ -62,8 +62,8 @@
       },
       "path": ".version"
     },
-    "icon": "assets/grok.svg",
-    "iconLight": "assets/grok-light.svg"
+    "icon": "assets/grokbot.svg",
+    "iconLight": "assets/grokbot-light.svg"
   },
   {
     "pkg": "lmstudio-bin",
