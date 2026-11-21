@@ -30,17 +30,6 @@ Item {
     .replace(/^file:\/\//, "").replace(/[?#].*$/, ""))
   readonly property string checkScript: binDir + "/omabump-check"
   readonly property string installScript: binDir + "/omabump-install"
-  // A run that waits for the lock runs this before the checker's deadline
-  // (runCheck): $1 the checker's lock, $2 how long to wait for it
-  // (lockWaitSec), then the command. It takes the lock and lets go at once,
-  // says "started" on stdout and runs the command. A lock still held after
-  // the wait is left be, and the script exits 75 (Model.lockBusyExit)
-  // having run nothing; a lock file that cannot be opened (no check has
-  // made its directory yet) has no check behind it.
-  readonly property string waitScript: 'flock -E 75 -w "$2" "$1" true 2>/dev/null; (( $? == 75 )) && exit 75; echo started; shift 2; exec "$@"'
-  // As long as the checker's own --wait (flock -w in bin/omabump-check),
-  // which the installer's refresh passes: a check lasts at most ten minutes.
-  readonly property int lockWaitSec: 660
 
   readonly property int refreshIntervalSec: Model.refreshIntervalSec(settings)
   readonly property bool notify: Model.boolSetting(settings, "notify", true)
@@ -113,8 +102,9 @@ Item {
   // This shell's running check is for a Refresh, not the timer's or one for
   // Show mise tools.
   property bool runForRefresh: false
-  // That run still waits for another check to end (waitScript has not said
-  // "started"): a Refresh now needs nothing more, that run starts after it.
+  // That run still waits for another check to end (Model.waitScript has
+  // not said Model.startedWord): a Refresh now needs nothing more, that run
+  // starts after it.
   property bool runWaiting: false
   // IPC refresh is throttled on these two. A check that starts after now is
   // on its way already:
@@ -131,7 +121,7 @@ Item {
   // by a check or a local refresh (localRefresh); 0 when it does not say.
   property double inventoryMs: 0
   // This shell's running check is the timer's or the panel's (runDue), and
-  // the checker has not said "due" yet. It may find none due and run
+  // the checker has not said Model.dueWord yet. It may find none due and run
   // nothing, so until then it is no check: the panel shows no "Checking…"
   // every minute.
   property bool runIfDue: false
@@ -203,9 +193,9 @@ Item {
     if (checkQueued && !checkProcess.running) runCheck(wait, queuedForRefresh)
   }
 
-  // wait: wait for a check that holds the lock now (waitScript) instead of
-  // leaving at once on it, as the timer's run does. own: a Refresh's
-  // (refreshRunning), with or without the wait. The checker itself never
+  // wait: wait for a check that holds the lock now (Model.waitScript)
+  // instead of leaving at once on it, as the timer's run does. own: a
+  // Refresh's (refreshRunning), with or without the wait. The checker itself never
   // waits for a check (no --wait): one that finds the lock taken after
   // waitScript's wait lost it to a check that started after the request
   // (or to another bar's waitScript, whose check starts next), and leaves
@@ -220,18 +210,9 @@ Item {
     runWaiting = wait
     runIfDue = !!ifDue
     runAskedMs = Date.now()
-    // An overall deadline: ten minutes, then TERM, then KILL ten seconds
-    // later; other waiters (the installer, another bar) count on a check
-    // ending by then. Every wait for the lock comes before it (waitScript),
-    // so it bounds the check alone, and a wait that gives up says so (exit
-    // 75) instead of ending in the deadline's kill.
-    var command = ["timeout", "-k", "10", "600", checkScript]
-    if (!notify) command.push("--no-notify")
-    if (!showMise) command.push("--no-mise")
-    if (ifDue) command.push("--if-due", "--interval", String(refreshIntervalSec))
-    if (wait)
-      command = ["bash", "-c", waitScript, "omabump-wait", lockPath, String(lockWaitSec)].concat(command)
-    checkProcess.command = command
+    // Under the deadline, after the wait for the lock (Model.checkCommand).
+    checkProcess.command = Model.checkCommand(checkScript, lockPath, { wait: wait, ifDue: !!ifDue,
+      intervalSec: refreshIntervalSec, notify: notify, showMise: showMise })
     checkProcess.running = true
   }
 
@@ -278,9 +259,7 @@ Item {
       localAfterDue = true
       return
     }
-    var command = ["timeout", "-k", "10", "120", checkScript, "--local"]
-    if (!showMise) command.push("--no-mise")
-    localProcess.command = command
+    localProcess.command = Model.localCommand(checkScript, showMise)
     localProcess.running = true
   }
 
@@ -364,10 +343,10 @@ Item {
         // the Refresh says it was not done rather than pass for one that
         // was. The check that held the lock started before it was asked
         // for, so only a later one clears that.
-        root.checkError = Model.checkErrorText(outcome, exitCode, root.lockWaitSec)
+        root.checkError = Model.checkErrorText(outcome, exitCode, Model.lockWaitSec)
         root.checkErrorAfterMs = root.runAskedMs
       } else if (outcome !== "left" && outcome !== "notDue") {
-        root.checkError = Model.checkErrorText(outcome, exitCode, root.lockWaitSec)
+        root.checkError = Model.checkErrorText(outcome, exitCode, Model.lockWaitSec)
         root.lastCheckEndMs = Date.now()
         root.checkErrorAfterMs = root.lastCheckEndMs
       }
@@ -391,8 +370,8 @@ Item {
     // check is due (--if-due).
     stdout: SplitParser {
       onRead: function(line) {
-        if (line === "started") root.runWaiting = false
-        else if (line === "due") root.runIfDue = false
+        if (line === Model.startedWord) root.runWaiting = false
+        else if (line === Model.dueWord) root.runIfDue = false
       }
     }
 
