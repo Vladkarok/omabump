@@ -323,7 +323,9 @@ self_row() {
 # for the apps of the table (load_table), and nothing else:
 # no feed, no omarchy-pkgs, no mise outdated, nothing on the network. It
 # starts from the last check's status.json and keeps the rest of each row
-# (the newest version, the route, notes, errors, muted, skipped), and
+# (the newest version, the route, notes, errors, muted, skipped), except
+# icon and iconLight: every row of the table, a row the run does not read
+# included, takes those from apps.json. It
 # writes the file once, with checkedAt and startedAt as that check left
 # them: the widget counts the next check from those, and a local refresh
 # must never put it off.
@@ -365,7 +367,6 @@ local_refresh() {
   at=$(date -Iseconds)
 
   load_table
-  order=$(jq -c 'map(.pkg)' <<<"$app_table")
   # The inventory alone, under a shorter limit than a check's, offline:
   # mise ls names the active versions without asking any backend.
   if (( with_mise )); then
@@ -401,11 +402,18 @@ local_refresh() {
   done < <(table_lines "$app_table")
   ! pacman_busy || local_pacman_busy
 
+  # Every row of the table takes its marks from apps.json as a check writes
+  # them, so a new or overridden icon shows without one. The table goes in
+  # with --slurpfile: as one argv string a large one would pass the
+  # kernel's limit on an argument and fail every refresh.
+  printf '%s\n' "$app_table" >"$tmp/table.json"
   out=$(mktemp "$tmp/.status.XXXXXX")
-  printf '%s\n' "${changes[@]}" | jq -s --slurpfile prevs "$tmp/previous.json" --argjson order "$order" \
-    --argjson icons "$(jq -c 'map({key: .pkg, value: {icon: (.icon // "" | tostring), iconLight: (.iconLight // "" | tostring)}}) | from_entries' <<<"$app_table")" \
-    --arg inventory "$at" "$jq_row_order"'
+  printf '%s\n' "${changes[@]}" | jq -s --slurpfile prevs "$tmp/previous.json" \
+    --slurpfile table "$tmp/table.json" --arg inventory "$at" "$jq_row_order"'
     $prevs[0] as $prev
+    | ($table[0] | map(.pkg)) as $order
+    | ($table[0] | map({key: .pkg, value: {icon: (.icon // "" | tostring), iconLight: (.iconLight // "" | tostring)}})
+        | from_entries) as $icons
     | reduce .[] as $c ($prev.apps;
         if any(.[]; .pkg == $c.pkg) then map(if .pkg == $c.pkg then $c else . end) else . + [$c] end)
     | map(if $icons[.pkg] then . + $icons[.pkg] else . end)

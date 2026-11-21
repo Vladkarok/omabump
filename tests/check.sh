@@ -718,6 +718,32 @@ same "--local: existing rows pick up updated icons from apps.json without a chec
 jq 'map(if .pkg == "loc-a" then del(.icon, .iconLight) else . end)' \
   "$run_dir/config/omarchy/omabump/apps.json" >"$run_dir/apps-icons.json"
 mv "$run_dir/apps-icons.json" "$run_dir/config/omarchy/omabump/apps.json"
+# The other way: a mark apps.json no longer has goes, on a mise row the run
+# does not read too; Omabump's own row and a row outside the table keep
+# theirs.
+loc_status
+jq '.apps |= map(if .pkg | IN("loc-a", "mise:t", "self:omabump") then .icon = "assets/old.svg" | .iconLight = "assets/old-light.svg" else . end)
+  | .apps += [.apps[0] + {pkg: "loc-off", label: "Loc Off", icon: "assets/off.svg", iconLight: "assets/off-light.svg"}]' \
+  "$run_dir/fixture.json" >"$run_state/status.json"
+loc_same
+local_run --no-mise; rc=$?
+same "--local: a mark apps.json dropped goes, a mise row's under --no-mise too" "0||||" \
+  "$rc|$(loc_row loc-a '"\(.icon)|\(.iconLight)"')|$(loc_row mise:t '"\(.icon)|\(.iconLight)"')"
+same "--local: Omabump's own row and a row outside the table keep their marks" \
+  "assets/old.svg|assets/old-light.svg|assets/off.svg|assets/off-light.svg" \
+  "$(loc_row self:omabump '"\(.icon)|\(.iconLight)"')|$(loc_row loc-off '"\(.icon)|\(.iconLight)"')"
+# A table whose marks add up past the kernel's limit on one argument
+# (128 KiB) still refreshes: it never goes to jq as one.
+loc_status
+cp "$run_dir/config/omarchy/omabump/apps.json" "$run_dir/apps-saved.json"
+jq --arg big "assets/$(head -c 50000 /dev/zero | tr '\0' a).svg" \
+  '. + [range(3) | {pkg: "loc-big\(.)", label: "Big", source: "indicator", icon: $big, feed: {type: "github-release", repo: "o/b"}}]' \
+  "$run_dir/apps-saved.json" >"$run_dir/config/omarchy/omabump/apps.json"
+loc_same
+local_run; rc=$?
+same "--local: a table of large marks still refreshes" "0|2026-01-01T00:10:00+00:00|false" \
+  "$rc|$(run_status '"\(.checkedAt)|\(.inventoryAt == "2026-01-01T00:09:00+00:00")"')"
+mv "$run_dir/apps-saved.json" "$run_dir/config/omarchy/omabump/apps.json"
 
 # Omabump updated outside its Update (omarchy plugin update, a git pull):
 # its row follows manifest.json as the others follow pacman.
