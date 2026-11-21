@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.17 (2026-11-21)
+
+- The Grok desktop app shows Grok Bot's own round mark, so it no longer looks the same as Grok CLI.
+- The T3 Code mark is vertically centred and drawn a little larger, in line with the other rows.
+- The fallback marks (the terminal glyph for a CLI without a logo, the window glyph for an app without one) are centred in the icon column instead of sitting off to one side.
+- A local refresh no longer fails with a very large user `apps.json`: the table no longer goes to jq as a single command-line argument.
+- `docs/internals.md` now says a local refresh takes `icon` and `iconLight` from `apps.json`, so a changed or removed mark shows the next time the panel opens.
+
 ## 0.1.16 (2026-11-20)
 
 - Every shipped desktop app and mise CLI now has its own SVG mark in `assets/`, with dark and light variants where needed, instead of falling back to the generic box or terminal glyph. T3 Code and ZCode also get cleaner marks.
