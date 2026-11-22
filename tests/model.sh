@@ -156,6 +156,41 @@ EOF
   same "and parseStatus keeps the array row" 1 \
     "$(jq -c '[tojson, true]' <<<"$model_rows_doc" | model_call parseStatus | jq '[.apps[] | arrays] | length')"
 
+  # --- what a route knows ---------------------------------------------------------
+
+  # A row of each route as a check writes it (row_json, from route_table),
+  # installed under another name, with an Update: the panel reads its
+  # section and switchRoute from it. A row a 0.1.17 checker wrote has
+  # neither, and Model.js reads them from its source then: both must say
+  # the same of every route, in each section's order, and of the switch.
+  model_route_row() (
+    # shellcheck disable=SC2034 # row_json's fields
+    {
+      local pkg=p-$1 label=P source=$1 installed_name=other installed=1.0-1 latest=1.1 from=feed update=true
+      local installable=true error="" note="" stale=false switchable=false recipe="" request="" muted=false
+      local skipped=false skip_end="" unchecked=false held=false omarchy_update=false blocked="" self_updating=false
+      local hold_clause="" unread=false app='{}'
+    }
+    row_json
+  )
+  for model_route in "${route_names[@]}"; do model_route_row "$model_route"; done >"$scratch/route-rows"
+  model_route_reads() {
+    jq -c '[.]' "$1" | model_call rowSection | paste -sd' '
+    jq -c '[.]' "$1" | model_call switchRoute | paste -sd' '
+    jq -c '[.]' "$1" | model_call switchClause | paste -sd'|'
+    jq -sc '[.]' "$1" | model_call panelLayout | jq -c '.rows | map(.pkg)'
+  }
+  jq -c 'del(.section, .switchRoute)' "$scratch/route-rows" >"$scratch/route-rows-old"
+  same "the panel reads each route's row (section, switchRoute) as it reads a 0.1.17 row of it" \
+    "$(model_route_reads "$scratch/route-rows-old")" "$(model_route_reads "$scratch/route-rows")"
+  same "and the rows say route_table's sections and switches" \
+    "$(for r in "${route_names[@]}"; do printf '%s %s\n' "${route_facts[$r.section]}" \
+      "$([[ ${route_facts[$r.switch]} == yes ]] && echo true || echo false)"; done)" \
+    "$(jq -r '"\(.section) \(.switchRoute)"' "$scratch/route-rows")"
+  same "row_order sorts the rows as the panel's sections show them" \
+    "$(jq -sc --argjson order '[]' "$jq_status"' row_order($order) | map(.pkg)' "$scratch/route-rows")" \
+    "$(jq -sc '[.]' "$scratch/route-rows" | model_call panelLayout | jq -c '.rows | map(.pkg)')"
+
   # The slack every bar allows a run that started about when its own did:
   # run_recent's for a check (--if-due), Model.localDue's for a local
   # refresh, at each side of the edge, a time ahead of the clock and none.

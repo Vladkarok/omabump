@@ -196,10 +196,67 @@ load_quiet() {
 # muted_json are ones app_id_ok accepts, which JSON writes without escapes.
 row_muted() { [[ $muted_json == *"\"$1\""* ]]; }
 
-# Versions mise or Omabump's release feed print are compared as strings: mise
-# decides what is newer there, and vercmp would call 1.0.0 and 1.0.0-beta.1
-# equal. Every other source compares with vercmp.
-string_versions() { [[ $1 == mise || $1 == self ]]; }
+# --- routes ----------------------------------------------------------------------
+#
+# A row's source names its route: how its versions are read and compared,
+# and what Update can do. The facts below are asked here (route), not of
+# the source's name; what a route runs (the check's route case, the
+# installer's, mise's own readers) stays with the code that runs it, and
+# so do the rules that name mise for what they are about: Show mise tools,
+# mise's inventory failing, a mise row's id and tool name in apps.json.
+# One line a route:
+#   versions   how a newer version is told: vercmp, or exact (a string
+#              that differs: mise decides what is newer, and vercmp would
+#              call 1.0.0 and 1.0.0-beta.1 equal; Omabump's release tags
+#              likewise)
+#   newest     where the newest version comes from: the feed in apps.json,
+#              or mise (mise outdated)
+#   installed  what reads the installed version: pacman (or the app's own
+#              copy, installed_app), mise's inventory, or Omabump's
+#              manifest.json
+#   switch     yes when Update installs a package by the row's pkg, and so
+#              can replace one installed under another name (Switch)
+#   section    where the row sits: with the desktop apps, the mise CLIs, or
+#              Omabump itself (row_order; the panel's sections, the row's
+#              section)
+# An app installed as a copy that updates itself (selfUpdating) is listed
+# under its source, and its row carries the source's section and switch,
+# but it takes no route: no Update (installable false), and so no Switch,
+# its version from a file and compared by self_row.
+route_table='
+  omarchy     vercmp  feed  pacman    yes  desktop
+  vendor-pkg  vercmp  feed  pacman    yes  desktop
+  indicator   vercmp  feed  pacman    no   desktop
+  mise        exact   mise  mise      no   cli
+  self        exact   feed  manifest  no   plugin'
+declare -gA route_facts=()
+route_names=()
+while read -r _route _versions _newest _installed _switch _section; do
+  [[ -n $_route ]] || continue
+  route_names+=("$_route")
+  route_facts[$_route.versions]=$_versions route_facts[$_route.newest]=$_newest
+  route_facts[$_route.installed]=$_installed route_facts[$_route.switch]=$_switch
+  route_facts[$_route.section]=$_section
+done <<<"$route_table"
+unset _route _versions _newest _installed _switch _section
+
+# True when the route of the source $1 has the fact $2 at the value $3
+# (route_table). A source no route names has none.
+route() { [[ ${route_facts[$1.$2]:-} == "$3" ]]; }
+
+# The jq definitions for the same: route_section, a row's section by its
+# source, desktop for a source no route names, and route_rank, where that
+# section comes: desktop apps, mise CLIs, Omabump itself. The names and sections are
+# route_table's words, which need no escapes in JSON.
+_sections=""
+for _route in "${route_names[@]}"; do _sections+="${_sections:+, }\"$_route\": \"${route_facts[$_route.section]}\""; done
+jq_routes="
+  def route_section: {$_sections}[.source | strings] // \"desktop\";
+  def route_rank: {desktop: 0, cli: 1, plugin: 2}[route_section];"
+unset _route _sections
+
+# Versions of a route that compares them exactly (route_table's versions).
+string_versions() { route "$1" versions exact; }
 
 # True when a row's update is the version the user skipped, or (vercmp
 # sources) older. A newer release than the skipped one lights the row up
@@ -1049,10 +1106,10 @@ jq_app_facts=$mise_jq_active'
 installed_from() {
   local app=$1 source line names npm image active
   IFS=$'\x1e' read -r source names npm image active <<<"$2"
-  if [[ $source == mise ]]; then
+  if route "$source" installed mise; then
     [[ -n $active ]] || return 1
     line=$active
-  elif [[ $source == self ]]; then
+  elif route "$source" installed manifest; then
     line=$(self_version)
     version_ok "$line" || return 1
     line="omabump $line"
@@ -1679,7 +1736,7 @@ update_blocked() {
 # not past the newest. $1 source, $2 installed name, $3 pkg, $4 installable,
 # $5 update, $6 latest, $7 installed.
 row_switchable() {
-  [[ ($1 == omarchy || $1 == vendor-pkg) && $2 != "$3" && $4 == true && $5 != true && -n $6 ]] \
+  route "$1" switch yes && [[ $2 != "$3" && $4 == true && $5 != true && -n $6 ]] \
     && ! row_past "$7" "$6" feed
 }
 
@@ -1751,7 +1808,7 @@ row_derive() {
   update=$mise_update
   if [[ $self_updating == true ]]; then
     self_row "$app" "$label" "$installed_name" "$installed" "$latest"
-  elif [[ -n $latest && $source != mise ]]; then
+  elif [[ -n $latest ]] && ! route "$source" newest mise; then
     row_newer "$latest" "$installed" "$from" && update=true
   fi
   row_hold
@@ -1768,7 +1825,8 @@ row_derive() {
 # unchecked, held, omarchy_update, blocked (the reason, "" when Update is
 # not off), self_updating, hold_clause (holdClause, row_hold's), unread
 # (written by a local refresh, read by no check since), and the icon and
-# iconLight of the entry app. Every string from a feed, mise, pacman or
+# iconLight of the entry app; section and switchRoute are its route's
+# (route_table), for the panel. Every string from a feed, mise, pacman or
 # apps.json goes through clean_text on its way in. The fields are listed
 # under status.json below.
 # shellcheck disable=SC2154 # the row's fields, the caller's variables
@@ -1782,6 +1840,7 @@ row_json() {
     --arg skipEnded "$skip_end" --argjson unchecked "$unchecked" --argjson held "$held" \
     --argjson omarchyUpdate "$omarchy_update" --arg blocked "$blocked" --argjson selfUpdating "$self_updating" \
     --arg holdClause "$(clean_text "$hold_clause")" --argjson unread "$unread" \
+    --arg section "${route_facts[$source.section]:-desktop}" --argjson switchRoute "$(route "$source" switch yes && echo true || echo false)" \
     --argjson app "$app" \
     '{pkg: $pkg, label: $label, source: $source, installedName: $installedName,
       installed: $installed, latest: $latest, versionFrom: $versionFrom,
@@ -1790,7 +1849,7 @@ row_json() {
       request: $request, muted: $muted, skipped: $skipped, skipEnded: $skipEnded, unchecked: $unchecked,
       held: $held, omarchyUpdate: $omarchyUpdate, blocked: ($blocked != ""),
       selfUpdating: $selfUpdating, icon: ($app.icon // "" | tostring), iconLight: ($app.iconLight // "" | tostring),
-      holdClause: $holdClause, unread: $unread}'
+      holdClause: $holdClause, unread: $unread, section: $section, switchRoute: $switchRoute}'
 }
 
 # --- status.json -----------------------------------------------------------------
@@ -1822,8 +1881,11 @@ row_json() {
 # latest, versionFrom, updateAvailable, installable, error, note, stale,
 # switchable, recipe, request, muted, skipped, skipEnded, unchecked, held,
 # omarchyUpdate, blocked, selfUpdating, icon and iconLight, and since they
-# came holdClause and unread. A file from an older checker may lack the
-# later ones: inventoryAt, retry, selfUpdating, holdClause and unread. No
+# came holdClause and unread, then section and switchRoute (the route's
+# section and switch, route_table). A file from an older checker may lack
+# the later ones: inventoryAt, retry, selfUpdating, holdClause, unread,
+# section and switchRoute, and a row the local refresh carries over from
+# such a file lacks section and switchRoute until a check reads it. No
 # field is removed or renamed within a version: a panel still loaded from
 # an older release reads a newer checker's file.
 status_schema=1
@@ -1854,11 +1916,11 @@ status_schema=1
 # widget shows as a check running instead: --if-due reads the file under
 # the lock, when no check runs, so the mark is a killed run's.
 # shellcheck disable=SC2016 # jq variables, not the shell's
-jq_status='
+jq_status=$jq_routes'
   def status_ok: type == "object" and .schemaVersion == '"$status_schema"' and (.apps | type == "array")
     and all(.apps[]; type == "object" and (.pkg | type == "string"));
   def status_row($pkg): [.apps[] | select(.pkg == $pkg)][0] // {};
-  def row_order($order): sort_by([.source == "self", .source == "mise", (.pkg as $p | $order | index($p) // 1e9)]);
+  def row_order($order): sort_by([route_rank, (.pkg as $p | $order | index($p) // 1e9)]);
   def row_unread: if has("unread") then .unread == true else .unchecked == true and .note == "Not checked yet" end;
   def row_hold_clause: if has("holdClause") then .holdClause | strings // ""
     else (.note | strings // "" | capture("^(?<c>omarchy-pkgs holds new releases for [0-9]+ h, Update from [^;]*)(; |$)").c) // "" end;

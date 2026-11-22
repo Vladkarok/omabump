@@ -649,6 +649,36 @@ test("panelLayout: no rows, and a QVariantList of rows", () => {
     { desktop: ["b"], cli: ["mise:a"], plugin: [], rows: ["b", "mise:a"], offsets: { desktop: 0, cli: 1, plugin: 2 } })
 })
 
+test("rowSection: the row's section field, else its source's (a 0.1.17 row has none)", () => {
+  same([row({}), row({ source: "vendor-pkg" }), row({ source: "indicator" }), row({ source: "mise" }), self({}),
+    row({ source: "other" }), row({ source: undefined })].map(app => m.rowSection(app)),
+    ["desktop", "desktop", "desktop", "cli", "plugin", "desktop", "desktop"])
+  same([row({ section: "cli" }), row({ source: "mise", section: "desktop" }), self({ section: "plugin" }),
+    row({ source: "mise", section: "elsewhere" }), row({ source: "mise", section: 1 }), null].map(app => m.rowSection(app)),
+    ["cli", "desktop", "plugin", "cli", "cli", "desktop"])
+})
+
+test("panelLayout: by the rows' section field when they have one", () => {
+  const apps = [row({ pkg: "a", section: "cli" }), row({ pkg: "mise:b", source: "mise", section: "desktop" }),
+    self({ updateAvailable: true, section: "plugin" }), row({ pkg: "c", section: "plugin", updateAvailable: true })]
+  same(sections(m.panelLayout(apps)), {
+    desktop: ["mise:b"], cli: ["a"], plugin: ["self:omabump", "c"],
+    rows: ["mise:b", "a", "self:omabump", "c"], offsets: { desktop: 0, cli: 1, plugin: 2 }
+  })
+})
+
+test("switchRoute: the row's field, else omarchy and vendor-pkg (a 0.1.17 row has none)", () => {
+  same([row({}), row({ source: "vendor-pkg" }), row({ source: "indicator" }), row({ source: "mise" }), self({}),
+    row({ switchRoute: false }), row({ source: "mise", switchRoute: true }), row({ switchRoute: "yes" }), null]
+    .map(app => m.switchRoute(app)), [true, true, false, false, false, false, true, true, false])
+})
+
+test("switchClause: by the row's switchRoute when it has one", () => {
+  same([m.switchClause(Object.assign({}, renamed, { switchRoute: true })), m.switchClause(Object.assign({}, renamed, { switchRoute: false })),
+    m.switchClause(Object.assign({}, renamed, { source: "indicator", switchRoute: true }))],
+    ["Installed as chatgpt-desktop, Update switches to chatgpt", "", "Installed as chatgpt-desktop, Update switches to chatgpt"])
+})
+
 test("rowPlace: each section's edges, with all three sections", () => {
   const layout = m.panelLayout([row({ pkg: "a" }), row({ pkg: "b" }), row({ pkg: "mise:c", source: "mise" }),
     row({ pkg: "mise:d", source: "mise" }), self({ updateAvailable: true })])

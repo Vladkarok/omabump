@@ -712,7 +712,11 @@ same "--local: an app installed since the check: an unchecked row, and a check a
 same "--local: and it is unread, until a check reads it" true "$(loc_row loc-new .unread)"
 same "--local: the new row in table order" 'loc-a loc-b loc-held loc-gone loc-new mise:t mise:u mise:k self:omabump' \
   "$(run_status '[.apps[].pkg] | join(" ")')"
-same "--local: the new row has every field a check writes" "$(jq -c '.apps[0] | keys' "$run_dir/fixture.json")" "$(loc_row loc-new 'keys | tojson')"
+# The fixture's rows are a 0.1.17 check's, without the route's section and
+# switchRoute; a row this release writes has them too.
+same "--local: the new row has every field a check writes" \
+  "$(jq -c '.apps[0] | keys + ["section", "switchRoute"] | sort' "$run_dir/fixture.json")" "$(loc_row loc-new 'keys | tojson')"
+same "--local: and its route's section and switch (indicator)" "desktop false" "$(loc_row loc-new '"\(.section) \(.switchRoute)"')"
 
 # Icons updated in apps.json (a plugin update, a user override) land on
 # existing rows on the next local refresh without asking for a full check.

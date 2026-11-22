@@ -480,7 +480,34 @@ shipped_apps=$real_shipped
 printf '[{"pkg": "x1", "source": "self"}, {"pkg": "x2", "source": "shell"}, {"pkg": "x3"}, {"pkg": "x4", "source": "indicator"}]' >"$user_apps"
 same "apps_table: a user entry with source self, an unknown or no source is dropped" 'x4' \
   "$(apps_table 2>/dev/null | jq -r '[.[] | select(.pkg | startswith("x")) | .pkg] | join(" ")')"
+# The sources apps.json may name are route_table's routes but Omabump's
+# own: entry_ok lists them itself, so a route added to the table and not
+# to it is refused from apps.json, not let through.
+jq -nc --arg routes "${route_names[*]}" '$routes | split(" ") | map({pkg: "r-\(.)", source: .})' >"$user_apps"
+same "apps_table: every route of route_table but self comes from apps.json" "omarchy vendor-pkg indicator mise" \
+  "$(apps_table 2>/dev/null | jq -r '[.[] | select(.pkg | startswith("r-")) | .source] | join(" ")')"
 rm -f "$user_apps"
+
+# --- route ----------------------------------------------------------------------
+
+same "route: the facts of each route, as route_table lists them" \
+  'omarchy vercmp feed pacman yes desktop
+vendor-pkg vercmp feed pacman yes desktop
+indicator vercmp feed pacman no desktop
+mise exact mise mise no cli
+self exact feed manifest no plugin' \
+  "$(for r in "${route_names[@]}"; do
+      echo "$r ${route_facts[$r.versions]} ${route_facts[$r.newest]} ${route_facts[$r.installed]} ${route_facts[$r.switch]} ${route_facts[$r.section]}"
+    done)"
+refuse "route: a source no route names has no fact" route shell switch yes
+refuse "route: nor an empty one" route "" versions vercmp
+same "route_section: by source, desktop for none or another" 'desktop desktop desktop cli plugin desktop desktop desktop' \
+  "$(jq -r "$jq_routes"' map(route_section) | join(" ")' <<<'[{"source": "omarchy"}, {"source": "vendor-pkg"},
+    {"source": "indicator"}, {"source": "mise"}, {"source": "self"}, {"source": "shell"}, {"source": 1}, {}]')"
+same "row_order: desktop apps in table order, then mise tools, then Omabump" 'a b x mise:m self:omabump' \
+  "$(jq -r "$jq_status"' .apps | row_order(["a", "b", "mise:m"]) | map(.pkg) | join(" ")' <<<'{"apps": [
+    {"pkg": "self:omabump", "source": "self"}, {"pkg": "mise:m", "source": "mise"}, {"pkg": "x", "source": "indicator"},
+    {"pkg": "a", "source": "omarchy"}, {"pkg": "b", "source": "vendor-pkg"}]}')"
 
 # --- recipe_version -----------------------------------------------------------
 
@@ -901,7 +928,7 @@ derived() {
 mkdir -p "$state_dir"
 row_fields='"\(.updateAvailable)|\(.installable)|\(.held)|\(.switchable)|\(.unchecked)|\(.note)"'
 same "row: an omarchy row with an update, the whole row" \
-  '{"pkg":"r-app","label":"R ‹App›","source":"omarchy","installedName":"r-app","installed":"1.0-1","latest":"1.2","versionFrom":"feed","updateAvailable":true,"installable":true,"error":"","note":"Recipe from omarchy-pkgs 0123456789ab","stale":false,"switchable":false,"recipe":"r-app 1.0-1","request":"","muted":false,"skipped":false,"skipEnded":"","unchecked":false,"held":false,"omarchyUpdate":false,"blocked":false,"selfUpdating":false,"icon":"assets/r.svg","iconLight":"","holdClause":"","unread":false}' \
+  '{"pkg":"r-app","label":"R ‹App›","source":"omarchy","installedName":"r-app","installed":"1.0-1","latest":"1.2","versionFrom":"feed","updateAvailable":true,"installable":true,"error":"","note":"Recipe from omarchy-pkgs 0123456789ab","stale":false,"switchable":false,"recipe":"r-app 1.0-1","request":"","muted":false,"skipped":false,"skipEnded":"","unchecked":false,"held":false,"omarchyUpdate":false,"blocked":false,"selfUpdating":false,"icon":"assets/r.svg","iconLight":"","holdClause":"","unread":false,"section":"desktop","switchRoute":true}' \
   "$(derived omarchy r-app 1.0-1 1.2 feed 0 0)"
 same "row: the recipe holds the release: no Update, and the hold's clause first" \
   'true|false|true|false|false|omarchy-pkgs holds new releases for 24 h, Update from Jan 2 00:00; Recipe from omarchy-pkgs 0123456789ab' \

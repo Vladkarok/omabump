@@ -539,6 +539,17 @@ function selfUpdating(app) { return !!app && app.selfUpdating === true }
 
 function updatable(app) { return !!app && app.updateAvailable === true && app.installable === true && !selfUpdating(app) }
 
+// Whether the row's route installs a package by the row's pkg, and so can
+// replace one installed under another name: the checker's switchRoute
+// (route_table in bin/omabump-common). A row a checker of 0.1.17 or
+// earlier wrote has no such field; the routes of then that could are
+// omarchy and vendor-pkg.
+function switchRoute(app) {
+  if (!app) return false
+  if (typeof app.switchRoute === "boolean") return app.switchRoute
+  return app.source === "omarchy" || app.source === "vendor-pkg"
+}
+
 // Installed under another package name at a version the canonical package
 // matches (the checker's switchable): Switch replaces it.
 function switchable(app) { return !!app && app.switchable === true && !selfUpdating(app) }
@@ -594,7 +605,7 @@ function cursorIndex(rows, pkg, moved, muted, skipped) {
 // exists, Switch does it at the same one. The checker writes the fields
 // and the widget says it (status.json schemaVersion 1).
 function switchClause(app) {
-  if (!app || (app.source !== "omarchy" && app.source !== "vendor-pkg") || app.installable !== true) return ""
+  if (!app || !switchRoute(app) || app.installable !== true) return ""
   var name = String(app.installedName || "")
   if (name === "" || name === app.pkg) return ""
   if (app.updateAvailable === true) return "Installed as " + name + ", Update switches to " + app.pkg
@@ -719,10 +730,21 @@ function luminance(c) {
 
 // --- the panel's layout ------------------------------------------------------------
 
-// Omabump's own row shows while a newer release exists or its check failed;
-// it hides while current.
+// Omabump's own row (the plugin section's, rowSection) shows while a newer
+// release exists or its check failed; it hides while current.
 function selfRowShown(app) {
-  return !!app && app.source === "self" && (app.updateAvailable === true || String(app.error || "") !== "")
+  return !!app && rowSection(app) === "plugin" && (app.updateAvailable === true || String(app.error || "") !== "")
+}
+
+// The row's section: "desktop", "cli" (a mise CLI) or "plugin" (Omabump
+// itself), the checker's section (route_table in bin/omabump-common). A
+// row a checker of 0.1.17 or earlier wrote has no such field, and its
+// source says it.
+var rowSections = ["desktop", "cli", "plugin"]
+function rowSection(app) {
+  if (!app) return "desktop"
+  if (rowSections.indexOf(app.section) !== -1) return app.section
+  return app.source === "mise" ? "cli" : app.source === "self" ? "plugin" : "desktop"
 }
 
 // The panel's rows by section (Panel.qml's three Repeaters): desktop apps,
@@ -735,8 +757,9 @@ function panelLayout(apps) {
   var desktop = [], cli = [], plugin = []
   for (var i = 0; i < apps.length; i++) {
     var app = apps[i]
-    if (app.source === "mise") cli.push(app)
-    else if (app.source === "self") { if (selfRowShown(app)) plugin.push(app) }
+    var section = rowSection(app)
+    if (section === "cli") cli.push(app)
+    else if (section === "plugin") { if (selfRowShown(app)) plugin.push(app) }
     else desktop.push(app)
   }
   return {
