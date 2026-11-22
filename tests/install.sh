@@ -437,6 +437,33 @@ vstaged=$istaging/$vpkg vcached=$it/cache/omabump/packages/$vpkg
 install_text='post_install() { echo hello; }' make_pkg "$iserved/$vpkg" 'pkgname = testapp' 'pkgver = 2.0.0-1' 'conflict = testapp-bin'
 printf 'version: 2.0.0\nfiles:\n  - url: https://example.invalid/%s\n    sha512: %s\n' "$vpkg" "$(sha512_b64 "$iserved/$vpkg")" >"$iserved/latest.yml"
 
+# A jq that fails, as a killed one does, on the read of updateBlocked alone
+# (update_blocked's filter): that is no answer, so a run ends there, failed,
+# before any sudo, and --prepare too, never as "Would refuse" nor as an
+# Update that is not off. testapp's feed has a newer release by now, so a
+# run that took the failure for "not off" would reach sudo pacman -U.
+ijq=$it/jq-killed
+mkdir -p "$ijq"
+# shellcheck disable=SC2016 # expanded by the stub, not here
+printf '#!/bin/bash\nfor a; do [[ $a == %q ]] && exit 137; done\nexec %q "$@"\n' '.updateBlocked // ""' "$(command -v jq)" >"$ijq/jq"
+chmod +x "$ijq/jq"
+inst_env_was=("${inst_env[@]}")
+inst_env+=(PATH="$ijq:$istubs:$PATH")
+unread_line='omabump: could not read the entry of %s in the app table; nothing was installed'
+for case in 'blockedapp:Blocked App:blockedapp 1.0-1' 'testapp:Test App:testapp 1.0.0-1'; do
+  IFS=: read -r upkg ulabel uinstalled <<<"$case"
+  # shellcheck disable=SC2059 # the line's format
+  uline=$(printf "$unread_line" "$ulabel")
+  for uargs in '' --prepare; do
+    fresh "$uinstalled"
+    inst ${uargs:+"$uargs"} "$upkg"
+    same "updateBlocked unread, $upkg${uargs:+ $uargs}: the run fails there" "1|$uline" "$irc|$(tail -n1 <<<"$iout")"
+    no_call "updateBlocked unread, $upkg${uargs:+ $uargs}: no sudo" 'sudo'
+    refuse "updateBlocked unread, $upkg${uargs:+ $uargs}: no refusal, no route" grep -qe 'Would refuse\|is off in Omabump\|installed 1' <<<"$iout"
+  done
+done
+inst_env=("${inst_env_was[@]}")
+
 fresh 'testapp 1.0.0-1'
 inst --prepare testapp
 same "install --prepare (vendor): succeeds" 0 "$irc"

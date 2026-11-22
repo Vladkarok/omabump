@@ -1719,15 +1719,23 @@ row_newer() { newer "$1" "$(row_have "$2" "$3")"; }
 # (row_have): a release no check has seen.
 row_past() { newer "$(row_have "$1" "$3")" "$2"; }
 
-# Why apps.json turned Omabump's Update off for the app $1 (its
-# updateBlocked), on stdout; fails when it did not. An app installed as a
-# copy that updates itself ($2 true) has no Update to turn off. Omabump's
-# own row (self_app) carries none.
+# Whether apps.json turned Omabump's Update off for the app $1 (its
+# updateBlocked), with three answers a caller must tell apart:
+#   0  off: the reason on stdout
+#   1  not off, nothing on stdout. An app installed as a copy that updates
+#      itself ($2 true) has no Update to turn off; Omabump's own row
+#      (self_app) carries none.
+#   2+ the entry could not be read (jq failed: its status, 2 for its 1),
+#      nothing on stdout. Not "not off": a caller that cannot stop treats
+#      it as its own failure, as a top-level read under set -e did. Callers
+#      run it in a test (if, ||), where set -e stops nothing, so the read's
+#      status is checked here.
 update_blocked() {
-  local why
-  [[ $2 != true ]] || return 1
-  why=$(jq -r '.updateBlocked // ""' <<<"$1")
-  [[ -n $why ]] && printf '%s\n' "$why"
+  local why rc=0
+  why=$(jq -r '.updateBlocked // ""' <<<"$1") || rc=$?
+  (( rc == 0 )) || return $(( rc == 1 ? 2 : rc ))
+  [[ $2 != true && -n $why ]] || return 1
+  printf '%s\n' "$why"
 }
 
 # Installed under another name (chatgpt-desktop, z-code-bin): Update

@@ -897,11 +897,24 @@ check "row_past: installed past what the feed knows" row_past 1.3-1 1.2 feed
 refuse "row_past: at it, by its upstream part" row_past 2:1.2-7 1.2 feed
 check "row_past: whole versions when not from a feed" row_past 2:1.2-7 1.2 mise
 
-same "update_blocked: the reason apps.json gives" 'a known problem' \
-  "$(update_blocked '{"pkg": "a", "source": "omarchy", "updateBlocked": "a known problem"}' false)"
-refuse "update_blocked: none for an app that updates itself" update_blocked '{"pkg": "a", "source": "omarchy", "updateBlocked": "x"}' true
-refuse "update_blocked: none for Omabump's own row" update_blocked "$self_app" false
-refuse "update_blocked: none without one" update_blocked '{"pkg": "a", "source": "omarchy", "updateBlocked": ""}' false
+# update_blocked's three answers, as "<status>|<stdout>": 0 off with the
+# reason, 1 not off, 2 and up the entry could not be read (jq's status, 2
+# for its 1), which no caller may take for "not off".
+blocked_of() { local out rc=0; out=$(update_blocked "$@" 2>/dev/null) || rc=$?; echo "$rc|$out"; }
+same "update_blocked: the reason apps.json gives" '0|a known problem' \
+  "$(blocked_of '{"pkg": "a", "source": "omarchy", "updateBlocked": "a known problem"}' false)"
+same "update_blocked: none for an app that updates itself" '1|' \
+  "$(blocked_of '{"pkg": "a", "source": "omarchy", "updateBlocked": "x"}' true)"
+same "update_blocked: none for Omabump's own row" '1|' "$(blocked_of "$self_app" false)"
+same "update_blocked: none without one" '1|' \
+  "$(blocked_of '{"pkg": "a", "source": "omarchy", "updateBlocked": ""}' false)"
+same "update_blocked: an entry jq cannot parse is unread, not not off" '5|' "$(blocked_of 'not json' false)"
+same "update_blocked: unread when jq is killed, its status kept" '137|' \
+  "$( jq() { return 137; }; blocked_of '{"pkg": "a", "updateBlocked": "x"}' false )"
+same "update_blocked: a jq that fails with 1 is unread too (2)" '2|' \
+  "$( jq() { return 1; }; blocked_of '{"pkg": "a"}' false )"
+same "update_blocked: unread for an app that updates itself as well" '137|' \
+  "$( jq() { return 137; }; blocked_of '{"pkg": "a"}' true )"
 
 # derived <source> <installed name> <installed> <latest> <from> <hold s> <seen s ago> [<app>]:
 # a row as a check's route would leave it (installable, the recipe's note),

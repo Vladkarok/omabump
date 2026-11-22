@@ -135,13 +135,16 @@ installed_facts() {
 # The refusals Omabump's own rules make from the app's entry, the arguments
 # and what is installed, with no recipe, feed or package to read. Prints the
 # reason of the first that applies, as a run refuses with it, and succeeds;
-# fails when none applies. It writes nothing, locks nothing and asks no
-# network: it reads the entry, the facts installed_facts read, the plugin
-# directory and, for copy, what installed_app reads (pacman's database, an
-# npm package.json, an AppImage's desktop entry through 7z to stdout). It
-# calls neither refuse nor die: a run and --prepare act on the same answer
-# (refuse), and a test can ask it directly. $1 is how far the run has got,
-# which names the rules it asks:
+# fails with 1 when none applies, and with 2 when a rule could not read the
+# entry (update_blocked), which is neither: a run ends there as failed,
+# --prepare too, as a read under set -e ended it (rule_ask). It writes
+# nothing, locks nothing and asks no network: it reads the entry, the facts
+# installed_facts read, the plugin directory and, for copy, what
+# installed_app reads (pacman's database, an npm package.json, an
+# AppImage's desktop entry through 7z to stdout). It calls neither refuse
+# nor die: a run and --prepare act on the same answer (refuse), and a test
+# can ask it directly. $1 is how far the run has got, which names the
+# rules it asks:
 #   copy   the app's lock taken, the staged copies stopped runs left not yet
 #          removed: an app installed as a copy that updates itself
 #          (installed_app: an npmPackage, or an appImage with its package
@@ -170,8 +173,7 @@ rule_refusal() {
       how=$(self_update_text "$app" "$label" | term_safe | tr '\t\n' '  ' | sed 's/ *$//')
       echo "$label updates itself: $how (it is installed as $name, which Omabump does not replace)" ;;
     entry)
-      blocked=$(update_blocked "$app" false) || return 1
-      [[ -n $blocked ]] || return 1
+      blocked=$(update_blocked "$app" false) || return $(( $? == 1 ? 1 : 2 ))
       echo "Update of $label is off in Omabump: $(term_safe <<<"$blocked" | tr '\t\n' '  ' | sed 's/ *$//')" ;;
     route)
       if (( switch )) && [[ $source != omarchy && $source != vendor-pkg ]]; then
@@ -187,6 +189,17 @@ rule_refusal() {
       fi ;;
     *) return 1 ;;
   esac
+}
+
+# Asks rule_refusal at the phase $1: sets why to the reason and succeeds
+# when a rule refuses, fails when none applies, and ends the run, with
+# --prepare too, when a rule could not read the app's entry: that is no
+# answer, and Update must not go on as if Update were not off.
+rule_ask() {
+  local rc=0
+  why=$(rule_refusal "$1") || rc=$?
+  (( rc < 2 )) || die "could not read the entry of $label in the app table; nothing was installed"
+  return "$rc"
 }
 
 # The staged copies earlier runs of this app recorded in $staged_left
@@ -255,7 +268,7 @@ install_setup() {
   # copy an earlier Update of its package left would then stay for good,
   # with no next Update to remove it: each is named, with the command that
   # removes it.
-  if why=$(rule_refusal copy); then
+  if rule_ask copy; then
     mapfile -t left_copies < <(staged_left_copies)
     for copy in "${left_copies[@]}"; do
       echo "omabump: a stopped Update of the $pkg package left its staged copy in $copy, and no Update of $label will remove it now; remove it with: sudo rm -f -- $copy" >&2
@@ -267,12 +280,12 @@ install_setup() {
   # refusal, no newer version yet, a failed download).
   clear_staged_left
   # The check shows the same reason on the row.
-  if why=$(rule_refusal entry); then refuse "$why"; fi
+  if rule_ask entry; then refuse "$why"; fi
 
   installed_facts
   [[ $source == omarchy ]] && require_omarchy_tools
   echo "$label: installed ${installed:-nothing} (${installed_name:-$pkg}, $source)"
-  if why=$(rule_refusal route); then refuse "$why"; fi
+  if rule_ask route; then refuse "$why"; fi
   (( ! switch )) || echo "Switching from $installed_name to $pkg at the same or a newer version."
 
   # PKGEXT without a compressor: the package is installed seconds after the

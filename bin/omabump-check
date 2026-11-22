@@ -389,6 +389,9 @@ local_row() {
     update=false installable=false unchecked=true note="Not checked yet" unread=true
     label=$(jq -r '.label // .pkg' <<<"$app")
     row_quiet "$pkg" "$source" false "" "$installed"
+    # Any failure of update_blocked, an unread entry too, reads as not off
+    # here, as in 0.1.17: this row only shows, Update reads updateBlocked
+    # itself and fails closed, and the next check reads it again.
     blocked=$(update_blocked "$app" "$self") || blocked=""
     row=$(row_json)
     why="$pkg${installed:+ $installed} is installed since the last check"
@@ -415,6 +418,7 @@ local_row() {
   # recipe, omarchy update's AUR route, and updateBlocked's mark, which an
   # app that updates itself never carries.
   if [[ $self != "$p_self" ]]; then
+    # As for a new row above: an unread entry reads as not off, on purpose.
     blocked=$(update_blocked "$app" "$self") || blocked=""
     row=$(jq -c --arg name "$name" --arg installed "$installed" --argjson self "$self" --arg blocked "$blocked" '
       . + {installedName: $name, installed: $installed, selfUpdating: $self, updateAvailable: false, installable: false,
@@ -704,11 +708,19 @@ while IFS=$'\x1f' read -r pkg source app facts; do
   # apps.json can turn Omabump's Update off for a row (updateBlocked says
   # why): a known problem in what Update would install. The versions still
   # show and still notify; only the route is closed.
-  if blocked=$(update_blocked "$app" "$self_updating"); then
+  # An entry update_blocked could not read ends the check here, as the
+  # read at top level under set -e did: the EXIT trap writes the run as
+  # failed (runError), and no row says Update is on.
+  blocked_rc=0
+  blocked=$(update_blocked "$app" "$self_updating") || blocked_rc=$?
+  if (( blocked_rc == 0 )); then
     installable=false
     note="Update off: $blocked${note:+; $note}"
-  else
+  elif (( blocked_rc == 1 )); then
     blocked=""
+  else
+    echo "omabump-check: could not read the updateBlocked of $pkg in the app table" >&2
+    exit "$blocked_rc"
   fi
 
   # Every route but mise reads its newest version from the feed in apps.json.

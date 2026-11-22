@@ -471,6 +471,24 @@ same "--wait: a wait that gives up exits Model.lockBusyExit, saying no check ran
 same "--wait: and leaves status.json as it was" "$before" "$(md5sum <"$run_state/status.json")"
 rm -rf "$run_dir/busy" "$run_dir/held" "$run_dir/go" "$run_dir/wait.err" "$run_dir/busy.err"
 
+# A jq that fails, as a killed one does, on the read of updateBlocked alone
+# (update_blocked's filter, which every installed row reads): the check
+# ends there, failed, as that read under set -e ended it, and status.json
+# says so; no row reads as one whose Update is on.
+mkdir -p "$run_dir/jq-killed"
+printf '#!/bin/bash\nfor a; do [[ $a == %q ]] && exit 137; done\nexec %q "$@"\n' '.updateBlocked // ""' "$(command -v jq)" \
+  >"$run_dir/jq-killed/jq"
+chmod +x "$run_dir/jq-killed/jq"
+env "${run_env[@]}" PATH="$run_dir/jq-killed:$run_dir/bin:$PATH" timeout -k 5 120 "$root/bin/omabump-check" --no-notify \
+  >/dev/null 2>"$run_dir/jq.err"; rc=$?
+same "updateBlocked unread: the check fails with jq's status, and status.json says it stopped early" \
+  '137|The check stopped early (exit 137)|false|0' \
+  "$rc|$(run_status '"\(.runError)|\(.checking)|\([.apps[] | select(.checking == true)] | length)"')"
+same "updateBlocked unread: stderr names the row" 'claude-desktop' \
+  "$(grep -o 'could not read the updateBlocked of [a-z-]*' "$run_dir/jq.err" | sed 's/.* //')"
+rm -rf "$run_dir/jq-killed" "$run_dir/jq.err"
+check_run
+
 # --- status.json's shape: schemaVersion, the switch, old scratch files ---------------------
 
 # A vendor package installed under another name (foo-old for foo-bin), its
