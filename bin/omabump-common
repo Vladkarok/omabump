@@ -1838,6 +1838,21 @@ status_schema=1
 # checked yet" on an unchecked row, and the hold's clause first. Only for
 # such a row are they read from the note, so that a local refresh right
 # after an upgrade still takes a hold's clause off.
+#
+# And for the whole file: field_text, a field as text (none: "", a
+# non-string as JSON); and what the widget reads of it the same way
+# (tests/model.sh holds the two together): status_apps($mise), the rows
+# it lists (an object each, mise rows only while $mise is 1: Show mise
+# tools, Model.parseStatus), and check_failed($muted; $mise), whether the
+# check it holds failed by the settings as they are now, the muted pkg ids
+# $muted and Show mise tools $mise (1 or 0). Failed means what the widget
+# calls a failure (Model.failureText, or Model.errorCount above 0): runError,
+# an omarchy-pkgs or mise error that not only muted rows share (all_muted:
+# every listed row of the route, and at least one, muted; a self-updating
+# row takes no route of its source, so it counts for none), or a failed row
+# that is not muted. The mark of a run still checking counts too, which the
+# widget shows as a check running instead: --if-due reads the file under
+# the lock, when no check runs, so the mark is a killed run's.
 # shellcheck disable=SC2016 # jq variables, not the shell's
 jq_status='
   def status_ok: type == "object" and .schemaVersion == '"$status_schema"' and (.apps | type == "array")
@@ -1846,7 +1861,32 @@ jq_status='
   def row_order($order): sort_by([.source == "self", .source == "mise", (.pkg as $p | $order | index($p) // 1e9)]);
   def row_unread: if has("unread") then .unread == true else .unchecked == true and .note == "Not checked yet" end;
   def row_hold_clause: if has("holdClause") then .holdClause | strings // ""
-    else (.note | strings // "" | capture("^(?<c>omarchy-pkgs holds new releases for [0-9]+ h, Update from [^;]*)(; |$)").c) // "" end;'
+    else (.note | strings // "" | capture("^(?<c>omarchy-pkgs holds new releases for [0-9]+ h, Update from [^;]*)(; |$)").c) // "" end;
+  def field_text: if . == null or . == false then "" elif type == "string" then . else tostring end;
+  def status_apps($mise): [.apps | arrays | .[] | objects | select($mise == 1 or .source != "mise")];
+  def check_failed($muted; $mise):
+    status_apps($mise) as $apps
+    | def muted: (.pkg | tostring) as $p | $muted | index($p) != null;
+      def all_muted($source): [$apps[] | select(.source == $source and .selfUpdating != true)]
+        | length > 0 and all(.[]; muted);
+      ((.omarchyPkgs | objects | .error) // null | field_text) as $perr
+    | (.runError | field_text) != "" or ($perr != "" and (all_muted("omarchy") | not))
+      or ($mise == 1 and (.miseError | field_text) != "" and (all_muted("mise") | not))
+      or any($apps[]; (.error | field_text) != "" and (muted | not)) or .checking == true;'
+
+# Every bar asks whether a check is due, and a local refresh whether one
+# is, at about the same time: a run that started less than its interval
+# $3 (seconds), less due_slack_sec, before the time $1 is recent enough,
+# and none other is due. $2 is when it started, empty when unknown; any
+# value that is no count of seconds is not recent. A time
+# ahead of the clock (it was set back) proves nothing, and is not recent.
+# Model.localDue reads the same slack (Model.dueSlackSec); tests/model.sh
+# sets the two side by side.
+due_slack_sec=30
+run_recent() {
+  [[ $1 =~ ^[0-9]{1,12}$ && $2 =~ ^[0-9]{1,12}$ && $3 =~ ^[0-9]{1,9}$ ]] || return 1
+  (( $1 >= $2 && $1 - $2 < $3 - due_slack_sec ))
+}
 
 # Reads status_file into status_json when it is a status.json of this
 # shape (status_ok), and with $1 "finished" only when no check is running

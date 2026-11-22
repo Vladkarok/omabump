@@ -159,19 +159,19 @@ load_quiet
 # Decided under the lock, so whatever status.json says is over: no other
 # check runs, and a "checking" mark left in it is a run that was killed.
 # Every monitor's bar asks every minute, and a shell reload starts them all,
-# so a check that started less than the interval (less 30 s of slack) ago is
-# recent enough. Its start counts, not its end: from the end, the next one
-# would come up short by however long the last one took. A time ahead of
-# the clock (it was set back) proves nothing, and a check is due.
+# so a check that started less than the interval, less due_slack_sec
+# (run_recent in omabump-common), ago is recent enough. Its start counts,
+# not its end: from the end, the next one would come up short by however
+# long the last one took. A time ahead of the clock (it was set back)
+# proves nothing, and a check is due.
 #
 # A check that failed is tried once more retry_sec after it started
 # (sooner with a shorter interval), instead of a whole interval later: the
 # summary says "Check failed" (offline after a resume, a feed's 504). Once:
 # a retry that fails too waits the interval, so an outage, or a rate limit
 # that lasts the hour, is not asked again every few minutes. Failed means
-# what the widget calls a failure: runError, an omarchy-pkgs or mise error
-# that not only muted rows share, a failed row that is not muted (by the
-# settings as they are now), or the killed run's mark.
+# what the widget calls a failure, by the settings as they are now, or the
+# killed run's mark: check_failed in omabump-common.
 #
 # attempt_file holds when the last --if-due run started, and whether it was
 # the retry. A run that wrote nothing (it died before its first write) moved
@@ -185,17 +185,8 @@ if (( if_due )); then
   started_at="" checked_at="" file_retry=false failed=false
   # shellcheck disable=SC2016 # jq variables, not the shell's
   status_load && IFS=$'\x1f' read -r started_at checked_at file_retry failed < <(jq -r \
-    --argjson muted "$muted_json" --argjson mise "$with_mise" '
-    def text: if . == null or . == false then "" elif type == "string" then . else tostring end;
-    ([.apps | arrays | .[] | objects | select($mise == 1 or .source != "mise")]) as $apps
-    | def muted: (.pkg | tostring) as $p | $muted | index($p) != null;
-      def all_muted($source): [$apps[] | select(.source == $source and .selfUpdating != true)]
-        | length > 0 and all(.[]; muted);
-      ((.omarchyPkgs | objects | .error) // null | text) as $perr
-    | [(.startedAt | text), (.checkedAt | text), (.retry == true),
-       ((.runError | text) != "" or ($perr != "" and (all_muted("omarchy") | not))
-        or ($mise == 1 and (.miseError | text) != "" and (all_muted("mise") | not))
-        or any($apps[]; (.error | text) != "" and (muted | not)) or .checking == true)]
+    --argjson muted "$muted_json" --argjson mise "$with_mise" "$jq_status"'
+    [(.startedAt | field_text), (.checkedAt | field_text), (.retry == true), check_failed($muted; $mise)]
     | map(tostring) | join("\u001f")' <<<"$status_json" 2>/dev/null) || true
   # When the last run status.json shows started: a file from before
   # startedAt has only checkedAt.
@@ -222,7 +213,7 @@ if (( if_due )); then
   fi
   # The check lock goes before .local.lock, so a check waiting on that one
   # finds this one free.
-  if [[ -n $last_s ]] && (( now_s >= last_s && now_s - last_s < window - 30 )); then
+  if run_recent "$now_s" "$last_s" "$window"; then
     exec 9>&- 6>&-
     exit "$not_due_exit"
   fi

@@ -296,6 +296,8 @@ function parseStatus(text, showMise) {
   var parsed = JSON.parse(String(text))
   var file = parsed && typeof parsed === "object" ? parsed : {}
   // A check that ran before Show mise tools was turned off still lists them.
+  // The rows status_apps in bin/omabump-common lists, but for an array
+  // row, which no checker writes (tests/model.sh).
   var apps = (Array.isArray(file.apps) ? file.apps : []).filter(function(app) {
     return !!app && typeof app === "object" && (showMise || app.source !== "mise")
   })
@@ -455,7 +457,9 @@ function showMiseRun(settingsReady, timerTicked, running) {
 // omarchy-pkgs could not be fetched, or mise could not list its tools. A
 // failure only muted rows share (the omarchy-pkgs fetch with every omarchy
 // row muted) signals nothing, like their own failures. f holds checkError,
-// runError, pkgsError and miseError.
+// runError, pkgsError and miseError. With errorCount, the rule the checker
+// retries a failed check by (check_failed in bin/omabump-common), save
+// this shell's own checkError: tests/model.sh sets the two side by side.
 function failureText(f, apps, muted) {
   if (f.checkError !== "") return f.checkError
   if (f.runError !== "") return f.runError
@@ -512,13 +516,18 @@ function localWantsCheck(outcome, checkRunning) {
   return outcome === "full" && !checkRunning
 }
 
+// The slack every bar allows a run that started at about the same time
+// (due_slack_sec and run_recent in bin/omabump-common, which decide when a
+// check is due).
+var dueSlackSec = 30
+
 // Whether the timer's local refresh is due. Every monitor's bar runs one,
-// so installed versions read less than an interval (less 30 s of slack)
+// so installed versions read less than an interval (less dueSlackSec)
 // ago, by another bar's refresh or by a check (inventoryAt), are recent
 // enough. A time ahead of the clock proves nothing.
 function localDue(nowMs, inventoryMs, intervalSec) {
   var age = nowMs - inventoryMs
-  return !(inventoryMs > 0 && age >= 0 && age < (intervalSec - 30) * 1000)
+  return !(inventoryMs > 0 && age >= 0 && age < (intervalSec - dueSlackSec) * 1000)
 }
 
 // --- rows ------------------------------------------------------------------------
