@@ -50,13 +50,14 @@
 # --no-notify and --no-mise when they are off, and a run from a terminal,
 # the installer's refresh or an agent passes none and still honours them.
 #
-# The shell runs it under `timeout -k 10 600` (Main.qml), so a hung feed or
-# tool cannot keep a check alive past ten minutes. The shell never passes
-# --wait: it waits for the lock itself, before that deadline starts, since a
-# long wait under it would end in the deadline's kill instead of exit 75. The
-# TERM trap below still writes status.json as a failed run, with runError
-# saying so. Every command under its own `timeout` runs through
-# run_killable, so the trap is not held until that command ends.
+# The shell runs it under `timeout -k 10 600` (checkDeadlineSec and
+# killAfterSec in Model.js), so a hung feed or tool cannot keep a check
+# alive past ten minutes. The shell never passes --wait: it waits for the
+# lock itself, before that deadline starts, since a long wait under it
+# would end in the deadline's kill instead of exit 75. The TERM trap below
+# still writes status.json as a failed run, with runError saying so. Every
+# command under its own `timeout` runs through run_killable, so the trap
+# is not held until that command ends.
 set -euo pipefail
 # shellcheck source=omabump-common
 source "$(dirname "$(readlink -f "$0")")/omabump-common"
@@ -106,9 +107,10 @@ mkdir -p "$state_dir"
 # finds the check lock taken while .local.lock is held waits for the local
 # refresh to end and tries once more: that refresh writes no check, so
 # leaving the answer to it would drop the check until the next tick. It
-# takes a second or so; the wait lasts as long as Main.qml lets one run,
-# its deadline and the KILL after it. The local refresh itself never waits:
-# behind a check or another local refresh it has nothing to add.
+# takes a second or so; the wait lasts as long as the shell lets one run,
+# its deadline and the KILL after it (localDeadlineSec and killAfterSec in
+# Model.js). The local refresh itself never waits: behind a check or
+# another local refresh it has nothing to add.
 exec 9>"$state_dir/.check.lock"
 if (( local_run )); then
   exec 6>"$state_dir/.local.lock"

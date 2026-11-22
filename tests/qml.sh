@@ -255,6 +255,7 @@ same "the rows a check writes (row_json) carry skipEnded" '1.2|' \
 # A row shortens the release-age hold clause by its words (Model.holdNote).
 qml_hold_re=$(sed -n 's|^var holdNote = /\(.*\)/$|\1|p' "$root/Model.js")
 qml_held=$(qml_row 1.0-1 1.3 86400 .note)
+# shellcheck disable=SC2016 # expanded by the child bash
 check "a check (row_hold) words the hold clause as Model.holdNote reads it" \
   bash -c '[[ -n $1 && $2 =~ $1 ]]' _ "$qml_hold_re" "$qml_held"
 same "Model.js caps the quiet settings where load_quiet does" "$quiet_max" \

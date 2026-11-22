@@ -978,6 +978,7 @@ same "row: a copy at a pre-release: unchecked, and why" \
 quiet_of() {
   local muted_json=$1 skipped_json=$2 muted skipped skip_end quiet
   row_quiet r-app omarchy true 1.2 1.0-1
+  # shellcheck disable=SC2031 # row_quiet set them in this shell, as locals here
   echo "$muted|$skipped|$skip_end|$quiet"
 }
 same "row_quiet: muted, a skip of the newest version, nothing over" 'true|true||true' \
@@ -1043,6 +1044,8 @@ same "row_unread, row_hold_clause: a row from before them, by its note" "true|$s
   "$(st_row_state '{"unchecked": true, "note": "Not checked yet"}' | cut -d'|' -f1)|$(st_row_state "{\"note\": \"$st_clause; Recipe\"}" | cut -d'|' -f2)"
 same "row_unread, row_hold_clause: the fields win over the note" "false|" \
   "$(st_row_state "{\"unread\": false, \"holdClause\": \"\", \"unchecked\": true, \"note\": \"Not checked yet\"}")"
+same "row_hold_clause: an empty holdClause wins over a note that starts with a clause" "false|" \
+  "$(st_row_state "{\"unread\": false, \"holdClause\": \"\", \"note\": \"$st_clause; Recipe from omarchy-pkgs 0123456789ab\"}")"
 same "row_hold_clause: a note that only starts like one is no clause" "false|" \
   "$(st_row_state "{\"note\": \"$st_clause;Recipe\"}")"
 st_field() { local status_file=$st_file; printf '%s' "$1" >"$status_file"; status_field "$2" "$3"; }

@@ -669,8 +669,13 @@ test("panelLayout: by the rows' section field when they have one", () => {
 
 test("switchRoute: the row's field, else omarchy and vendor-pkg (a 0.1.17 row has none)", () => {
   same([row({}), row({ source: "vendor-pkg" }), row({ source: "indicator" }), row({ source: "mise" }), self({}),
-    row({ switchRoute: false }), row({ source: "mise", switchRoute: true }), row({ switchRoute: "yes" }), null]
-    .map(app => m.switchRoute(app)), [true, true, false, false, false, false, true, true, false])
+    row({ switchRoute: false }), row({ source: "mise", switchRoute: true }), null]
+    .map(app => m.switchRoute(app)), [true, true, false, false, false, false, true, false])
+  // A field that is not a boolean is no answer: the source decides, against
+  // what the value would say coerced.
+  same([row({ source: "mise", switchRoute: "yes" }), row({ source: "mise", switchRoute: 1 }),
+    row({ switchRoute: 0 }), row({ switchRoute: "" }), row({ source: "vendor-pkg", switchRoute: null })]
+    .map(app => m.switchRoute(app)), [false, false, true, true, true])
 })
 
 test("switchClause: by the row's switchRoute when it has one", () => {

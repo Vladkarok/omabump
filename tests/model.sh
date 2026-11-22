@@ -187,9 +187,13 @@ EOF
     "$(for r in "${route_names[@]}"; do printf '%s %s\n' "${route_facts[$r.section]}" \
       "$([[ ${route_facts[$r.switch]} == yes ]] && echo true || echo false)"; done)" \
     "$(jq -r '"\(.section) \(.switchRoute)"' "$scratch/route-rows")"
+  # Reversed, as route_table's order is already the sections': a row_order
+  # that did nothing would agree with panelLayout on it (whose own tests
+  # hold its section order).
+  tac "$scratch/route-rows" >"$scratch/route-rows-reversed"
   same "row_order sorts the rows as the panel's sections show them" \
-    "$(jq -sc --argjson order '[]' "$jq_status"' row_order($order) | map(.pkg)' "$scratch/route-rows")" \
-    "$(jq -sc '[.]' "$scratch/route-rows" | model_call panelLayout | jq -c '.rows | map(.pkg)')"
+    "$(jq -sc --argjson order '[]' "$jq_status"' row_order($order) | map(.pkg)' "$scratch/route-rows-reversed")" \
+    "$(jq -sc '[.]' "$scratch/route-rows-reversed" | model_call panelLayout | jq -c '.rows | map(.pkg)')"
 
   # The slack every bar allows a run that started about when its own did:
   # run_recent's for a check (--if-due), Model.localDue's for a local
