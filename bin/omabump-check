@@ -346,7 +346,9 @@ local_refresh() {
   # with --slurpfile: as one argv string a large one would pass the
   # kernel's limit on an argument and fail every refresh.
   printf '%s\n' "$app_table" >"$tmp/table.json"
-  printf '%s\n' "${changes[@]}" | status_write_local "$tmp/previous.json" "$tmp/table.json" "$at"
+  # From a file, not a pipe: the rename stays in this shell (status_write_check).
+  printf '%s\n' "${changes[@]}" >"$tmp/changes"
+  status_write_local "$tmp/previous.json" "$tmp/table.json" "$at" <"$tmp/changes"
   (( ! need_full )) || exit "$full_check_exit"
   exit 0
 }
@@ -605,8 +607,13 @@ previous_at=$(jq -r '.checkedAt // ""' <<<"$previous")
 write_status() {
   local final=$1 at=$previous_at
   (( final == 1 )) && at=$(date -Iseconds)
-  printf '%s\n' "${rows[@]}" | status_write_check "$final" "$at" "$started" "$retry" "$(clean_text "${2:-}")" \
-    "$pkgs_commit" "$(clean_text "$pkgs_error")" "$(clean_text "$pkgs_note")" "$mise_note" "$tmp/previous.json" "$order"
+  # The rows from a file, not a pipe: the rename stays in this shell
+  # (status_write_check). A row list that cannot be written is never sent,
+  # in the EXIT trap (set -e off there) too.
+  printf '%s\n' "${rows[@]}" >"$tmp/rows" || return
+  status_write_check "$final" "$at" "$started" "$retry" "$(clean_text "${2:-}")" \
+    "$pkgs_commit" "$(clean_text "$pkgs_error")" "$(clean_text "$pkgs_note")" "$mise_note" "$tmp/previous.json" "$order" \
+    <"$tmp/rows"
 }
 
 # Each announcement is saved as soon as it is sent, so a run that dies later

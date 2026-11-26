@@ -942,6 +942,50 @@ same "and a local refresh after it keeps that" true "$(run_status .retry)"
 loc_status
 same "while a check runs, inventoryAt stays the last one's" '2026-01-01T00:09:00+00:00' "$(status_mid_run .inventoryAt)"
 same "--local and the checks around it leave no scratch files" '' "$(leftovers)"
+
+# TERM while jq makes the new status.json: bash runs the trap once jq is
+# done, before the rename, so the run stops on its trap and the file it
+# was making never takes status.json's place. A jq first on PATH sends TERM
+# to the run on its first status write (the one with --slurpfile prevs),
+# then works as asked; on a later one (the dying check's) it first copies
+# status.json as it then is. The run notes its pid before it execs the
+# check, so the TERM goes to the check's own shell.
+mkdir -p "$run_dir/jq-term"
+printf '#!/bin/bash\nfor a; do\n  [[ $a == prevs ]] || continue\n  if [[ -e $OMABUMP_TEST_TERM.sent ]]; then cp "$OMABUMP_TEST_STATUS" "$OMABUMP_TEST_TERM.seen"\n  else : >"$OMABUMP_TEST_TERM.sent"; kill -TERM "$(cat "$OMABUMP_TEST_TERM")"; fi\n  break\ndone\nexec %q "$@"\n' \
+  "$(command -v jq)" >"$run_dir/jq-term/jq"
+chmod +x "$run_dir/jq-term/jq"
+term_in_write() {
+  rm -f "$run_dir/term.pid" "$run_dir/term.pid.sent" "$run_dir/term.pid.seen"
+  env "${run_env[@]}" PATH="$run_dir/jq-term:$run_dir/bin:$PATH" OMABUMP_TEST_TERM="$run_dir/term.pid" \
+    OMABUMP_TEST_STATUS="$run_state/status.json" OMABUMP_TEST_PKGS="$run_dir/pkgs" OMABUMP_TEST_MISE_LS="$run_dir/mise-ls.json" \
+    timeout -k 5 120 bash -c 'echo $$ >"$0"; exec "$@"' "$run_dir/term.pid" "$root/bin/omabump-check" --no-notify "$@" \
+    >/dev/null 2>&1
+}
+loc_status
+loc_tools t=1.1 u=2.1 k=1.0
+before=$(loc_md5)
+term_in_write --local; rc=$?
+same "--local: TERM while jq writes status.json: the run ends on its trap, status.json as it was" \
+  "143|yes|$before" "$rc|$([[ -e $run_dir/term.pid.sent ]] && echo yes)|$(loc_md5)"
+loc_status
+before=$(loc_md5)
+term_in_write; rc=$?
+same "a check: TERM while jq writes its first rows: the dying run's write finds status.json as it was" \
+  "143|$before" "$rc|$(md5sum <"$run_dir/term.pid.seen" 2>&1)"
+same "a check: and that write says the run stopped early" 'The check stopped early (exit 143)|false' \
+  "$(run_status '"\(.runError)|\(.checking)"')"
+same "TERM in a status write leaves no scratch files" '' "$(leftovers)"
+# A jq killed on every status write: the run fails with its status, and the
+# dying run's write, in the EXIT trap where set -e is off, puts no empty
+# file in status.json's place either.
+printf '#!/bin/bash\nfor a; do [[ $a == prevs ]] && exit 137; done\nexec %q "$@"\n' "$(command -v jq)" >"$run_dir/jq-term/jq"
+loc_status
+before=$(loc_md5)
+term_in_write; rc=$?
+same "a check whose status writes all fail: jq's status, status.json as it was" "137|$before" "$rc|$(loc_md5)"
+same "and no scratch files" '' "$(leftovers)"
+rm -rf "$run_dir/jq-term" "$run_dir/term.pid" "$run_dir/term.pid.sent" "$run_dir/term.pid.seen"
+
 rm -f "$run_dir/config/omarchy/omabump/apps.json" "$run_state/status.json" "$run_dir/fixture.json" "$run_dir/pkgs" \
   "$run_dir/mise-ls.json" "$run_dir/held" "$run_dir/go"
 

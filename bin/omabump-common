@@ -2002,6 +2002,12 @@ status_field() {
 # flagged "checking": true while the run lasts, so the panel shows progress
 # row by row. inventoryAt is the run's start once it is done, and stays the
 # last one's until then.
+# Call both writers in the calling shell, never at the end of a pipe: stdin
+# from a file. A TERM, INT or HUP that comes while jq runs then has its trap
+# run once jq is done and before the rename, so the run stops with the
+# previous status.json in place; at the end of a pipe the rename would
+# happen in the pipe's subshell first. A jq that fails leaves status.json
+# alone too, under set -e or not (the dying run's write, in the EXIT trap).
 status_write_check() {
   local out
   out=$(mktemp "${run_tmp:-$state_dir}/.status.XXXXXX")
@@ -2019,7 +2025,7 @@ status_write_check() {
        inventoryAt: (if $final == 1 then $started else ($prev.inventoryAt | strings) // "" end), runError: $rerr,
        retry: ($retry == 1),
        omarchyPkgs: {commit: $commit, following: ($following == 1), error: $perr, note: $pnote},
-       miseError: $merr, apps: .}' >"$out"
+       miseError: $merr, apps: .}' >"$out" || { local rc=$?; rm -f "$out"; return "$rc"; }
   mv -f "$out" "$status_file"
 }
 
@@ -2029,7 +2035,7 @@ status_write_check() {
 # "_drop": true goes), every row of the table in the file $2 taking its
 # icon and iconLight from it, and inventoryAt $3. Everything else stays as
 # the check left it: checkedAt and startedAt, which the widget counts the
-# next check from, included.
+# next check from, included. In the calling shell, as status_write_check.
 status_write_local() {
   local out
   out=$(mktemp "${run_tmp:-$state_dir}/.status.XXXXXX")
@@ -2042,6 +2048,7 @@ status_write_local() {
     | reduce .[] as $c ($prev.apps;
         if any(.[]; .pkg == $c.pkg) then map(if .pkg == $c.pkg then $c else . end) else . + [$c] end)
     | map(if $icons[.pkg] then . + $icons[.pkg] else . end)
-    | $prev + {inventoryAt: $inventory, apps: (map(select(._drop != true)) | row_order($order))}' >"$out"
+    | $prev + {inventoryAt: $inventory, apps: (map(select(._drop != true)) | row_order($order))}' >"$out" \
+    || { local rc=$?; rm -f "$out"; return "$rc"; }
   mv -f "$out" "$status_file"
 }
