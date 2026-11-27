@@ -291,7 +291,16 @@ string_versions() { route "$1" versions exact; }
 # again. $1 source, $2 update (true/false), $3 latest, $4 skipped version.
 row_skipped() {
   [[ $2 == true && -n $4 && -n $3 ]] || return 1
-  if string_versions "$1"; then [[ $3 == "$4" ]]; else ! newer "$3" "$4"; fi
+  if string_versions "$1"; then [[ $3 == "$4" ]]; else ! newer "$3" "$(skip_beside "$3" "$4")"; fi
+}
+
+# The skipped version $2 as it compares with a row's latest $1. A repo
+# row's latest is the repo's full version at one check and the vendor's
+# upstream version at another: against an upstream version a skipped full
+# one (1:2.0-2) counts by its upstream part, or its epoch would outrank
+# every later release the vendor names.
+skip_beside() {
+  if full_version_ok "$2" && ! full_version_ok "$1"; then upstream_part "$2"; else printf '%s\n' "$2"; fi
 }
 
 # True when a skip is over and may leave the settings: a newer release than
@@ -308,7 +317,7 @@ skip_over() {
   # installed; an upstream one against its upstream part.
   full_version_ok "$4" || have=$(upstream_part "$5")
   if string_versions "$1"; then ! row_skipped "$1" "$2" "$3" "$4"
-  else newer "$3" "$4" || ! newer "$4" "$have"; fi
+  else newer "$3" "$(skip_beside "$3" "$4")" || ! newer "$4" "$have"; fi
 }
 
 # The settings' word on the row of the id $1 (load_quiet): sets muted,

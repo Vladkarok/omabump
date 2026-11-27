@@ -1760,9 +1760,9 @@ rp_run --local; rc=$?
 same "--local: the vendor's release built and installed: current, no longer ahead, no check" '0|false|false|false|false' \
   "$rc|$(rp_row bn-a '"\(.updateAvailable)|\(.ahead)|\(.buildable)|\(.installable)"')"
 loc_pkgs 'bn-a 1.0-1' 'bn-n 1.0-1'
-rp_run --local
-same "--local: back below it: ahead again, buildable as apps.json says, the recipe unread until a check" 'true|true|' \
-  "$(rp_row bn-a '"\(.ahead)|\(.buildable)|\(.buildNote)"')"
+rp_run --local; rc=$?
+same "--local: back below it: ahead again, buildable as apps.json says, and a check asked for to read the recipe" "$local_full|true|true|" \
+  "$rc|$(rp_row bn-a '"\(.ahead)|\(.buildable)|\(.buildNote)"')"
 # A buildNote the refresh reads again itself (Update off, here lifted in
 # apps.json since) is not carried over; a recipe's is.
 jq '.apps |= map(if .pkg == "bn-a" then .buildable = false | .buildNote = "Update off: old" | .buildNoteFrom = "off" else . end)' "$run_state/status.json" \

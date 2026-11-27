@@ -989,6 +989,9 @@ check "skip_version_ok: a full version with an epoch" skip_version_ok 1:2.0-1
 check "skip_version_ok: a full version with a pkgrel" skip_version_ok 1.2-2
 refuse "skip_version_ok: an epoch with no pkgrel is none" skip_version_ok 1:2.0
 check "row_skipped: repo, the skipped pkgrel is the newest" row_skipped repo true 1.2-2 1.2-2
+refuse "row_skipped: repo, a skipped epoch does not outrank a later release the vendor names" row_skipped repo true 3.0 1:2.0-2
+check "row_skipped: repo, the vendor's name for the skipped release stays skipped" row_skipped repo true 2.0 1:2.0-2
+check "skip_over: repo, a skipped epoch ends with a later release the vendor names" skip_over repo true 3.0 1:2.0-2 1:1.0-1
 refuse "skip_over: repo, a skipped pkgrel does not end at once with the release before it installed" skip_over repo true 1.2-2 1.2-2 1.2-1
 check "skip_over: repo, ends once that pkgrel is installed" skip_over repo false 1.2-2 1.2-2 1.2-2
 refuse "skip_over: repo, a skipped epoch version does not end at once" skip_over repo true 1:2.0-1 1:2.0-1 1:1.9-1

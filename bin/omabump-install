@@ -351,8 +351,10 @@ EOF
   chmod 0600 "$cache_dir/curl/.curlrc" "$cache_dir/makepkg.conf"
 }
 
-# makepkg under the configuration above.
-mkpkg() { run_unlocked makepkg --config "$cache_dir/makepkg.conf" "$@"; }
+# makepkg under the configuration above. During Build now every call, the
+# ones that only read the recipe too, has the recipe's own keyring for its
+# GnuPG home (build_keyring), never yours.
+mkpkg() { run_unlocked env ${build_keyring:+"GNUPGHOME=$build_keyring"} makepkg --config "$cache_dir/makepkg.conf" "$@"; }
 
 # A failed build or install keeps its files for a look; a successful one
 # removes them (clean_after_install). started is set from the first build
@@ -755,6 +757,13 @@ stage_and_install() {
   [[ $line == "$expect" ]] || { staged_copy=""; die "the staged copy is '$line', expected '$expect'; not installing (the copy stays in $staged)"; }
   require_root_owners "$staged" "$expect" "the package stays in $file" "$staged"
   echo "Staged copy checked: $staged"
+  # Once more, with the password answered and the copy checked: pacman
+  # takes its lock next, so what another pacman could still change after
+  # this is what it does in the moment between.
+  if ! got=$(guard_version "${expect#* }"); then
+    unstage "$staged"
+    die "$got; removed $staged, not installing"
+  fi
   # pacman asks "Proceed with installation?": that prompt is where you can
   # still stop. sudo need not ask for a password, makepkg -s may have used it.
   # A run that ends meanwhile leaves the copy to pacman (on_exit).
@@ -824,7 +833,7 @@ build_and_install() {
   # -s installs missing build dependencies with sudo pacman -S --asdeps;
   # without --noconfirm pacman asks for those too. Signed sources are
   # verified against the recipe's own keys alone (build_keyring).
-  GNUPGHOME=$build_keyring mkpkg -sfC
+  mkpkg -sfC
   [[ -f $match ]] || die "makepkg did not produce $match"
   # The digest of the file makepkg wrote, before anything else reads it: the
   # staged copy must match it, not only its name and version.
@@ -895,6 +904,9 @@ build_recipe() {
   local blocker commit text list why fprs=()
   echo "Waiting for the omarchy-pkgs clone..."
   pkgs_take_lock 600 || die "the omarchy-pkgs clone stayed locked"
+  # The wait may have been long: the setting as it is now.
+  load_quiet 2>/dev/null
+  [[ $setting_build_ahead == true ]] || refuse "Build now was turned off while this run waited; not building"
   commit=$(pkgs_fetch) || die "could not fetch omarchy-pkgs"
   pkgs_base=$commit
   pkgs_checkout || die "could not check out omarchy-pkgs ${commit:0:12}"
@@ -929,7 +941,7 @@ build_recipe() {
   # above off every plain curl of the run, and leaves the token in a file.
   write_download_policy
   (cd "$pkgs_dir" && run_unlocked env -u BYPASS_MIN_RELEASE_AGE -u MIN_RELEASE_AGE_SECONDS -u UPSTREAM_GITHUB_TOKEN \
-     CURL_HOME="$cache_dir/curl" TMPDIR="$cache_dir/scratch" \
+     CURL_HOME="$cache_dir/curl" TMPDIR="$cache_dir/scratch" GNUPGHOME="$build_keyring" \
      timeout -k 10 900 bin/sync-upstream "$pkg") </dev/null || die "bin/sync-upstream $pkg failed"
 
   echo
@@ -944,6 +956,12 @@ build_recipe() {
   echo
 
   check_target "$pkgs_dir/pkgbuilds/$pkg" "$pkg"
+  # The recipe may reach less than the vendor's newest (its release-age
+  # window, a watch that lags): a release Omarchy's repo has already is
+  # Update's, signed, not one to build here.
+  if [[ -n $repo_version ]] && ! newer "$(upstream_part "$target_version")" "$(upstream_part "$repo_version")"; then
+    refuse "omarchy-pkgs' recipe reaches $target_version, and Omarchy's repo has $repo_version already; use Update instead, which installs its signed package"
+  fi
   cd "$pkgs_dir/pkgbuilds/$pkg"
   build_and_install "$pkg"
   cd /

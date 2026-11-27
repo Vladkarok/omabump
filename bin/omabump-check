@@ -399,7 +399,7 @@ local_pacman_busy() {
 # as it is.
 local_row() {
   local p_source p_name p_installed p_latest p_from p_installable p_unchecked p_self p_unread p_repo p_vendor
-  local p_vendor_known p_note p_build_note p_build_from
+  local p_vendor_known p_note p_ahead p_build_note p_build_from
   local update held=false installable switchable=false past=false self=false blocked unchecked note unread=false repo_version="" hold_clause=""
   row="" why=""
   self_updating_name "$name" && self=true
@@ -423,11 +423,11 @@ local_row() {
   # (row_unread). For a self-updating app, unchecked alone does not say so:
   # its unknown or pre-release version is unchecked too.
   IFS=$'\x1f' read -r p_source p_name p_installed p_latest p_from p_installable p_unchecked p_self p_unread p_repo \
-    p_vendor p_vendor_known p_note p_build_note p_build_from < <(jq -r "$jq_status"'
+    p_vendor p_vendor_known p_note p_ahead p_build_note p_build_from < <(jq -r "$jq_status"'
     [.source // "", .installedName // "", .installed // "", .latest // "", .versionFrom // "",
      .installable == true, .unchecked == true, .selfUpdating == true, row_unread, .repoVersion // "",
      (.vendorVersion // (if .versionFrom == "feed" then .latest else "" end)),
-     (has("vendorVersion") or .versionFrom != "repo"), .note // "", .buildNote // "", .buildNoteFrom // ""]
+     (has("vendorVersion") or .versionFrom != "repo"), .note // "", .ahead == true, .buildNote // "", .buildNoteFrom // ""]
     | map(tostring) | join("\u001f")' <<<"$prev")
   if [[ $p_source != "$source" ]]; then
     why="$pkg has another source in the app table"
@@ -541,6 +541,10 @@ local_row() {
       why="$pkg is installed as $name now"
     elif [[ $p_unchecked == true ]]; then
       why="$pkg $installed is not checked yet"
+    elif [[ $ahead == true && $p_ahead == false ]]; then
+      # Behind the vendor's release again (a downgrade): what the recipe
+      # says of Build now was not kept, and only a check reads it.
+      why="$pkg $installed is behind the vendor's $vendor_version again"
     elif [[ $p_vendor_known == false && $update == false ]]; then
       # A row a checker before 0.2.0 wrote, whose newest version was the
       # repo's: what the vendor has, which may be ahead still, only a check

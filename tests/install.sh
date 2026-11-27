@@ -125,6 +125,8 @@ case "$*" in
     # copies the package once you answer, after the installer has ended.
     [[ -z ${STUB_SUDO_ASKS:-} ]] || signal_installer "$STUB_SUDO_ASKS"
     mkdir -p "${dest%/*}" && cat >"$dest" || exit 1
+    # Another pacman installing this meanwhile, while sudo had the prompt.
+    [[ -z ${STUB_SUDO_MEANWHILE:-} ]] || echo "$STUB_SUDO_MEANWHILE" >>"$STUB_DB/installed"
     [[ -z ${STUB_TAMPER:-} ]] || printf 'x' >>"$dest"
     # The terminal closing or kill once the copy is there, before pacman.
     if [[ -n ${STUB_SUDO_INSTALL:-} ]]; then
@@ -193,6 +195,7 @@ EOF
 cat >"$istubs/makepkg" <<'EOF'
 #!/bin/bash
 echo "makepkg $*" >>"$STUB_LOG/calls"
+echo "${GNUPGHOME:-none}" >>"$STUB_LOG/gnupg"
 source ./PKGBUILD
 full=$pkgver-$pkgrel file=$PKGDEST/$pkgname-$pkgver-$pkgrel-x86_64$PKGEXT
 case " $* " in
@@ -1477,6 +1480,18 @@ inst_src 'pkg=rpapp installed_name=rpapp-bin installed=1.0.0-1 switch=1; stage_a
 same "stage_and_install, a switch: the canonical package installed meanwhile at the target: refused before the staging" \
   '1|omabump: rpapp is installed now, at 2.0.0-1, which 2.0.0-1 is not newer than; not installing' "$irc|$(tail -n1 <<<"$iout")"
 no_call "stage_and_install, the canonical package installed meanwhile: nothing staged" 'sudo '
+# The same while sudo waited for the password, after that re-check: asked
+# once more with the copy staged, right before pacman.
+fresh 'rpapp-bin 1.0.0-1'
+inst_env+=(STUB_SUDO_MEANWHILE='rpapp 2.0.0-1')
+# shellcheck disable=SC2016 # expanded by the child bash
+inst_src 'pkg=rpapp installed_name=rpapp-bin installed=1.0.0-1 switch=1; stage_and_install "$STUB_SERVED/'"$rpf"'" "rpapp 2.0.0-1"'
+inst_env=("${inst_env[@]:0:${#inst_env[@]}-1}")
+same "stage_and_install, a switch: the canonical package installed while sudo waited: refused before pacman" \
+  "1|omabump: rpapp is installed now, at 2.0.0-1, which 2.0.0-1 is not newer than; removed $istaging/$rpf, not installing" \
+  "$irc|$(tail -n1 <<<"$iout")"
+no_call "stage_and_install, installed while sudo waited: pacman -U not run" 'sudo pacman -U'
+calls "stage_and_install, installed while sudo waited: the staged copy removed" "sudo rm -f -- $istaging/$rpf"
 # The target installed meanwhile by something else, at what the panel
 # showed: the re-check before the staging ends the run as done.
 fresh 'rpapp 2.0.0-1'
@@ -1664,13 +1679,30 @@ printf '{"plugins": [{"id": "io.github.vladkarok.omabump", "buildAhead": true}]}
 fresh 'testpkg 1.0.0-1'
 shown testpkg 2.0.0 1.0.0-1
 jq '.apps[0].vendorVersion = "2.0.0"' "$istatus" >"$istatus.new" && mv "$istatus.new" "$istatus"
+: >"$ilog/gnupg"
 STUB_PACMAN_U=ok rp_inst --build testpkg
+cp "$ilog/gnupg" "$ilog/gnupg.build"
 same "install --build, the vendor ahead of the repo: the build, a success" '0|testpkg 2.0.0-1' "$irc|$(<"$idb/installed")"
 calls "install --build: makepkg builds" ' -sfC'
 says "install --build: says the package is Omarchy's recipe built here, not signed by Omarchy" \
   "Build now: building Test Pkg on this machine from Omarchy's recipe. The package is not signed by Omarchy."
 no_call "install --build: the repo's package is not downloaded" "$(rp_file testpkg 1.5.0-1)"
 check "install --build: no keyring left behind" test -z "$(find "$it/cache/omabump" -maxdepth 1 -name 'gnupg.*')"
+same "install --build: every makepkg of the run had the recipe's keyring for its GnuPG home, none yours" '' \
+  "$(grep -v "^$it/cache/omabump/gnupg\.[A-Za-z0-9]*\$" "$ilog/gnupg.build")"
+check "install --build: and makepkg ran" test -s "$ilog/gnupg.build"
+# The recipe reaches only what the repo has already (the vendor's newest is
+# held, or its watch lags): that release is Update's, signed.
+rp_pkg testpkg 2.0.0-1
+rp_db 'testpkg 2.0.0-1'
+fresh 'testpkg 1.0.0-1'
+shown testpkg 3.0.0 1.0.0-1
+jq '.apps[0].vendorVersion = "3.0.0"' "$istatus" >"$istatus.new" && mv "$istatus.new" "$istatus"
+STUB_PACMAN_U=ok rp_inst --build testpkg
+same "install --build, the recipe reaches only what the repo has: refused, Update named" \
+  "1|omabump: omarchy-pkgs' recipe reaches 2.0.0-1, and Omarchy's repo has 2.0.0-1 already; use Update instead, which installs its signed package|testpkg 1.0.0-1" \
+  "$irc|$(grep -F "use Update instead" <<<"$iout")|$(<"$idb/installed")"
+no_call "install --build, the recipe at the repo's release: nothing built" ' -sfC'
 rm -f "$ishell"
 rm -f "$iserved/omarchy.db" "$iserved"/rpapp-* "$iserved"/rpepoch-* "$iserved"/testpkg-* "$rp_cache"/rp* "$rp_cache"/testpkg-*
 
