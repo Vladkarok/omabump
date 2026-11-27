@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.18 (2026-11-27)
+
+- The panel, the checks and Update work as in 0.1.17. This release moves code: the rules that make a row, the reading and writing of status.json and what each Update route can do each have one place in `bin/omabump-common`, which the check, the local refresh and the installer all use, and the panel's layout and the command lines it starts are in `Model.js`.
+- A row in status.json gains `holdClause`, `unread`, `section` and `switchRoute`. No field went or changed its name, and `schemaVersion` stays 1, so a panel still loaded from 0.1.17 reads the new file, and this panel reads a 0.1.17 one.
+- The checker and the installer read status.json only when it has `schemaVersion` 1 and an object for every row; a file edited by hand into another shape counts as no check. Before, only the local refresh was that strict.
+- `bin/omabump-install` refuses an indicator row, and Omabump run from a local checkout, before it creates its build directories instead of after. `--prepare` and a real run take those refusals from the same code.
+- When a check that is dying cannot write status.json, the last one stays. Before, an empty file could take its place.
+- More of the tests run the real thing: the checker's exit codes, its `due` and `started` words and its lock waits are checked by running `bin/omabump-check`, and the rules the checker and the panel both hold (when a check counts as failed, the 30 seconds of slack, the order of the rows) are run on both sides and compared.
+
 ## 0.1.17 (2026-11-21)
 
 - The Grok desktop app shows Grok Bot's own round mark, so it no longer looks the same as Grok CLI.
