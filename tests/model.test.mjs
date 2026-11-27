@@ -610,12 +610,13 @@ test("buildStep: Build now runs with the setting on; off, it explains first, the
   same([m.buildStep(ahead, true, ""), m.buildStep(ahead, false, ""), m.buildStep(ahead, false, "a"), m.buildStep(ahead, false, "x"),
     m.buildStep(no, true, ""), m.buildStep(no, false, "n"), m.buildStep(null, true, ""), m.buildStep(update, true, "")],
     ["build", "explain", "enable", "explain", "", "", "", ""])
-  same(m.buildOffNote(ahead), "Build now builds Codex 2.0 on this machine from Omarchy's own recipe, before Omarchy's repo has it."
-    + " It takes minutes, runs Omarchy's build recipe as you, and the package is not signed by Omarchy. It is off: press b again to turn it on.")
+  same(m.buildOffNote(ahead), "Builds it here from Omarchy's recipe: minutes, not signed by Omarchy. Off; b turns it on.")
+  assert.ok(m.buildOffNote(ahead).length <= 100, "the note fits the row's five lines beside the button")
   same(["build", "explain", "enable"].map(step => m.buildButtonText(step)), ["Build now", "Build now", "Turn on"])
   same(["build", "explain", "enable", ""].map(step => m.buildTooltip(ahead, step)),
     ["Build 2.0 from Omarchy's recipe in a terminal; not signed by Omarchy  b", "What Build now does; it is off  b",
-      "Turn on Build now in the settings  b", ""])
+      "Turn on Build now: it builds Codex 2.0 on this machine from Omarchy's own recipe, before Omarchy's repo has it."
+        + " It takes minutes, runs the recipe as you, and the package is not signed by Omarchy  b", ""])
   // The footer lists b only on a row that offers it.
   same([m.hintText(false, ahead, 2, [], {}, "build"), m.hintText(false, ahead, 2, [], {}, "enable"), m.hintText(false, ahead, 2, [], {}, ""),
     m.hintText(false, update, 2, [], {}, "")],

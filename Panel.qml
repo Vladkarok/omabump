@@ -18,7 +18,10 @@ Panel {
   readonly property color foreground: bar ? bar.foreground : Commons.Color.foreground
   readonly property color urgent: bar ? bar.urgent : Commons.Color.urgent
   // A release only the vendor has: a caution short of urgent.
-  readonly property color warning: Commons.Color.warning
+  // A shell before the warning role (Omarchy's Color.qml of mid-November
+  // 2026 and earlier) has none, and an undefined colour paints black: its
+  // own default for the role then.
+  readonly property color warning: Commons.Color.warning !== undefined ? Commons.Color.warning : "#c4a35a"
   // The bar icon's colour by Model.barIconLevel.
   readonly property string iconLevel: Model.barIconLevel(checker.summary)
   readonly property color iconColor: iconLevel === "warning" ? warning : urgent

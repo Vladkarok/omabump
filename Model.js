@@ -620,17 +620,18 @@ function buildStep(app, buildAheadOn, explainedPkg) {
 
 // The row's note while Build now is off and was asked for.
 function buildOffNote(app) {
-  var name = app ? String(app.label || app.pkg) : ""
-  return "Build now builds " + name + " " + String(app ? app.latest || "" : "") + " on this machine from Omarchy's own recipe,"
-    + " before Omarchy's repo has it. It takes minutes, runs Omarchy's build recipe as you, and the package is not signed by Omarchy."
-    + " It is off: press b again to turn it on."
+  // Short: the row has five narrow lines beside the button. The button's
+  // tooltip says the rest (buildTooltip).
+  return app ? "Builds it here from Omarchy's recipe: minutes, not signed by Omarchy. Off; b turns it on." : ""
 }
 
 // The Build now button's text and tooltip, by buildStep.
 function buildButtonText(step) { return step === "enable" ? "Turn on" : "Build now" }
 function buildTooltip(app, step) {
   if (!app || step === "") return ""
-  if (step === "enable") return "Turn on Build now in the settings  b"
+  if (step === "enable") return "Turn on Build now: it builds " + String(app.label || app.pkg) + " " + String(app.latest || "")
+    + " on this machine from Omarchy's own recipe, before Omarchy's repo has it. It takes minutes, runs the recipe as you,"
+    + " and the package is not signed by Omarchy  b"
   if (step === "explain") return "What Build now does; it is off  b"
   return "Build " + app.latest + " from Omarchy's recipe in a terminal; not signed by Omarchy  b"
 }
