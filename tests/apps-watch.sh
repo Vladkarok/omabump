@@ -34,13 +34,16 @@ aw_run
 same "apps-watch: a package missing from apps.json is news" 3 "$aw_rc"
 check "apps-watch: the report names it" grep -qF '`openai-codex`' <<<"$aw_out"
 
-jq '. + [{"pkg": "openai-codex", "source": "omarchy", "section": "cli"}, {"pkg": "gone-cli", "source": "omarchy", "section": "cli"}]' "$aw/apps.json" >"$aw/apps2.json"
+jq '. + [{"pkg": "gone-cli", "source": "omarchy", "section": "cli"}]' "$aw/apps.json" >"$aw/apps2.json"
 mv "$aw/apps2.json" "$aw/apps.json"
 aw_run
-same "apps-watch: an extra CLI entry is news, as information" 3 "$aw_rc"
-check "apps-watch: the report lists it" grep -qF '`gone-cli`' <<<"$aw_out"
-refuse "apps-watch: and names no missing package" grep -q 'not in apps.json' <<<"$aw_out"
+same "apps-watch: beside a missing package, a CLI entry Omarchy does not name is listed" 3 "$aw_rc"
+check "apps-watch: by its pkg" grep -qF '`gone-cli`' <<<"$aw_out"
 refuse "apps-watch: a mise CLI entry is not listed" grep -qF 'mise:old' <<<"$aw_out"
+jq '. + [{"pkg": "openai-codex", "source": "omarchy", "section": "cli"}]' "$aw/apps.json" >"$aw/apps2.json"
+mv "$aw/apps2.json" "$aw/apps.json"
+aw_run
+same "apps-watch: alone, such an entry is no news (Pi is in no list of Omarchy's)" '0|' "$aw_rc|$aw_out"
 
 printf '#!/bin/bash\ninstall_agents() { :; }\n' >"$aw/source"
 aw_run
@@ -57,6 +60,5 @@ refuse "apps-watch: and none is named as a package" grep -qE 'upper|bad|touch' <
 
 printf '  claude) package=claude-code ;;\n  x) package=$(touch %s/ran) ;;\n' "$aw" >"$aw/source"
 aw_run
-same "apps-watch: a hostile line beside a good one is left out, the rest read (only the extras remain)" 3 "$aw_rc"
-refuse "apps-watch: and claude-code, read from the good line, is not missing" grep -q 'Installed by Omarchy' <<<"$aw_out"
+same "apps-watch: a hostile line beside a good one is left out, the rest read, and nothing is missing" '0|' "$aw_rc|$aw_out"
 check "apps-watch: and still did not run" test ! -e "$aw/ran"

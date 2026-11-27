@@ -6,8 +6,9 @@
 #
 #   - every package Omarchy installs that no apps.json entry has as its pkg
 #     (news: Omabump does not list it);
-#   - for information only, every CLI entry of apps.json (section "cli",
-#     source not mise) whose pkg Omarchy's list no longer names.
+#   - beside those, for information, every CLI entry of apps.json (section
+#     "cli", source not mise) whose pkg Omarchy's list does not name. Such
+#     entries alone are no news.
 #
 # The file is read as text and never sourced or run; only lines of exactly
 # that shape count. A file with no such line is news too: Omarchy's list has
@@ -78,7 +79,10 @@ absent() {
 mapfile -t missing < <(absent have "${omarchy_pkgs[@]}")
 mapfile -t extra < <(absent omarchy_pkgs "${cli[@]}")
 
-(( ${#missing[@]} + ${#extra[@]} )) || exit 0
+# An entry Omarchy's list does not name is no news by itself: Pi comes with
+# the base install, so the list never names its package. It is said only
+# beside a missing package, where the two may be one rename.
+(( ${#missing[@]} )) || exit 0
 
 agent_of() { awk -v p="$1" '$2 == p { printf "%s%s", (n++ ? ", " : ""), $1 }' "$work/map"; }
 printf "## Omarchy's agent list and apps.json differ\n\n"
