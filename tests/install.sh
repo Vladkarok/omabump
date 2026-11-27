@@ -1057,8 +1057,9 @@ igit -C "$pk" remote add origin https://github.com/omacom/omarchy-pkgs.git
 mkdir -p "$pk/bin"
 cat >"$pk/bin/sync-upstream" <<'EOF'
 #!/bin/bash
-# Moves the recipe to the release 2.0.0.
+# Moves the recipe to the release 2.0.0, and notes the token it was given.
 sed -i "s/^pkgver=.*/pkgver=2.0.0/" "pkgbuilds/$1/PKGBUILD"
+echo "${UPSTREAM_GITHUB_TOKEN-none}" >.git/test-sync-token
 EOF
 chmod +x "$pk/bin/sync-upstream"
 for p in testpkg nocon; do
@@ -1093,6 +1094,11 @@ says "install --prepare (omarchy): the staged copy goes whether pacman installed
 no_call "install --prepare (omarchy): no build" ' -sfC'
 no_call "install --prepare (omarchy): no sudo" 'sudo '
 same "install --prepare (omarchy): the clone is left at the pinned recipe" 'pkgver=1.0.0' "$(grep '^pkgver=' "$pk/pkgbuilds/testpkg/PKGBUILD")"
+# With a token omarchy-pkgs' sync tool swaps in a .curlrc of its own, without
+# the HTTPS-only rule and the limits Update holds its downloads to.
+fresh 'testpkg-bin 1.5.0-1'
+UPSTREAM_GITHUB_TOKEN=ghp_test inst --prepare --switch testpkg
+same "install (omarchy): UPSTREAM_GITHUB_TOKEN does not reach bin/sync-upstream" '0|none' "$irc|$(cat "$pk/.git/test-sync-token")"
 
 fresh 'nocon-bin 1.0.0-1'
 printf 'Name            : nocon-bin\nProvides        : None\nConflicts With  : None\n' >"$idb/qi/nocon-bin"

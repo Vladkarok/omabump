@@ -38,7 +38,7 @@ Panel {
   readonly property var shellApi: barApi ? barApi.shell : null
 
   readonly property var apps: checker.apps
-  // Desktop apps, the mise CLIs, then Omabump's own row while it has
+  // Desktop apps, the CLI tools, then Omabump's own row while it has
   // something to say (Model.panelLayout): the keyboard cursor walks
   // orderedApps across the sections.
   readonly property var layout: Model.panelLayout(apps)
@@ -71,7 +71,7 @@ Panel {
   property bool settingsOpen: false
   property int settingIndex: 0
   readonly property var settingRows: [
-    { key: "showMise", fallback: true, label: "Show mise tools", description: "CLI agents managed by mise, below the desktop apps" },
+    { key: "showMise", fallback: true, label: "Show CLI tools", description: "Coding agents and other CLI tools, below the desktop apps" },
     { key: "barIconOnlyWithUpdates", fallback: false, label: "Bar icon only when updates exist", description: "It also shows while a check fails" },
     { key: "notify", fallback: true, label: "Notify on new releases", description: "" }
   ]

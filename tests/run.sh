@@ -1286,7 +1286,25 @@ while IFS= read -r icon_path; do
 done < <(jq -r '.[] | (.icon // empty), (.iconLight // empty)' "$root/apps.json" | sort -u)
 same "every icon in apps.json is a regular SVG under assets/" "" "${icons_missing[*]}"
 check "pins.json pins a 40-hex commit" jq -e '.omarchyPkgs.commit | test("^[0-9a-f]{40}$")' "$root/pins.json"
-# Omarchy names each agent's mise tool in /etc/mise/conf.d/omarchy-tools.toml;
+# Since Omarchy's migration 1795441383 each agent is a package of the
+# [omarchy] repo (omarchy-install-ai-cli names them), Pi among them: each
+# has its entry, in the CLI section, on a route that reads pacman.
+for p in claude-code openai-codex grok-cli opencode github-copilot-cli crush-bin cursor-cli antigravity-cli muse-code \
+  oh-my-pi openrouter-ori kimi-code qwen-code deepseek-dsh minimax-code freebuff kilocode-cli devin-cli amp-cli \
+  pi-coding-agent; do
+  # $p inside the single quotes is jq's variable, not the shell's.
+  # shellcheck disable=SC2016
+  check "apps.json tracks Omarchy's agent package $p in the CLI section" jq -e --arg p "$p" \
+    'any(.[]; .pkg == $p and .section == "cli" and (.source == "omarchy" or .source == "indicator"))' "$root/apps.json"
+done
+same "apps.json names a section only for the CLI packages" '[]' \
+  "$(jq -c '[.[] | select(has("section") and (.section != "cli" or .source == "mise")) | .pkg]' "$root/apps.json")"
+# The recipes whose build reaches the network past curl (npm install in
+# package(), git ls-remote in the sync), that need a PGP key Omabump does not
+# import, or that build two packages at once, have no Update.
+same "the recipes Update cannot hold to its rules are indicators" 'claude-code deepseek-dsh kilocode-cli minimax-code opencode' \
+  "$(jq -r '[.[] | select(.pkg | IN("claude-code", "opencode", "minimax-code", "deepseek-dsh", "kilocode-cli")) | select(.source == "indicator") | .pkg] | sort | join(" ")' "$root/apps.json")"
+# Before it, Omarchy named each agent's mise tool in /etc/mise/conf.d/omarchy-tools.toml;
 # the key mise ls reports is that name, so the table must carry it.
 for t in claude codex crush opencode grok copilot cursor-agent pi amp antigravity-cli qwen muse \
   github:can1357/oh-my-pi npm:@kilocode/cli http:kiro-cli http:devin npm:@deepseek-ai/dsh npm:@minimax-ai/code \

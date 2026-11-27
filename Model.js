@@ -129,7 +129,7 @@ function isQuiet(muted, skipped, app) { return isMuted(muted, app) || isSkipped(
 // check or local refresh read that very skip and found it over (the row's
 // skipEnded, from skip_over in bin/omabump-common), so a skip no run has
 // read yet stays whatever its version. Kept too while the last check
-// cannot tell: a row it did not list (hidden by Show mise tools, not
+// cannot tell: a row it did not list (hidden by Show CLI tools, not
 // installed now) and one that failed, is stale, is being checked, was not
 // checked or has no newest version.
 function skipKept(apps, pkg, version) {
@@ -183,7 +183,7 @@ function skipToggled(skipped, app) {
 }
 
 // The settings line under the toggles. Only rows the last check listed: a
-// mute or skip for a row hidden by Show mise tools (or not installed now)
+// mute or skip for a row hidden by Show CLI tools (or not installed now)
 // is kept but not shown. Only skips the settings keep (skipKept): one that
 // no longer applies is dropped on the next write, not listed as active
 // until then.
@@ -202,7 +202,7 @@ function quietText(apps, muted, skipped) {
 }
 
 // What Clear leaves: it clears what the quiet line lists, nothing more, so
-// a mute or skip for a row the line leaves out (hidden by Show mise tools,
+// a mute or skip for a row the line leaves out (hidden by Show CLI tools,
 // not installed now) stays.
 function quietCleared(apps, muted, skipped) {
   var keepMuted = muted.filter(function(pkg) { return appFor(apps, pkg) === null })
@@ -295,11 +295,11 @@ function parseStatus(text, showMise) {
   if (String(text || "").trim() === "") return null
   var parsed = JSON.parse(String(text))
   var file = parsed && typeof parsed === "object" ? parsed : {}
-  // A check that ran before Show mise tools was turned off still lists them.
+  // A check that ran before Show CLI tools was turned off still lists them.
   // The rows status_apps in bin/omabump-common lists, but for an array
   // row, which no checker writes (tests/model.sh).
   var apps = (Array.isArray(file.apps) ? file.apps : []).filter(function(app) {
-    return !!app && typeof app === "object" && (showMise || app.source !== "mise")
+    return !!app && typeof app === "object" && (showMise || rowSection(app) !== "cli")
   })
   var started = file.startedAt ? new Date(file.startedAt).getTime() : NaN
   // When the installed versions were last read, by a check or a local
@@ -337,7 +337,7 @@ var ipcThrottleMs = 60000
 // it. "throttled": this shell's own check for a Refresh runs (running), or
 // its last check ended (lastEndMs) less than ipcThrottleMs ago with none
 // running now; it starts nothing. Else "refresh", as Refresh does: queued
-// behind the timer's check or one for a Show mise tools change, and after
+// behind the timer's check or one for a Show CLI tools change, and after
 // another's (a terminal's, another monitor's) when one runs. pending,
 // running and checking are Main.qml's refreshPending, refreshRunning and
 // checking.
@@ -444,7 +444,7 @@ function answersError(status, afterMs) {
   return !!status && !status.checking && status.runError === "" && status.startedMs > afterMs
 }
 
-// What a change of Show mise tools starts (Main.qml's onShowMiseChanged):
+// What a change of Show CLI tools starts (Main.qml's onShowMiseChanged):
 // "" before the timer's first tick, which reads the setting as it is then;
 // "queue" behind this shell's own check; else "wait", a run that waits for
 // any check holding the lock and starts after it.
@@ -736,7 +736,7 @@ function selfRowShown(app) {
   return !!app && rowSection(app) === "plugin" && (app.updateAvailable === true || String(app.error || "") !== "")
 }
 
-// The row's section: "desktop", "cli" (a mise CLI) or "plugin" (Omabump
+// The row's section: "desktop", "cli" (a CLI tool, of pacman or mise) or "plugin" (Omabump
 // itself), the checker's section (route_table in bin/omabump-common). A
 // row a checker of 0.1.17 or earlier wrote has no such field, and its
 // source says it.
@@ -748,10 +748,10 @@ function rowSection(app) {
 }
 
 // The panel's rows by section (Panel.qml's three Repeaters): desktop apps,
-// then the mise CLIs, then Omabump's own row (selfRowShown). rows is all of
+// then the CLI tools, then Omabump's own row (selfRowShown). rows is all of
 // them in that order, the one the keyboard cursor walks across sections,
 // and offsets says where each section starts in it. Only the rows apps
-// holds: parseStatus already left out mise rows while Show mise tools is
+// holds: parseStatus already left out mise rows while Show CLI tools is
 // off.
 function panelLayout(apps) {
   var desktop = [], cli = [], plugin = []

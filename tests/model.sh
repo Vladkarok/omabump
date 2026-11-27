@@ -65,7 +65,7 @@ else
   # Model.errorCount above 0, on the rows and errors Model.parseStatus reads
   # (this shell's own checkError aside, which no file holds). The same
   # status.json and settings go to both. Each case: a name, the file's
-  # fields over a clean one ($file), the muted ids, Show mise tools (1 or
+  # fields over a clean one ($file), the muted ids, Show CLI tools (1 or
   # 0), and the verdict both give ("failed" or "ok"); where they differ,
   # the widget's apart (widget), with the reason beside the case.
   model_failed_cases() {
@@ -85,15 +85,15 @@ else
 {"name": "omarchy-pkgs error, no omarchy row", "file": {$perr, "apps": [$v, $m]}, "muted": ["v", "mise:m"], "mise": 1, "want": "failed"}
 {"name": "omarchy-pkgs error, only a self-updating omarchy row", "file": {$perr, "apps": [$s]}, "muted": ["s"], "mise": 1, "want": "failed"}
 {"name": "omarchy-pkgs not an object", "file": {"omarchyPkgs": "Could not fetch"}, "muted": [], "mise": 1, "want": "ok"}
-{"name": "miseError, Show mise tools on", "file": {"miseError": "mise ls failed"}, "muted": [], "mise": 1, "want": "failed"}
-{"name": "miseError, Show mise tools off", "file": {"miseError": "mise ls failed"}, "muted": [], "mise": 0, "want": "ok"}
+{"name": "miseError, Show CLI tools on", "file": {"miseError": "mise ls failed"}, "muted": [], "mise": 1, "want": "failed"}
+{"name": "miseError, Show CLI tools off", "file": {"miseError": "mise ls failed"}, "muted": [], "mise": 0, "want": "ok"}
 {"name": "miseError, every mise row muted", "file": {"miseError": "mise ls failed"}, "muted": ["mise:m"], "mise": 1, "want": "ok"}
 {"name": "miseError, no mise row", "file": {"miseError": "mise ls failed", "apps": [$a]}, "muted": [], "mise": 1, "want": "failed"}
 {"name": "a muted row's error only", "file": {"apps": [$a, $b], "omarchyPkgs": {}}, "muted": [], "mise": 1, "want": "ok", "rowError": "a", "mutedRow": "a"}
 {"name": "an unmuted row's error", "file": {}, "muted": ["b"], "mise": 1, "want": "failed", "rowError": "a"}
 {"name": "a self-updating row's error", "file": {}, "muted": [], "mise": 1, "want": "failed", "rowError": "s"}
-{"name": "a mise row's error, Show mise tools off", "file": {}, "muted": [], "mise": 0, "want": "ok", "rowError": "mise:m"}
-{"name": "a mise row's error, Show mise tools on", "file": {}, "muted": [], "mise": 1, "want": "failed", "rowError": "mise:m"}
+{"name": "a mise row's error, Show CLI tools off", "file": {}, "muted": [], "mise": 0, "want": "ok", "rowError": "mise:m"}
+{"name": "a mise row's error, Show CLI tools on", "file": {}, "muted": [], "mise": 1, "want": "failed", "rowError": "mise:m"}
 {"name": "selfUpdating not exactly true takes its route", "file": {$perr, "apps": [$a, {"pkg": "t", "source": "omarchy", "selfUpdating": "true"}]}, "muted": ["a"], "mise": 1, "want": "failed"}
 {"name": "rows that are no objects count for nothing", "file": {$perr, "apps": [1, "x", null, [], $a]}, "muted": ["a"], "mise": 1, "want": "ok"}
 {"name": "rows missing fields", "file": {$perr, "apps": [{"pkg": "a"}, {"source": "omarchy"}, {}]}, "muted": [], "mise": 1, "want": "failed"}
@@ -142,13 +142,13 @@ EOF
     "$(jq -r '"\(.name): \(.widget // .want)"' "$scratch/failed-cases")" "$model_failed_js"
 
   # The rows the two read: status_apps drops what is no object, and mise
-  # rows while Show mise tools is off, as Model.parseStatus does. An array
+  # rows while Show CLI tools is off, as Model.parseStatus does. An array
   # row is the one difference: an object to JavaScript, so parseStatus keeps
   # it (no checker writes one, and it counts toward no failure, above).
   model_rows_doc='{"apps": [{"pkg": "a", "source": "omarchy"}, {"pkg": "mise:m", "source": "mise"}, 7, null, "x", [],
     {"pkg": "s", "source": "omarchy", "selfUpdating": true}, {"pkg": "n"}, {"pkg": "mise:o", "source": "mise"}]}'
   for model_mise in 1 0; do
-    same "status_apps lists the rows Model.parseStatus lists, Show mise tools $model_mise, an array row aside" \
+    same "status_apps lists the rows Model.parseStatus lists, Show CLI tools $model_mise, an array row aside" \
       "$(jq -c --argjson s "$model_mise" "$jq_status"' [status_apps($s)[] | .pkg]' <<<"$model_rows_doc")" \
       "$(jq -c --argjson s "$model_mise" '[tojson, $s == 1]' <<<"$model_rows_doc" | model_call parseStatus \
         | jq -c '[.apps[] | objects | .pkg]')"

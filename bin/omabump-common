@@ -133,6 +133,7 @@ jq_name_rules='
     and (contains("..") | not) and (test("/\\.(/|\\z)") | not);
   def entry_ok: (.pkg | id_ok) and ((.pkg | pkg_ok) or .source == "mise")
     and (.source | IN("omarchy", "vendor-pkg", "mise", "indicator"))
+    and ((.section // "cli") | IN("desktop", "cli")) and (.source != "mise" or (.section // "cli") == "cli")
     and ((.installed // []) | type == "array" and all(.[]; pkg_ok))
     and ([.tool // empty] | flatten | all(.[]; tool_ok))
     and ((.updateBlocked // "") | type == "string" and length <= 200)
@@ -202,7 +203,7 @@ row_muted() { [[ $muted_json == *"\"$1\""* ]]; }
 # and what Update can do. The facts below are asked here (route), not of
 # the source's name; what a route runs (the check's route case, the
 # installer's, mise's own readers) stays with the code that runs it, and
-# so do the rules that name mise for what they are about: Show mise tools,
+# so do the rules that name mise for what they are about: Show CLI tools,
 # mise's inventory failing, a mise row's id and tool name in apps.json.
 # One line a route:
 #   versions   how a newer version is told: vercmp, or exact (a string
@@ -216,7 +217,7 @@ row_muted() { [[ $muted_json == *"\"$1\""* ]]; }
 #              manifest.json
 #   switch     yes when Update installs a package by the row's pkg, and so
 #              can replace one installed under another name (Switch)
-#   section    where the row sits: with the desktop apps, the mise CLIs, or
+#   section    where the row sits: with the desktop apps, the CLI tools, or
 #              Omabump itself (row_order; the panel's sections, the row's
 #              section)
 # An app installed as a copy that updates itself (selfUpdating) is listed
@@ -244,14 +245,17 @@ unset _route _versions _newest _installed _switch _section
 # (route_table). A source no route names has none.
 route() { [[ ${route_facts[$1.$2]:-} == "$3" ]]; }
 
-# The jq definitions for the same: route_section, a row's section by its
-# source, desktop for a source no route names, and route_rank, where that
-# section comes: desktop apps, mise CLIs, Omabump itself. The names and sections are
+# The jq definitions for the same: route_section, the section of a row or
+# of an apps.json entry: the one it names ("section": "cli" puts a pacman
+# package among the CLI tools), else its source's, desktop for a source no
+# route names; and route_rank, where that section comes: desktop apps, CLI
+# tools, Omabump itself. The names and sections are
 # route_table's words, which need no escapes in JSON.
 _sections=""
 for _route in "${route_names[@]}"; do _sections+="${_sections:+, }\"$_route\": \"${route_facts[$_route.section]}\""; done
 jq_routes="
-  def route_section: {$_sections}[.source | strings] // \"desktop\";
+  def route_section: (.section | select(IN(\"desktop\", \"cli\", \"plugin\")))
+    // {$_sections}[.source | strings] // \"desktop\";
   def route_rank: {desktop: 0, cli: 1, plugin: 2}[route_section];"
 unset _route _sections
 
@@ -425,7 +429,7 @@ apps_table() {
     | apps_merge($u)
     | [.order[] as $p | .by[$p] | select(.disabled != true)]' "$shipped_apps") || return 1
   jq -r --argjson max "$app_entry_max" "$jq_name_rules"' .[]
-    | if entry_ok | not then "ignoring app \(.pkg | tojson): a pkg, installed or tool name with characters Omabump does not accept, an appImage or npmPackage that is not a ~/ path Omabump accepts, an updateBlocked or selfUpdate too long, or a source other than omarchy, vendor-pkg, mise or indicator"
+    | if entry_ok | not then "ignoring app \(.pkg | tojson): a pkg, installed or tool name with characters Omabump does not accept, an appImage or npmPackage that is not a ~/ path Omabump accepts, an updateBlocked or selfUpdate too long, a source other than omarchy, vendor-pkg, mise or indicator, or a section other than desktop or cli"
       elif (tojson | utf8bytelength) > $max then "ignoring app \(.pkg | tojson): its entry is larger than \($max) bytes"
       else empty end' <<<"$merged" >&2
   jq -c --argjson max "$app_entry_max" "$jq_name_rules"' map(select(entry_ok and (tojson | utf8bytelength) <= $max))' <<<"$merged"
@@ -1863,7 +1867,8 @@ row_json() {
       request: $request, muted: $muted, skipped: $skipped, skipEnded: $skipEnded, unchecked: $unchecked,
       held: $held, omarchyUpdate: $omarchyUpdate, blocked: ($blocked != ""),
       selfUpdating: $selfUpdating, icon: ($app.icon // "" | tostring), iconLight: ($app.iconLight // "" | tostring),
-      holdClause: $holdClause, unread: $unread, section: $section, switchRoute: $switchRoute}'
+      holdClause: $holdClause, unread: $unread,
+      section: (($app.section | select(IN("desktop", "cli"))) // $section), switchRoute: $switchRoute}'
 }
 
 # --- status.json -----------------------------------------------------------------
@@ -1921,7 +1926,7 @@ status_schema=1
 # it lists (an object each, mise rows only while $mise is 1: Show mise
 # tools, Model.parseStatus), and check_failed($muted; $mise), whether the
 # check it holds failed by the settings as they are now, the muted pkg ids
-# $muted and Show mise tools $mise (1 or 0). Failed means what the widget
+# $muted and Show CLI tools $mise (1 or 0). Failed means what the widget
 # calls a failure (Model.failureText, or Model.errorCount above 0): runError,
 # an omarchy-pkgs or mise error that not only muted rows share (all_muted:
 # every listed row of the route, and at least one, muted; a self-updating
@@ -1939,7 +1944,7 @@ jq_status=$jq_routes'
   def row_hold_clause: if has("holdClause") then .holdClause | strings // ""
     else (.note | strings // "" | capture("^(?<c>omarchy-pkgs holds new releases for [0-9]+ h, Update from [^;]*)(; |$)").c) // "" end;
   def field_text: if . == null or . == false then "" elif type == "string" then . else tostring end;
-  def status_apps($mise): [.apps | arrays | .[] | objects | select($mise == 1 or .source != "mise")];
+  def status_apps($mise): [.apps | arrays | .[] | objects | select($mise == 1 or route_section != "cli")];
   def check_failed($muted; $mise):
     status_apps($mise) as $apps
     | def muted: (.pkg | tostring) as $p | $muted | index($p) != null;

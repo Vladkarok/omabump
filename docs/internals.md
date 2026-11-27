@@ -41,7 +41,7 @@ A check that failed (the summary says "Check failed": offline after a resume, a 
 
 ### A check you ask for
 
-A check you ask for with a click or `r` while one runs is not lost: a check that starts after your request answers it (yours, or another bar's or a terminal's that takes the lock first). IPC `refresh` does the same unless it is throttled (see [IPC](#ipc)). If the running check holds its lock for over 11 minutes, yours is not run, and the panel says "Check not run: another check held the lock for over 11 min" until a later check completes. The timer's own check skips while any check runs. Turning Show mise tools on or off also checks again, after any check in progress.
+A check you ask for with a click or `r` while one runs is not lost: a check that starts after your request answers it (yours, or another bar's or a terminal's that takes the lock first). IPC `refresh` does the same unless it is throttled (see [IPC](#ipc)). If the running check holds its lock for over 11 minutes, yours is not run, and the panel says "Check not run: another check held the lock for over 11 min" until a later check completes. The timer's own check skips while any check runs. Turning Show CLI tools on or off also checks again, after any check in progress.
 
 ### The local refresh
 
@@ -61,15 +61,27 @@ The last check's result is `~/.local/state/omarchy/plugins/io.github.vladkarok.o
 
 ## Mute and skip in detail
 
-Mute, skip, Notify and Show mise tools apply to every check, whoever starts it: the shell's timer, `bin/omabump-check` in a terminal, or the refresh after an Update. The checker reads them itself from the widget's entry in `~/.config/omarchy/shell.json` (in `bar.layout` or the top-level `plugins` list), up to 1 MiB of file and 200 entries each; an id or version it does not accept is ignored with a line in the shell log. `--no-notify` and `--no-mise` still win, and the settings are read once the check holds its lock.
+Mute, skip, Notify and Show CLI tools apply to every check, whoever starts it: the shell's timer, `bin/omabump-check` in a terminal, or the refresh after an Update. The checker reads them itself from the widget's entry in `~/.config/omarchy/shell.json` (in `bar.layout` or the top-level `plugins` list), up to 1 MiB of file and 200 entries each; an id or version it does not accept is ignored with a line in the shell log. `--no-notify` and `--no-mise` still win, and the settings are read once the check holds its lock.
 
-A muted row's failed check shows only on the row itself ("Check failed: ...") and in the tooltip and IPC status ("check failed for N muted apps"), not in the header or the bar; an omarchy-pkgs or mise failure that only muted rows share does not fail the check. The settings list the muted rows the last check showed; a mute for a row hidden by Show mise tools is kept, not listed.
+A muted row's failed check shows only on the row itself ("Check failed: ...") and in the tooltip and IPC status ("check failed for N muted apps"), not in the header or the bar; an omarchy-pkgs or mise failure that only muted rows share does not fail the check. The settings list the muted rows the last check showed; a mute for a row hidden by Show CLI tools is kept, not listed.
 
 Once a skip no longer applies, the settings stop listing it once a check has seen that, and it is dropped the next time the panel writes a setting. A skip on a row the last check could not judge (failed, stale, still checking, unchecked or not listed) is kept. pacman and feed versions are compared with `vercmp`, so a feed that rolls back below the skipped version stays skipped; mise and Omabump's own versions must match exactly, so `1.0.0` after a skipped `1.0.0-beta.1` is new. Those comparisons are the checker's, which writes its answer into status.json; the panel shows a skip of the row's newest version, and an undone skip, at once, and any other change to the setting from the next check.
 
 ## How CLI tools are found
 
-Each CLI row is a `mise` entry of `apps.json` that names the keys mise may have the tool under (`"tool": ["claude", "npm:@anthropic-ai/claude-code"]`). The first of them `mise ls` reports as installed and active is the row's tool; a tool mise does not have shows no row. The shipped entries cover the agents Omarchy's menu offers and a few more.
+A CLI row is one of two kinds of `apps.json` entry.
+
+Since Omarchy's migration 1795441383 (2026-11-23) the coding agents are packages of the [omarchy] repo, not mise tools, and `omarchy update` is what updates them: the packaged `claude` runs with its own updater turned off, `codex` with its update check off. Each has an entry on a pacman route with `"section": "cli"`, found with `pacman -Q` like a desktop app, and listed in the CLI section. Most are on the omarchy route and have Update. These have none, and are indicators:
+
+- `claude-code`: the recipe checks Anthropic's PGP signature, and Omabump imports no key for makepkg. Skipping the check would drop the one test of that download that is not the vendor's own unsigned list.
+- `opencode`: one recipe builds two packages (`opencode` and `opencode-desktop`), which Update does not do.
+- `minimax-code` and `deepseek-dsh`: `package()` runs `npm install` against the network, past the HTTPS-only curl Update holds a build to (see [Security model](#security-model)), with dependencies no checksum pins.
+- `kilocode-cli`: its version comes from `git ls-remote`, which does not read `.curlrc` either.
+- `cursor-cli`, `muse-code` and `deepseek-dsh`: the package's version is put together from two parts of the vendor's answer, which no feed type does. Their newest version is the `pkgver` of the recipe on omarchy-pkgs' master, so the row shows what the repo is about to ship.
+
+Three recipes on the omarchy route run the vendor's binary while they build, to write shell completions (`openai-codex`, `github-copilot-cli`, `oh-my-pi`): the program you are about to install runs once, as you, before pacman asks.
+
+The other kind is a `mise` entry, for an agent your own mise config still asks for (Omarchy's migration leaves those alone), and for tools Omarchy never packaged. Each `mise` entry of `apps.json` that names the keys mise may have the tool under (`"tool": ["claude", "npm:@anthropic-ai/claude-code"]`). The first of them `mise ls` reports as installed and active is the row's tool; a tool mise does not have shows no row. The shipped entries cover the agents Omarchy's menu offers and a few more.
 
 Until 0.1.13 Omabump found the agents itself, in Omarchy's menu and the wrappers Omarchy wrote to `~/.local/bin`. Omarchy 4 renamed the menu's entries and no longer writes those wrappers, so the list is now the only source.
 
@@ -124,7 +136,7 @@ Codex may be installed as the AUR's `chatgpt-desktop` and ZCode as `z-code-bin`.
 `pins.json` holds the omarchy-pkgs commit every check and Update starts from:
 
 ```json
-{ "omarchyPkgs": { "commit": "a988526ec6b39e939f7cd160745ce153bb73a39b", "date": "2026-11-12T01:28:48Z", "ref": "refs/heads/master" } }
+{ "omarchyPkgs": { "commit": "a4a3f954e32067a06561cc5845326db24976792a", "date": "2026-11-27T09:51:01Z", "ref": "refs/heads/master" } }
 ```
 
 Update executes code from that repository (`bin/sync-upstream` and each recipe's upstream hook), so it runs only code from a commit reviewed for the release, never a moving branch. The marketplace baseline checks for exactly this. Bumping the pin is a plugin release: resolve the new commit with `git ls-remote https://github.com/omacom/omarchy-pkgs.git refs/heads/master`, read the diff of `bin/` and the recipes, update `pins.json`, and release.
@@ -206,7 +218,7 @@ No other host, no telemetry.
 
 ### GitHub API calls
 
-Without a token GitHub's REST API allows 60 calls an hour per IP address, shared by everything on the machine (and behind the same NAT) that calls it without one, mise in your terminal included; calls with a token count against your account's own 5,000 an hour instead. Omabump sends no token of its own: mise sends the one you gave it, and `bin/sync-upstream` sends `UPSTREAM_GITHUB_TOKEN` when your environment has it. What it calls:
+Without a token GitHub's REST API allows 60 calls an hour per IP address, shared by everything on the machine (and behind the same NAT) that calls it without one, mise in your terminal included; calls with a token count against your account's own 5,000 an hour instead. Omabump sends no token of its own: mise sends the one you gave it. `bin/sync-upstream` runs without `UPSTREAM_GITHUB_TOKEN`, even when your environment has it: with a token it replaces the `.curlrc` that holds its downloads to HTTPS and to their limits, and writes the token to a file under the cache. What it calls:
 
 - mise rows: the check's `mise outdated` asks the API for the newest release of each installed tool whose versions come from GitHub (aqua and github backends, such as Claude Code, Codex, Crush and herdr), and mise caches each answer for an hour: about one call per such tool an hour, however often the panel checks. Tools from npm (OpenCode) or a vendor's site ask those instead. The check asks mise about a tool on GitHub only while at least 20 of the hour's calls are left, counting the ones it is about to spend on the tools before it: the rest keep the versions the last check found and say why, and so do all of them when GitHub does not say how many are left. If you gave mise a token (`MISE_GITHUB_TOKEN`, `GITHUB_TOKEN`, `github.credential_command`, git's credentials, or gh's when gh keeps it in its `hosts.yml` rather than the keyring), its calls count against your account, and the check asks as usual. Update installs through mise's versions host, which needs no call while it answers; it calls the API when that host fails, when you turned the host off (`use_versions_host = false`), and when a lockfile keeps the old version and Update runs `mise up`.
 - GitHub release feeds (T3 Code, Hermes, Omabump itself): none, since the `/releases/latest` page is not the API. Only when github.com does not answer that page, or answers it with a 5xx, 403 or 429, does a feed ask the API: one call, and only while at least 20 of the hour's calls are left, counting the ones the check's mise rows may spend. A check reads that count once, from `/rate_limit`, which GitHub does not count against the limit. With fewer left, or no answer about them, the row says so and the check tries again later.
@@ -220,6 +232,7 @@ How your own `~/.config/omarchy/omabump/apps.json` is merged over the shipped on
 - `pkg`: the omarchy-pkgs recipe name, or the package name the vendor's package installs as. Any unique id for mise entries (`mise:<name>`).
 - `source`: `omarchy`, `vendor-pkg`, `mise` or `indicator`; an entry with any other source (`self` is Omabump's own row) is dropped.
 - `installed` (optional): package names to look for with `pacman -Q`, default `[pkg]`.
+- `section` (optional, not for mise): `"cli"` lists a pacman package among the CLI tools, which Show CLI tools hides with the mise rows; `"desktop"` is the default. An entry with any other value is dropped.
 - `tool` (mise only): the mise tool name, or a list of names; the first one mise has active is used. Setting it in your file replaces the list.
 - `vendorPkg` (vendor-pkg): HTTPS package URL per architecture (`uname -m`), with `{version}` replaced by the feed's version.
 - `checksum` (vendor-pkg, required for Update): `"feed"` reads the base64 `sha512` listed next to the file's `url` in the feed document (electron-updater's `latest.yml` format, as ZCode's manifest uses), or `{"url": ..., "algo": "sha256"|"sha512"}` reads a `sha256sum`-style list.

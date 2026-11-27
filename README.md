@@ -53,7 +53,7 @@ The bar icon turns the urgent colour when an app can be updated. Left click open
 
 A check runs once per interval (an hour by default), and a failed one is tried once more about 5 minutes after it started. Between checks the panel rereads the installed versions, offline, so an app updated by `omarchy update` stops offering its Update. [How both are scheduled](docs/internals.md#checks-and-the-local-refresh).
 
-The panel has three sections: Desktop apps, CLI tools and Plugin (Omabump itself, only while it has an update or its check failed, see [Updating Omabump](#updating-omabump)). Apps are found with `pacman -Q` (exact package names) and CLIs with `mise ls`. A row shows the installed version, or `installed → newest` when there is an update. A second line appears only for an exception: a pin, a hold and until when, another package name, a failed check, no install route. The row's tooltip says where the version came from and what Update runs, or why there is no Update. A row with a newer version but no Update button has no action, and `Enter` on it does nothing; its note and tooltip say why, and how the app updates.
+The panel has three sections: Desktop apps, CLI tools and Plugin (Omabump itself, only while it has an update or its check failed, see [Updating Omabump](#updating-omabump)). Apps and packaged CLI tools are found with `pacman -Q` (exact package names), CLI tools of mise with `mise ls`. A row shows the installed version, or `installed → newest` when there is an update. A second line appears only for an exception: a pin, a hold and until when, another package name, a failed check, no install route. The row's tooltip says where the version came from and what Update runs, or why there is no Update. A row with a newer version but no Update button has no action, and `Enter` on it does nothing; its note and tooltip say why, and how the app updates.
 
 ### Keys
 
@@ -63,7 +63,7 @@ From a script: `omarchy-shell io.github.vladkarok.omabump status|open|close|togg
 
 ### Settings
 
-The gear in the panel header (or `s`) opens the settings: check interval (an hour by default, kept between five minutes and a day), show mise tools, bar icon only when updates exist (it also shows while a check fails), notify on new releases. Each new version is announced once.
+The gear in the panel header (or `s`) opens the settings: check interval (an hour by default, kept between five minutes and a day), show CLI tools, bar icon only when updates exist (it also shows while a check fails), notify on new releases. Each new version is announced once.
 
 ![Omabump settings](docs/settings.png)
 
@@ -103,7 +103,31 @@ Omarchy's settings schema has no array or object type, so `mutedApps` and `skipp
 | <picture><source media="(prefers-color-scheme: light)" srcset="assets/kimi-light.svg"><img src="assets/kimi.svg" width="16" height="16" alt=""></picture> Kimi | `kimi-bin` | indicator, version from Moonshot's update feed |
 | <picture><source media="(prefers-color-scheme: light)" srcset="assets/trae-light.svg"><img src="assets/trae.svg" width="16" height="16" alt=""></picture> Trae | `trae-bin` | indicator, version from the AUR; `omarchy update` updates it |
 
-mise tools, listed when mise has them installed and active ([how they are found](docs/internals.md#how-cli-tools-are-found)):
+CLI tools Omarchy installs as packages of its repo (since its migration of 2026-11-23, which moved the coding agents from mise to pacman), listed when the package is installed. These have Update, on the omarchy route:
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/codex-light.svg"><img src="assets/codex.svg" width="14" height="14" alt=""></picture> Codex CLI (`openai-codex`),
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/grok-light.svg"><img src="assets/grok.svg" width="14" height="14" alt=""></picture> Grok CLI (`grok-cli`),
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/copilot-light.svg"><img src="assets/copilot.svg" width="14" height="14" alt=""></picture> Copilot CLI (`github-copilot-cli`),
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/crush-light.svg"><img src="assets/crush.svg" width="14" height="14" alt=""></picture> Crush (`crush-bin`),
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/antigravity-light.svg"><img src="assets/antigravity.svg" width="14" height="14" alt=""></picture> Antigravity CLI (`antigravity-cli`),
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/oh-my-pi-light.svg"><img src="assets/oh-my-pi.svg" width="14" height="14" alt=""></picture> Oh My Pi (`oh-my-pi`),
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/ori-light.svg"><img src="assets/ori.svg" width="14" height="14" alt=""></picture> Ori (`openrouter-ori`),
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/kimi-light.svg"><img src="assets/kimi.svg" width="14" height="14" alt=""></picture> Kimi CLI (`kimi-code`),
+<img src="assets/qwen.svg" width="14" height="14" alt=""> Qwen Code (`qwen-code`),
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/freebuff-light.svg"><img src="assets/freebuff.svg" width="14" height="14" alt=""></picture> Freebuff (`freebuff`),
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/devin-light.svg"><img src="assets/devin.svg" width="14" height="14" alt=""></picture> Devin CLI (`devin-cli`),
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/amp-light.svg"><img src="assets/amp.svg" width="14" height="14" alt=""></picture> Amp (`amp-cli`), and
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/pi-light.svg"><img src="assets/pi.svg" width="14" height="14" alt=""></picture> Pi (`pi-coding-agent`).
+
+These show their versions only, and `omarchy update` updates them ([why they have no Update](docs/internals.md#how-cli-tools-are-found)):
+<img src="assets/claude.svg" width="14" height="14" alt=""> Claude Code (`claude-code`),
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/opencode-light.svg"><img src="assets/opencode.svg" width="14" height="14" alt=""></picture> OpenCode (`opencode`),
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/cursor-light.svg"><img src="assets/cursor.svg" width="14" height="14" alt=""></picture> Cursor CLI (`cursor-cli`),
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/muse-light.svg"><img src="assets/muse.svg" width="14" height="14" alt=""></picture> Muse Code (`muse-code`),
+<img src="assets/deepseek.svg" width="14" height="14" alt=""> DeepSeek Harness (`deepseek-dsh`),
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/minimax-light.svg"><img src="assets/minimax.svg" width="14" height="14" alt=""></picture> MiniMax Code (`minimax-code`), and
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/kilo-light.svg"><img src="assets/kilo.svg" width="14" height="14" alt=""></picture> Kilo (`kilocode-cli`).
+
+mise tools, for an agent your own mise config still asks for, listed when mise has them installed and active ([how they are found](docs/internals.md#how-cli-tools-are-found)):
 <img src="assets/claude.svg" width="14" height="14" alt=""> Claude Code,
 <picture><source media="(prefers-color-scheme: light)" srcset="assets/codex-light.svg"><img src="assets/codex.svg" width="14" height="14" alt=""></picture> Codex CLI,
 <picture><source media="(prefers-color-scheme: light)" srcset="assets/crush-light.svg"><img src="assets/crush.svg" width="14" height="14" alt=""></picture> Crush,

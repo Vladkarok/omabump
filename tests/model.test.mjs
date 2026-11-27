@@ -280,12 +280,18 @@ test("parseStatus: the fields the widget reads", () => {
   })
 })
 
+test("parseStatus: Show CLI tools off hides the CLI section, a pacman package in it included", () => {
+  const apps = [row({}), row({ pkg: "mise:x", source: "mise" }), row({ pkg: "claude-code", source: "omarchy", section: "cli" })]
+  const pkgs = (show) => m.parseStatus(JSON.stringify({ schemaVersion: 1, apps }), show).apps.map((a) => a.pkg)
+  same([pkgs(true).length, pkgs(false)], [3, [row({}).pkg]])
+})
+
 test("parseStatus: no inventoryAt (a file from before it), or one that is no time, is 0", () => {
   same([m.parseStatus("{}", true).inventoryMs, m.parseStatus('{"inventoryAt": ""}', true).inventoryMs,
     m.parseStatus('{"inventoryAt": "soon"}', true).inventoryMs], [0, 0, 0])
 })
 
-test("parseStatus: Show mise tools off drops mise rows and mise's error", () => {
+test("parseStatus: Show CLI tools off drops mise rows and mise's error", () => {
   const status = m.parseStatus(JSON.stringify({ miseError: "m", apps: [row({}), row({ pkg: "mise:x", source: "mise" })] }), false)
   same([status.apps.length, status.miseError, status.checkedAt, status.startedMs], [1, "", "", 0])
 })
@@ -636,7 +642,7 @@ test("panelLayout: a current self row is left out of every section", () => {
   })
 })
 
-test("panelLayout: with Show mise tools off (parseStatus drops mise rows) the CLI section is empty", () => {
+test("panelLayout: with Show CLI tools off (parseStatus drops mise rows) the CLI section is empty", () => {
   const text = JSON.stringify({ apps: [row({ pkg: "mise:a", source: "mise" }), row({ pkg: "b" }), self({ error: "x" })] })
   same(sections(m.panelLayout(m.parseStatus(text, false).apps)), {
     desktop: ["b"], cli: [], plugin: ["self:omabump"], rows: ["b", "self:omabump"], offsets: { desktop: 0, cli: 1, plugin: 1 }

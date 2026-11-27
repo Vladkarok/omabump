@@ -840,9 +840,12 @@ install_omarchy() {
   # The first fetched code that runs: omarchy-pkgs' sync tool and the
   # recipe's upstream hook, as you, after you pressed Update. Its curl calls
   # read the .curlrc above, its temporary files go under the cache, and the
-  # maintainer-only release-age bypass never reaches it.
+  # maintainer-only release-age bypass never reaches it. Nor does
+  # UPSTREAM_GITHUB_TOKEN: with it, sync-upstream points CURL_HOME at a
+  # .curlrc of its own (github_api_netrc), which would take the limits
+  # above off every plain curl of the run, and leaves the token in a file.
   write_download_policy
-  (cd "$pkgs_dir" && run_unlocked env -u BYPASS_MIN_RELEASE_AGE -u MIN_RELEASE_AGE_SECONDS \
+  (cd "$pkgs_dir" && run_unlocked env -u BYPASS_MIN_RELEASE_AGE -u MIN_RELEASE_AGE_SECONDS -u UPSTREAM_GITHUB_TOKEN \
      CURL_HOME="$cache_dir/curl" TMPDIR="$cache_dir/scratch" \
      timeout -k 10 900 bin/sync-upstream "$pkg") </dev/null || die "bin/sync-upstream $pkg failed"
 

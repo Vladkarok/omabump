@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- The coding agents Omarchy now installs as packages are back in the CLI section. Omarchy's migration of 2026-11-23 moved them from mise to its pacman repo, and Omabump listed only mise tools there, so the rows went. Twenty packages have a row: thirteen with Update, built from Omarchy's recipe like a desktop app, and seven that show their versions only (`claude-code`, `opencode`, `cursor-cli`, `muse-code`, `deepseek-dsh`, `minimax-code`, `kilocode-cli`); docs/internals.md says why for each. The mise rows stay for a tool your own mise config asks for.
+- "Show mise tools" is now "Show CLI tools" and hides the whole CLI section, packages included. The setting's key is still `showMise`, and the checker's flag still `--no-mise`.
+- An `apps.json` entry can say `"section": "cli"` to list a pacman package among the CLI tools.
+- The pinned omarchy-pkgs commit moves to `a4a3f954` (2026-11-27), which has the recipes of those packages.
+- Update no longer passes `UPSTREAM_GITHUB_TOKEN` to omarchy-pkgs' sync tool. At the new commit the tool, given a token, swaps in a curl configuration of its own, which would take Omabump's HTTPS-only rule and download limits off the run.
+- An `apps.json` entry larger than 64 KiB is dropped with a line on stderr. One over 128 KiB used to end every check with "Argument list too long".
+
 ## 0.1.18 (2026-11-27)
 
 - The panel, the checks and Update work as in 0.1.17. This release moves code: the rules that make a row, the reading and writing of status.json and what each Update route can do each have one place in `bin/omabump-common`, which the check, the local refresh and the installer all use, and the panel's layout and the command lines it starts are in `Model.js`.

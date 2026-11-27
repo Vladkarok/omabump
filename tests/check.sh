@@ -439,7 +439,7 @@ done
 
 # --wait (the installer's refresh) waits for a held lock instead, says so,
 # and runs once the lock is free. The holder lets go by itself within 10 s,
-# so a test that breaks cannot hang the suite. Show mise tools turned off
+# so a test that breaks cannot hang the suite. Show CLI tools turned off
 # during the wait counts: the settings are read once the lock is held.
 rm -f "$run_dir/held" "$run_dir/go"
 ( exec 8>"$run_state/.check.lock" && flock 8 && echo held >"$run_dir/held" && appears "$run_dir/go" ) &
@@ -1044,7 +1044,7 @@ due_status -300 '{"miseError": "mise failed"}'
 same "--if-due: a miseError: its retry" '0|ran|true' "$(due_run)"
 run_settings ', "showMise": "false"'
 due_status -300 '{"miseError": "mise failed"}'
-same "--if-due: a miseError with Show mise tools off: no retry" '76|none|false' "$(due_run)"
+same "--if-due: a miseError with Show CLI tools off: no retry" '76|none|false' "$(due_run)"
 run_settings ', "mutedApps": ["mise:t"]'
 due_status -300 '{"miseError": "mise failed", "apps": [{"pkg": "claude-desktop", "source": "omarchy", "error": ""},
   {"pkg": "mise:t", "label": "T", "source": "mise", "error": ""}]}'
@@ -1250,6 +1250,24 @@ jq -cn '[{pkg: "t3code-bin", icon: ("x" * 140000), feed: {type: "command", comma
 ai_run; rc=$?
 same "an oversized entry is dropped, said so, and the check still ends well" '0||1|0' \
   "$rc|$(ai_row .pkg)|$(grep -c '^ignoring app "t3code-bin": its entry is larger than' "$run_dir/ai.err")|$(grep -c 'Argument list too long' "$run_dir/ai.err")"
+# "section": "cli" puts a pacman package among the CLI tools: its row says
+# so, comes after the desktop rows, and Show CLI tools off leaves it out.
+jq -cn '[{pkg: "t3code-bin", section: "cli", feed: {type: "command", command: "echo 0.1.1"}}]' \
+  >"$run_dir/config/omarchy/omabump/apps.json"
+run_settings ''
+ai_run
+same "an entry's section is its row's, whatever its route, and the CLI rows come after the desktop ones" 'omarchy|cli|true' \
+  "$(ai_row '"\(.source)|\(.section)"')|$(run_status '[.apps[] | select(.section != "plugin") | .pkg] | last == "t3code-bin"')"
+ai_run --no-mise
+same "--no-mise leaves a CLI row of any route out of the check" '' "$(ai_row .pkg)"
+run_settings ', "showMise": "false"'
+ai_run
+same "and so does Show CLI tools turned off" '' "$(ai_row .pkg)"
+jq -cn '[{pkg: "t3code-bin", section: "tools", feed: {type: "command", command: "echo 0.1.1"}}]' \
+  >"$run_dir/config/omarchy/omabump/apps.json"
+ai_run
+same "an entry with a section Omabump does not know is dropped, and says so" '|1' \
+  "$(ai_row .pkg)|$(grep -c '^ignoring app "t3code-bin".*a section other than desktop or cli' "$run_dir/ai.err")"
 ai_feed
 
 # --local: the AppImage's own updater moves it between checks.

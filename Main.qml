@@ -93,14 +93,14 @@ Item {
   // When this shell's last check ended, not counting a run that never took
   // the lock; IPC refresh is throttled on it.
   property double lastCheckEndMs: 0
-  // A Refresh or a change of Show mise tools that came while this shell's
+  // A Refresh or a change of Show CLI tools that came while this shell's
   // own check ran: that run may have read versions or the setting from
   // before it, so one more runs after it.
   property bool checkQueued: false
-  // That one is for a Refresh (runForRefresh), not for Show mise tools alone.
+  // That one is for a Refresh (runForRefresh), not for Show CLI tools alone.
   property bool queuedForRefresh: false
   // This shell's running check is for a Refresh, not the timer's or one for
-  // Show mise tools.
+  // Show CLI tools.
   property bool runForRefresh: false
   // That run still waits for another check to end (Model.waitScript has
   // not said Model.startedWord): a Refresh now needs nothing more, that run

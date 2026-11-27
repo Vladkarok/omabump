@@ -151,7 +151,7 @@ fi
 # the notify and showMise settings are read under the lock, so a run that
 # waited for it checks with
 # the settings as they are when it starts: the widget counts on a check
-# that took the lock after a change of Show mise tools to honour it.
+# that took the lock after a change of Show CLI tools to honour it.
 load_quiet
 [[ -n $notify ]] || if [[ $setting_notify == false ]]; then notify=0; else notify=1; fi
 [[ -n $with_mise ]] || if [[ $setting_show_mise == false ]]; then with_mise=0; else with_mise=1; fi
@@ -247,10 +247,14 @@ find "$cache_dir/scratch" -mindepth 1 -maxdepth 1 -name 'tmp.??????????' -mmin +
 # mise's inventory as mise_load left it), split by \x1f: the entry is
 # compact JSON, and the pkg and source are names the table allows
 # (apps_table), so none holds one. One jq for the table, not one per app.
+# With Show CLI tools off (with_mise 0) the apps of the CLI section are left
+# out, whatever their route: their rows are neither read nor written.
 table_lines() {
   # shellcheck disable=SC2016 # jq variables, not the shell's
-  jq -r --argjson self "$self_app" --slurpfile ls <(printf '%s\n' "$mise_ls_json") "$jq_app_facts"'
-    (.[], $self) | [.pkg, .source, tojson, app_facts($ls[0])] | join("\u001f")' <<<"$1"
+  jq -r --argjson self "$self_app" --argjson cli "$with_mise" --slurpfile ls <(printf '%s\n' "$mise_ls_json") \
+    "$jq_routes$jq_app_facts"'
+    (.[], $self) | select($cli == 1 or route_section != "cli")
+    | [.pkg, .source, tojson, app_facts($ls[0])] | join("\u001f")' <<<"$1"
 }
 
 # --- a local refresh (--local) -------------------------------------------------
