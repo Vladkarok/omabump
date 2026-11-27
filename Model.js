@@ -663,13 +663,16 @@ function sourceLabel(app) {
   if (app.stale === true) return "an earlier check"
   if (app.versionFrom === "mise") return "mise"
   if (app.versionFrom === "feed") return "the vendor's release feed"
+  if (app.versionFrom === "repo") return "Omarchy's repo"
   return String(app.versionFrom || "")
 }
 
 // How the row knows what it shows and what Update would do. A row with no
 // Update says so, with the reason its second line gives, instead of a
 // route it cannot take. A self-updating app's says which copy updates
-// itself (its installedName, the path apps.json gives), then the note.
+// itself (its installedName, the path apps.json gives), then the note. A
+// repo row with an update names the version of Omarchy's repo Update
+// installs (the checker's repoVersion).
 function rowTooltip(app, muted, skipped, pkgsCommit) {
   if (!app) return ""
   var lines = []
@@ -697,6 +700,9 @@ function rowTooltip(app, muted, skipped, pkgsCommit) {
     lines.push("Updates through Omarchy's recipe"
       + (String(app.recipe || "") !== "" ? " " + app.recipe : "")
       + (commit !== "" ? " at " + commit.substring(0, 7) : ""))
+  } else if (app.source === "repo") {
+    var repo = String(app.repoVersion || "")
+    lines.push("Updates from Omarchy's repo" + (repo !== "" && app.updateAvailable === true && app.held !== true ? " to " + repo : ""))
   } else if (app.source === "vendor-pkg") lines.push("Updates with the vendor's Arch package")
   if (note !== "") lines.push(note)
   if (String(app.error || "") !== "") lines.push("Check failed: " + app.error)

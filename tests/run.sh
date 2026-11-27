@@ -108,6 +108,29 @@ tgit() { git -c user.name=t -c user.email=t@example.com -c init.defaultBranch=ma
 hexsum() { printf '%s' "$2" | "${1}sum" | cut -d' ' -f1; }
 b64sum() { printf '%s' "$1" | python3 -c 'import base64, hashlib, sys; print(base64.b64encode(hashlib.sha512(sys.stdin.buffer.read()).digest()).decode())'; }
 
+# repo_db <file> <entries...>: a database as Omarchy's repo serves it, a
+# zstd tar of <name>-<version>/desc, from entries "<name> <version> [<file
+# name> [<sha256>|twice]]": the file this machine's architecture names by
+# default, its sha256 the file name's own unless given; "twice" gives the
+# desc a second %NAME%.
+repo_sum() { printf '%s' "$1" | sha256sum | cut -d' ' -f1; }
+repo_db() {
+  local out=$1 d name version file extra
+  shift
+  d=$(mktemp -d -p "$scratch")
+  for e in "$@"; do
+    read -r name version file extra <<<"$e"
+    file=${file:-$name-$version-$(uname -m).pkg.tar.zst}
+    mkdir -p "$d/$name-$version"
+    { printf '%%FILENAME%%\n%s\n\n%%NAME%%\n%s\n\n' "$file" "$name"
+      [[ $extra != twice ]] || printf '%%NAME%%\n%s-other\n\n' "$name"
+      [[ $extra =~ ^[0-9a-f]{64}$ ]] || extra=$(repo_sum "$file")
+      printf '%%VERSION%%\n%s\n\n%%SHA256SUM%%\n%s\n\n%%CSIZE%%\n100\n\n' "$version" "$extra"; } >"$d/$name-$version/desc"
+  done
+  (cd "$d" && bsdtar --zstd -cf "$out" -- *)
+  rm -rf "$d"
+}
+
 # The part's last test number and its failures, for the run that started it.
 finish() { echo "$n $failed end" >"$counts"; exit $(( failed > 0 )); }
 # unit is the rest of this file.
@@ -490,7 +513,7 @@ same "apps_table: a user entry with source self, an unknown or no source is drop
 # own: entry_ok lists them itself, so a route added to the table and not
 # to it is refused from apps.json, not let through.
 jq -nc --arg routes "${route_names[*]}" '$routes | split(" ") | map({pkg: "r-\(.)", source: .})' >"$user_apps"
-same "apps_table: every route of route_table but self comes from apps.json" "omarchy vendor-pkg indicator mise" \
+same "apps_table: every route of route_table but self comes from apps.json" "omarchy repo vendor-pkg indicator mise" \
   "$(apps_table 2>/dev/null | jq -r '[.[] | select(.pkg | startswith("r-")) | .source] | join(" ")')"
 rm -f "$user_apps"
 
@@ -498,6 +521,7 @@ rm -f "$user_apps"
 
 same "route: the facts of each route, as route_table lists them" \
   'omarchy vercmp feed pacman yes desktop
+repo vercmp feed pacman no desktop
 vendor-pkg vercmp feed pacman yes desktop
 indicator vercmp feed pacman no desktop
 mise exact mise mise no cli
@@ -507,8 +531,8 @@ self exact feed manifest no plugin' \
     done)"
 refuse "route: a source no route names has no fact" route shell switch yes
 refuse "route: nor an empty one" route "" versions vercmp
-same "route_section: by source, desktop for none or another" 'desktop desktop desktop cli plugin desktop desktop desktop' \
-  "$(jq -r "$jq_routes"' map(route_section) | join(" ")' <<<'[{"source": "omarchy"}, {"source": "vendor-pkg"},
+same "route_section: by source, desktop for none or another" 'desktop desktop desktop desktop cli plugin desktop desktop desktop' \
+  "$(jq -r "$jq_routes"' map(route_section) | join(" ")' <<<'[{"source": "omarchy"}, {"source": "repo"}, {"source": "vendor-pkg"},
     {"source": "indicator"}, {"source": "mise"}, {"source": "self"}, {"source": "shell"}, {"source": 1}, {}]')"
 same "row_order: desktop apps in table order, then mise tools, then Omabump" 'a b x mise:m self:omabump' \
   "$(jq -r "$jq_status"' .apps | row_order(["a", "b", "mise:m"]) | map(.pkg) | join(" ")' <<<'{"apps": [
@@ -947,7 +971,7 @@ derived() {
 mkdir -p "$state_dir"
 row_fields='"\(.updateAvailable)|\(.installable)|\(.held)|\(.switchable)|\(.unchecked)|\(.note)"'
 same "row: an omarchy row with an update, the whole row" \
-  '{"pkg":"r-app","label":"R ‹App›","source":"omarchy","installedName":"r-app","installed":"1.0-1","latest":"1.2","versionFrom":"feed","updateAvailable":true,"installable":true,"error":"","note":"Recipe from omarchy-pkgs 0123456789ab","stale":false,"switchable":false,"recipe":"r-app 1.0-1","request":"","muted":false,"skipped":false,"skipEnded":"","unchecked":false,"held":false,"omarchyUpdate":false,"blocked":false,"selfUpdating":false,"icon":"assets/r.svg","iconLight":"","holdClause":"","unread":false,"section":"desktop","switchRoute":true}' \
+  '{"pkg":"r-app","label":"R ‹App›","source":"omarchy","installedName":"r-app","installed":"1.0-1","latest":"1.2","versionFrom":"feed","updateAvailable":true,"installable":true,"error":"","note":"Recipe from omarchy-pkgs 0123456789ab","stale":false,"switchable":false,"recipe":"r-app 1.0-1","request":"","muted":false,"skipped":false,"skipEnded":"","unchecked":false,"held":false,"omarchyUpdate":false,"blocked":false,"selfUpdating":false,"icon":"assets/r.svg","iconLight":"","holdClause":"","unread":false,"section":"desktop","switchRoute":true,"repoVersion":""}' \
   "$(derived omarchy r-app 1.0-1 1.2 feed 0 0)"
 same "row: the recipe holds the release: no Update, and the hold's clause first" \
   'true|false|true|false|false|omarchy-pkgs holds new releases for 24 h, Update from Jan 2 00:00; Recipe from omarchy-pkgs 0123456789ab' \
@@ -1018,6 +1042,132 @@ same "mise_row: a latest request your settings hold back" \
   "$(mise_state_on '{}' '{"t": {"latest": "2.0", "requested": "latest"}}' 1.0)"
 same "mise_row: nothing newer: current, at the installed version" \
   'current|1.0|true|false|||' "$(mise_state_on '{}' '{}' 1.0)"
+
+# --- Omarchy's repo: its database, and what it makes of a row -------------------------
+
+# pacman-conf as Omarchy's pacman.conf answers it: the lines of
+# $OMABUMP_TEST_SERVERS for `--repo omarchy Server`, and exit 1 (repo not
+# configured) when that is empty.
+mkdir -p "$scratch/confbin"
+cat >"$scratch/confbin/pacman-conf" <<'EOF'
+#!/bin/sh
+[ "$*" = "--repo omarchy Server" ] || exit 2
+[ -n "${OMABUMP_TEST_SERVERS:-}" ] || { echo "error: repo 'omarchy' not configured" >&2; exit 1; }
+printf '%s\n' "$OMABUMP_TEST_SERVERS"
+EOF
+chmod +x "$scratch/confbin/pacman-conf"
+servers_of() { (export OMABUMP_TEST_SERVERS=$1 PATH=$scratch/confbin:$PATH; repo_error=""; if repo_server_find; then echo "$repo_server"; else echo "$repo_error"; fi); }
+same "repo_server_find: the first https Server, less its trailing slash" 'https://pkgs.omarchy.org/edge/x86_64' \
+  "$(servers_of $'http://mirror.example/x86_64\nhttps://pkgs.omarchy.org/edge/x86_64/\nhttps://other.example/x86_64')"
+same "repo_server_find: a server with odd characters is passed over" 'https://b.example/x86_64' \
+  "$(servers_of $'https://a.example/x 86\nhttps://a.example/../x\nhttps://a.example/"x"\nhttps://b.example/x86_64')"
+same "repo_server_find: no such repo, said so" 'No [omarchy] repo in pacman.conf' "$(servers_of '')"
+same "repo_server_find: no https Server, said so" 'No https Server for [omarchy] in pacman.conf' "$(servers_of 'http://mirror.example/x86_64')"
+
+sum64=$(printf 'a%.0s' {1..64})
+repo_ok_of() { if repo_entry_ok "$@"; then echo ok; else echo no; fi; }
+same "repo_entry_ok: the package file of that name, version and architecture, or any" 'ok ok ok' \
+  "$(repo_ok_of crush-bin 0.20.0-1 "crush-bin-0.20.0-1-$(uname -m).pkg.tar.zst" "$sum64") $(repo_ok_of x 1.0-1 x-1.0-1-any.pkg.tar.xz "$sum64") $(
+     repo_ok_of cursor-cli 1:2026.11.22.1.e9042b2-2 "cursor-cli-1:2026.11.22.1.e9042b2-2-$(uname -m).pkg.tar.zst" "$sum64")"
+same "repo_entry_ok: another name's, version's or architecture's file, a path, an odd extension or sum" 'no no no no no no no no no' \
+  "$(for a in "crush-bin 0.20.0-1 crush-bin-debug-0.20.0-1-any.pkg.tar.zst $sum64" "x 1.0-1 x-1.0-2-any.pkg.tar.zst $sum64" \
+       "x 1.0-1 x-1.0-1-otherarch.pkg.tar.zst $sum64" "x 1.0-1 ../x-1.0-1-any.pkg.tar.zst $sum64" "x 1.0-1 a/x-1.0-1-any.pkg.tar.zst $sum64" \
+       "x 1.0-1 x-1.0-1-any.pkg.tar.sh $sum64" "x 1.0-1 x-1.0-1-any.pkg.tar.zst ${sum64^^}" "x 1.0 x-1.0-any.pkg.tar.zst $sum64" \
+       "-x 1.0-1 -x-1.0-1-any.pkg.tar.zst $sum64"; do
+       # shellcheck disable=SC2086 # the four fields, split on purpose
+       repo_ok_of $a; done | paste -sd' ')"
+
+repo_db "$scratch/served/omarchy.db" 'crush-bin 0.20.0-1' 'crush-bin-debug 0.21.0-1' 'cursor-cli 1:2026.11.22.1.e9042b2-2' 'dup 1.0-1 dup-1.0-1-any.pkg.tar.zst twice' \
+  'evil 1.0-1 ../evil-1.0-1-any.pkg.tar.zst'
+same "repo_db_entries: each package taken by its exact name; a field twice or an odd file name drops it" \
+  "crush-bin 0.20.0-1|crush-bin-debug 0.21.0-1|cursor-cli 1:2026.11.22.1.e9042b2-2" \
+  "$(repo_db_entries "$scratch/served/omarchy.db" | cut -f1,2 | tr '\t' ' ' | sort | paste -sd'|')"
+printf 'not an archive' >"$scratch/repo-junk.db"
+refuse "repo_db_entries: a file bsdtar cannot read fails" repo_db_entries "$scratch/repo-junk.db"
+(cd "$scratch" && rm -rf repo-none && mkdir -p repo-none/x-1 && echo '%CSIZE%' >repo-none/x-1/desc && bsdtar --zstd -cf repo-none.db -C repo-none x-1)
+refuse "repo_db_entries: a database with no package Omabump takes fails" repo_db_entries "$scratch/repo-none.db"
+# repo_load and repo_lookup through the fetch stub: "<state>|<version>
+# <file>|<error>|<size bound> <URL fetched>" for the package $1, with the
+# servers $servers (one by default).
+repo_of() {
+  ( export OMABUMP_TEST_SERVERS=${servers-https://pkgs.example/edge/x86_64} PATH=$scratch/confbin:$PATH
+    eval "$(declare -f fetch | sed '1s/^fetch/stub_fetch/')"
+    fetch() { echo "${max_size:-} ${*: -1}" >>"$scratch/repo-fetch.log"; stub_fetch "$@"; }
+    : >"$scratch/repo-fetch.log"
+    repo_load || true
+    repo_lookup "$1" || true
+    echo "$repo_state|$repo_version $repo_file|$repo_error|$(paste -sd' ' "$scratch/repo-fetch.log")" )
+}
+same "repo_load: one fetch of the database, bounded; crush-bin is not crush-bin-debug" \
+  "ready|0.20.0-1 crush-bin-0.20.0-1-$(uname -m).pkg.tar.zst||8M https://pkgs.example/edge/x86_64/omarchy.db" "$(repo_of crush-bin)"
+same "repo_lookup: the epoch's version and file as the database names them" \
+  "ready|1:2026.11.22.1.e9042b2-2 cursor-cli-1:2026.11.22.1.e9042b2-2-$(uname -m).pkg.tar.zst||8M https://pkgs.example/edge/x86_64/omarchy.db" "$(repo_of cursor-cli)"
+same "repo_lookup: a package the repo does not have" 'ready| ||8M https://pkgs.example/edge/x86_64/omarchy.db' "$(repo_of crush)"
+same "repo_load: no such repo: none, and nothing fetched" 'none| |No [omarchy] repo in pacman.conf|' "$(servers='' repo_of crush-bin)"
+mv "$scratch/served/omarchy.db" "$scratch/omarchy.db.away"
+same "repo_load: a database that cannot be fetched: failed, and why" \
+  'failed| |could not fetch Omarchy'"'"'s repo database from https://pkgs.example/edge/x86_64 (curl exit 22)|8M https://pkgs.example/edge/x86_64/omarchy.db' \
+  "$(repo_of crush-bin)"
+cp "$scratch/repo-junk.db" "$scratch/served/omarchy.db"
+same "repo_load: one that cannot be read: failed, and why" \
+  'failed| |Omarchy'"'"'s repo database from https://pkgs.example/edge/x86_64 could not be read|8M https://pkgs.example/edge/x86_64/omarchy.db' \
+  "$(repo_of crush-bin)"
+mv "$scratch/omarchy.db.away" "$scratch/served/omarchy.db"
+same "repo_file_url: an epoch's colon is percent-encoded" 'https://pkgs.example/x/cursor-cli-1%3A2.0-1-any.pkg.tar.zst' \
+  "$(repo_server=https://pkgs.example/x repo_file_url cursor-cli-1:2.0-1-any.pkg.tar.zst)"
+rm -f "$scratch/served/omarchy.db" "$scratch/repo-junk.db" "$scratch/repo-none.db"
+
+# repo_derived <installed> <feed's latest> <feed error> <repo state> <repo's version> [<installable>]:
+# a check's repo row, the route's installable as given (true by default),
+# through repo_row, row_derive and row_json, and its fields
+# "update|installable|held|latest|versionFrom|stale|error|note|holdClause|repoVersion".
+repo_derived() {
+  local pkg=r-app source=repo installed_name=r-app installed=$1 latest=$2 from=feed feed_error=$3 route_error=""
+  local repo_state=$4 repo_error="" repo_version="" repo_file="" repo_sha256="" stale=false installable=${6:-true} note=""
+  local app='{"pkg": "r-app", "label": "R"}' label=R now=1767225600 hold=0 mise_update=false self_updating=false
+  local held=false unchecked=false recipe="" request="" omarchy_update=false blocked="" error line
+  local muted_json='[]' skipped_json='{}' update switchable muted skipped skip_end quiet hold_clause="" unread=false
+  local -A repo_entries=()
+  [[ -z $5 ]] || repo_entries[r-app]="$5 r-app-$5-any.pkg.tar.zst $sum64"
+  case $4 in
+    none) repo_error="No [omarchy] repo in pacman.conf" ;;
+    failed) repo_error="could not fetch Omarchy's repo database from https://pkgs.example (curl exit 6)" ;;
+  esac
+  # A feed that failed leaves the last check's version, as the check does.
+  [[ -z $feed_error ]] || stale=true
+  repo_row
+  error=""
+  while IFS= read -r line; do [[ -z $line ]] || error+=${error:+; }$line; done <<<"$route_error"$'\n'"$feed_error"
+  row_derive
+  row_json | jq -r '"\(.updateAvailable)|\(.installable)|\(.held)|\(.latest)|\(.versionFrom)|\(.stale)|\(.error)|\(.note)|\(.holdClause)|\(.repoVersion)"'
+}
+same "repo row: the repo has the vendor's newest: Update" 'true|true|false|1.2|feed|false||||1.2-1' \
+  "$(repo_derived 1.0-1 1.2 '' ready 1.2-1)"
+same "repo row: the vendor ahead of the repo: the update shows, held, no Update, and the note says so" \
+  "true|false|true|1.2|feed|false||Not in Omarchy's repo yet|Not in Omarchy's repo yet|1.0-1" "$(repo_derived 1.0-1 1.2 '' ready 1.0-1)"
+same "repo row: a pkgrel the repo has, the feed's version installed: Update, to the repo's full version" \
+  'true|true|false|1.2-2|repo|false||||1.2-2' "$(repo_derived 1.2-1 1.2 '' ready 1.2-2)"
+same "repo row: the repo ahead of the feed: the repo's version is the newest" 'true|true|false|1.3-1|repo|false||||1.3-1' \
+  "$(repo_derived 1.2-1 1.2 '' ready 1.3-1)"
+same "repo row: the feed ahead of the repo, the repo ahead of what is installed: the repo's version, which Update installs" \
+  'true|true|false|1.2-1|repo|false||||1.2-1' "$(repo_derived 1.0-1 1.3 '' ready 1.2-1)"
+same "repo row: current in both" 'false|true|false|1.2|feed|false||||1.2-1' "$(repo_derived 1.2-1 1.2 '' ready 1.2-1)"
+same "repo row: the feed failed, the repo answered: its version, no error, not stale" 'true|true|false|1.2-1|repo|false||||1.2-1' \
+  "$(repo_derived 1.0-1 1.1 'could not fetch the feed' ready 1.2-1)"
+same "repo row: the repo unreadable with an update: an error, no Update" \
+  "true|false|false|1.2|feed|false|could not fetch Omarchy's repo database from https://pkgs.example (curl exit 6)|||" \
+  "$(repo_derived 1.0-1 1.2 '' failed '')"
+same "repo row: the repo unreadable, no update: no error, nothing claimed" 'false|true|false|1.2|feed|false||||' \
+  "$(repo_derived 1.2-1 1.2 '' failed '')"
+same "repo row: both unreadable: both errors" \
+  "false|true|false|1.0|feed|true|could not fetch Omarchy's repo database from https://pkgs.example (curl exit 6); feed down|||" \
+  "$(repo_derived 1.2-1 1.0 'feed down' failed '')"
+same "repo row: no such repo here: no Update, the note says so, no error" \
+  'true|false|false|1.2|feed|false||No [omarchy] repo in pacman.conf||' "$(repo_derived 1.0-1 1.2 '' none '')"
+same "repo row: a repo without the package: no Update, the note says so" \
+  "true|false|false|1.2|feed|false||Omarchy's repo has no r-app||" "$(repo_derived 1.0-1 1.2 '' ready '')"
+same "repo row: Update off (the route's installable false) and the vendor ahead: no hold, so it still notifies" \
+  'true|false|false|1.2|feed|false||||1.0-1' "$(repo_derived 1.0-1 1.2 '' ready 1.0-1 false)"
 
 # --- status.json: written, read and checked in one place -------------------------------
 
@@ -1294,16 +1444,15 @@ for p in claude-code openai-codex grok-cli opencode github-copilot-cli crush-bin
   pi-coding-agent; do
   # $p inside the single quotes is jq's variable, not the shell's.
   # shellcheck disable=SC2016
-  check "apps.json tracks Omarchy's agent package $p in the CLI section" jq -e --arg p "$p" \
-    'any(.[]; .pkg == $p and .section == "cli" and (.source == "omarchy" or .source == "indicator"))' "$root/apps.json"
+  check "apps.json tracks Omarchy's agent package $p in the CLI section, on the repo route" jq -e --arg p "$p" \
+    'any(.[]; .pkg == $p and .section == "cli" and .source == "repo")' "$root/apps.json"
 done
 same "apps.json names a section only for the CLI packages" '[]' \
   "$(jq -c '[.[] | select(has("section") and (.section != "cli" or .source == "mise")) | .pkg]' "$root/apps.json")"
-# The recipes whose build reaches the network past curl (npm install in
-# package(), git ls-remote in the sync), that need a PGP key Omabump does not
-# import, or that build two packages at once, have no Update.
-same "the recipes Update cannot hold to its rules are indicators" 'claude-code deepseek-dsh kilocode-cli minimax-code opencode' \
-  "$(jq -r '[.[] | select(.pkg | IN("claude-code", "opencode", "minimax-code", "deepseek-dsh", "kilocode-cli")) | select(.source == "indicator") | .pkg] | sort | join(" ")' "$root/apps.json")"
+# Update installs each of them from Omarchy's repo, signed, never from a
+# local build: the CLI packages are all on the repo route, and nothing else.
+same "every CLI package of apps.json is on the repo route, and only they are" '20|20' \
+  "$(jq -r '"\([.[] | select(.section == "cli" and .source == "repo")] | length)|\([.[] | select(.source == "repo")] | length)"' "$root/apps.json")"
 # Before it, Omarchy named each agent's mise tool in /etc/mise/conf.d/omarchy-tools.toml;
 # the key mise ls reports is that name, so the table must carry it.
 for t in claude codex crush opencode grok copilot cursor-agent pi amp antigravity-cli qwen muse \

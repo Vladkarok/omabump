@@ -23,7 +23,12 @@
 #             one does: sudo -n succeeds unless $STUB_SUDO_N=fail, which
 #             is what a run whose terminal was closed gets (or one whose
 #             password timed out)
-#   curl      serves files from a local directory
+#   curl      serves files from a local directory, by the URL's last part
+#             (an epoch's %3A read as ":")
+#   pacman-conf  $STUB_REPO_SERVER as the [omarchy] repo's Server, or no
+#             such repo when that is unset
+#   pacman-key  --verify <sig> <file>: a good signature when <sig> holds
+#             "signed:" and the file's sha256, else a bad one
 #   makepkg   reads the test recipe's PKGBUILD and "builds" a plain tar,
 #             its files owned by root as under fakeroot, or by
 #             $STUB_MAKEPKG_OWNER ("<uid>:<gid>");
@@ -136,8 +141,28 @@ while (( $# )); do
   [[ $1 == -o ]] && { out=$2; shift; }
   shift
 done
-[[ -f $STUB_SERVED/${url##*/} ]] || exit 22
-if [[ -n $out ]]; then cp "$STUB_SERVED/${url##*/}" "$out"; else cat "$STUB_SERVED/${url##*/}"; fi
+name=${url##*/} name=${name//%3A/:}
+[[ -f $STUB_SERVED/$name ]] || exit 22
+if [[ -n $out ]]; then cp "$STUB_SERVED/$name" "$out"; else cat "$STUB_SERVED/$name"; fi
+EOF
+cat >"$istubs/pacman-conf" <<'EOF'
+#!/bin/bash
+echo "pacman-conf $*" >>"$STUB_LOG/calls"
+[[ $* == "--repo omarchy Server" ]] || { echo "pacman-conf stub: unexpected $*" >&2; exit 99; }
+[[ -n ${STUB_REPO_SERVER:-} ]] || { echo "error: repo 'omarchy' not configured" >&2; exit 1; }
+echo "$STUB_REPO_SERVER"
+EOF
+cat >"$istubs/pacman-key" <<'EOF'
+#!/bin/bash
+echo "pacman-key $*" >>"$STUB_LOG/calls"
+[[ $1 == --verify && $# == 3 ]] || { echo "pacman-key stub: unexpected $*" >&2; exit 99; }
+if [[ -f $2 && -f $3 && $(<"$2") == "signed:$(sha256sum <"$3" | cut -d' ' -f1)" ]]; then
+  echo "==> Checking $2... (detached)"
+  echo 'gpg: Good signature from "Omarchy <pkgs@omarchy.org>" [full]'
+  exit 0
+fi
+echo "==> ERROR: The signature identified by $2 could not be verified." >&2
+exit 1
 EOF
 cat >"$istubs/makepkg" <<'EOF'
 #!/bin/bash
@@ -285,7 +310,9 @@ cat >"$ihome/.config/omarchy/omabump/apps.json" <<'EOF'
    "selfUpdate": "run npmapp update", "updateBlocked": "its package is the seed"},
   {"pkg": "npmesc", "label": "Npm Esc", "source": "omarchy", "npmPackage": "~/.npmesc/lib/node_modules/npmesc",
    "selfUpdate": "run \u001b]0;x\u0007npmesc update"},
-  {"pkg": "indapp", "label": "Ind App", "source": "indicator"}
+  {"pkg": "indapp", "label": "Ind App", "source": "indicator"},
+  {"pkg": "rpapp", "label": "Rp App", "source": "repo", "installed": ["rpapp", "rpapp-bin"]},
+  {"pkg": "rpepoch", "label": "Rp Epoch", "source": "repo"}
 ]
 EOF
 
@@ -428,6 +455,7 @@ fresh
 rule "--switch on a mise row" route '--switch works for omarchy and vendor rows only' --switch mise:testtool
 rule "an indicator row" route \
   'Ind App has no Update here: omarchy update updates it when pacman or the AUR has its package, else update it the way you installed it' indapp
+rule "--switch on a repo row" route '--switch works for omarchy and vendor rows only' --switch rpapp
 rule "Omabump from a local checkout" route "Omabump runs from a local checkout ($iplugin); update it with git" self:omabump
 
 # --- the vendor route ------------------------------------------------------------
@@ -1249,6 +1277,218 @@ says "install --prepare --switch (omarchy), an older recipe: says it would refus
   'Would refuse: 2.0.0-1 is older than the installed testpkg-bin 2.1.0-1; nothing to do'
 refuse "install --prepare --switch (omarchy), an older recipe: and stops there" grep -qF 'Package file:' <<<"$iout"
 rm -f "$idb/qi/testpkg-bin"
+
+# --- the repo route: Omarchy's signed package -----------------------------------------
+
+# Omarchy's repo at rp_server (the pacman-conf stub's, with
+# STUB_REPO_SERVER set: rp_inst), its database and packages served by the
+# curl stub. rp_pkg <name> <full version> [<.PKGINFO version>] makes the
+# package file the database will name and its good signature; rp_db
+# <entries...> the database, each "<name> <version> [<sha256>]" for a file
+# rp_pkg made, its sha256 the file's own unless given.
+rp_server=https://pkgs.example/edge/x86_64 rp_arch=$(uname -m)
+rp_file() { echo "$1-$2-$rp_arch.pkg.tar.zst"; }
+rp_pkg() {
+  local file
+  file=$(rp_file "$1" "$2")
+  make_pkg "$iserved/$file" "pkgname = $1" "pkgver = ${3:-$2}"
+  echo "signed:$(sha256sum <"$iserved/$file" | cut -d' ' -f1)" >"$iserved/$file.sig"
+}
+rp_db() {
+  local e name version sum entries=()
+  for e in "$@"; do
+    read -r name version sum <<<"$e"
+    entries+=("$name $version $(rp_file "$name" "$version") ${sum:-$(sha256sum <"$iserved/$(rp_file "$name" "$version")" | cut -d' ' -f1)}")
+  done
+  repo_db "$iserved/omarchy.db" "${entries[@]}"
+}
+rp_inst() { inst_env+=(STUB_REPO_SERVER="$rp_server"); inst "$@"; inst_env=("${inst_env[@]:0:${#inst_env[@]}-1}"); }
+rp_cache=$it/cache/omabump/packages
+rpf=$(rp_file rpapp 2.0.0-1)
+# The omarchy-pkgs clone as the omarchy route tests left it: the repo path
+# must not touch it.
+pk_head=$(git -C "$pk" rev-parse HEAD) pk_status=$(git -C "$pk" status --porcelain)
+rm -f "$pk/.git/test-sync-token"
+
+rp_pkg rpapp 2.0.0-1
+rp_db 'rpapp 2.0.0-1' 'rpapp-debug 9.0.0-1 0000000000000000000000000000000000000000000000000000000000000000'
+fresh 'rpapp 1.0.0-1'
+shown rpapp 2.0.0 1.0.0-1
+inst rpapp
+same "install (repo), no [omarchy] repo here: refused, saying so" \
+  '1|omabump: No [omarchy] repo in pacman.conf, so there is no package to install Rp App from' "$irc|$(tail -n1 <<<"$iout")"
+inst --prepare rpapp
+same "install --prepare (repo), no [omarchy] repo here: says it would refuse" \
+  '0|Would refuse: No [omarchy] repo in pacman.conf, so there is no package to install Rp App from' "$irc|$(tail -n1 <<<"$iout")"
+
+fresh 'rpapp 1.0.0-1'
+shown rpapp 2.0.0 1.0.0-1
+rp_inst --prepare rpapp
+same "install --prepare (repo): succeeds, stopping before the download" '0|Prepared: stopping before the download.' "$irc|$(tail -n1 <<<"$iout")"
+says "install --prepare (repo): the package the database names, not rpapp-debug" "Omarchy's repo ($rp_server) has rpapp 2.0.0-1"
+says "install --prepare (repo): would download the package and its signature" \
+  "Would download: $rp_server/$rpf to $rp_cache/$rpf, and its signature $rp_server/$rpf.sig to $rp_cache/$rpf.sig"
+says "install --prepare (repo): would check the sha256 the database lists" "Would check: sha256sum of $rp_cache/$rpf is $(sha256sum <"$iserved/$rpf" | cut -d' ' -f1)"
+says "install --prepare (repo): would verify the signature" "Would check: pacman-key --verify $rp_cache/$rpf.sig $rp_cache/$rpf finds a good signature"
+says "install --prepare (repo): would check the name and version" "Would check: pacman -Qp $rp_cache/$rpf is rpapp 2.0.0-1, newer than the installed 1.0.0-1"
+says "install --prepare (repo): then the staging the other routes use" "Would run: sudo pacman -U -- $istaging/$rpf (pacman asks before it installs)"
+calls "install --prepare (repo): reads the database" "curl --proto =https --proto-redir =https --connect-timeout 15 --max-time 30 --max-filesize 8M -fsSL $rp_server/omarchy.db"
+no_call "install --prepare (repo): downloads no package" "$rpf"
+no_call "install --prepare (repo): never calls sudo" 'sudo '
+check "install --prepare (repo): nothing in the packages cache" test ! -e "$rp_cache/$rpf"
+
+fresh 'rpapp 1.0.0-1'
+shown rpapp 2.0.0 1.0.0-1
+STUB_PACMAN_U=ok rp_inst rpapp
+same "install (repo): a success" 0 "$irc"
+says "install (repo): the sha256 is checked" 'sha256 matches.'
+says "install (repo): the signature is verified, and its signer named" 'Signature: gpg: Good signature from "Omarchy <pkgs@omarchy.org>" [full]'
+calls "install (repo): by pacman-key, on the downloaded file" "pacman-key --verify $rp_cache/$rpf.sig $rp_cache/$rpf"
+says "install (repo): the staged copy is checked" "Staged copy checked: $istaging/$rpf"
+calls "install (repo): installed with sudo pacman -U from the staging directory" "sudo pacman -U -- $istaging/$rpf"
+same "install (repo): pacman has the new version" 'rpapp 2.0.0-1' "$(<"$idb/installed")"
+check "install (repo): no staged copy left" test ! -e "$istaging/$rpf"
+check "install (repo): the package and its signature are cleaned up" test ! -e "$rp_cache/$rpf" -a ! -e "$rp_cache/$rpf.sig"
+says "install (repo): restart to use it" 'Restart Rp App to use 2.0.0-1.'
+calls "install (repo): refreshes the panel" 'omabump-check --no-notify --wait'
+no_call "install (repo): builds nothing" 'makepkg'
+same "install (repo): the omarchy-pkgs clone is not touched, nor its code run" "$pk_head|$pk_status|no" \
+  "$(git -C "$pk" rev-parse HEAD)|$(git -C "$pk" status --porcelain)|$([[ -e $pk/.git/test-sync-token ]] && echo ran || echo no)"
+
+# Installed under another name: the repo route has no Switch, so its
+# Update replaces nothing else.
+fresh 'rpapp-bin 1.0.0-1'
+STUB_PACMAN_U=ok rp_inst rpapp
+same "install (repo), installed under another name: refused, nothing downloaded" \
+  "1|omabump: Rp App is installed as rpapp-bin; Update from Omarchy's repo replaces only rpapp itself, so remove rpapp-bin or install rpapp with pacman|" \
+  "$irc|$(tail -n1 <<<"$iout")|$(grep -F "$rpf" "$ilog/calls")"
+
+# A signature that does not verify: refused, both files removed, no sudo.
+echo 'signed:0000' >"$iserved/$rpf.sig"
+fresh 'rpapp 1.0.0-1'
+STUB_PACMAN_U=ok rp_inst rpapp
+same "install (repo), a bad signature: refused, saying the signature did not verify" \
+  "1|omabump: the signature of $rpf did not verify (pacman-key --verify exited 1): it is not a good signature from a key in pacman's keyring. Removed the download, not installing" \
+  "$irc|$(tail -n1 <<<"$iout")"
+says "install (repo), a bad signature: pacman-key's own words are shown" 'could not be verified'
+check "install (repo), a bad signature: the package and its signature are deleted" test ! -e "$rp_cache/$rpf" -a ! -e "$rp_cache/$rpf.sig"
+no_call "install (repo), a bad signature: no sudo" 'sudo '
+same "install (repo), a bad signature: nothing installed" 'rpapp 1.0.0-1' "$(<"$idb/installed")"
+rp_pkg rpapp 2.0.0-1
+
+# A file whose sha256 is not the database's: refused before the signature.
+rp_db "rpapp 2.0.0-1 $(printf 'b%.0s' {1..64})"
+fresh 'rpapp 1.0.0-1'
+STUB_PACMAN_U=ok rp_inst rpapp
+same "install (repo), a sha256 the database does not list: refused" \
+  "1|omabump: sha256 of the download is $(sha256sum <"$iserved/$rpf" | cut -d' ' -f1), Omarchy's repo database lists $(printf 'b%.0s' {1..64}); removed the file, not installing" \
+  "$irc|$(tail -n1 <<<"$iout")"
+check "install (repo), a sha256 mismatch: the files are deleted" test ! -e "$rp_cache/$rpf" -a ! -e "$rp_cache/$rpf.sig"
+no_call "install (repo), a sha256 mismatch: no sudo" 'sudo '
+
+# A signed file that is not the package and version the database names.
+rp_pkg rpapp 2.0.0-1 2.0.0-2
+rp_db 'rpapp 2.0.0-1'
+fresh 'rpapp 1.0.0-1'
+STUB_PACMAN_U=ok rp_inst rpapp
+same "install (repo), pacman -Qp gives another version: refused" \
+  "1|omabump: the package is 'rpapp 2.0.0-2', and Omarchy's repo database names 'rpapp 2.0.0-1'; not installing" \
+  "$irc|$(grep -F 'omabump: the package is' <<<"$iout")"
+no_call "install (repo), another version: no sudo" 'sudo '
+make_pkg "$iserved/$rpf" 'pkgname = other' 'pkgver = 2.0.0-1'
+echo "signed:$(sha256sum <"$iserved/$rpf" | cut -d' ' -f1)" >"$iserved/$rpf.sig"
+rp_db 'rpapp 2.0.0-1'
+rm -f "$rp_cache/$rpf"
+fresh 'rpapp 1.0.0-1'
+STUB_PACMAN_U=ok rp_inst rpapp
+same "install (repo), pacman -Qp gives another name: refused" \
+  "1|omabump: the package is 'other 2.0.0-1', and Omarchy's repo database names 'rpapp 2.0.0-1'; not installing" \
+  "$irc|$(grep -F 'omabump: the package is' <<<"$iout")"
+no_call "install (repo), another name: no sudo" 'sudo '
+rm -f "$rp_cache/$rpf" "$rp_cache/$rpf.sig"
+rp_pkg rpapp 2.0.0-1
+rp_db 'rpapp 2.0.0-1'
+
+# pacman stops (n, or a dependency): the line on omarchy update.
+fresh 'rpapp 1.0.0-1'
+STUB_PACMAN_U=no rp_inst rpapp
+same "install (repo), pacman installs nothing: a failure" 1 "$irc"
+says "install (repo), pacman installs nothing: suggests omarchy update for a dependency" \
+  "omabump: if pacman stopped on a dependency, run omarchy update: it updates the rest of the system with Omarchy's repo"
+rm -f "$rp_cache/$rpf" "$rp_cache/$rpf.sig"
+
+# The repo not newer than what is installed: as for any route with nothing
+# newer. Behind the panel's version, it names both and says when.
+rp_pkg rpapp 1.0.0-1
+rp_db 'rpapp 1.0.0-1'
+fresh 'rpapp 1.0.0-1'
+shown rpapp 2.0.0 1.0.0-1
+rp_inst rpapp
+same "install (repo), the vendor ahead of the repo: a failure naming both versions" \
+  "1|omabump: Omarchy's repo has 1.0.0-1, not the 2.0.0 the vendor's feed shows; Update cannot install it yet. It usually follows within the hour." \
+  "$irc|$(tail -n1 <<<"$iout")"
+no_call "install (repo), the vendor ahead of the repo: downloads no package" "$(rp_file rpapp 1.0.0-1)"
+rp_inst --prepare rpapp
+same "install --prepare (repo), the vendor ahead of the repo: says it would refuse" \
+  "0|Would refuse: Omarchy's repo has 1.0.0-1, not the 2.0.0 the vendor's feed shows; Update cannot install it yet. It usually follows within the hour." \
+  "$irc|$(tail -n1 <<<"$iout")"
+fresh 'rpapp 1.0.0-1'
+shown rpapp 1.0.0 0.9.0-1
+rp_inst rpapp
+same "install (repo), the panel's version installed since: already installed, a success" \
+  '0|Rp App 1.0.0-1 is already installed; nothing to do.' "$irc|$(grep -F 'already installed' <<<"$iout")"
+calls "install (repo), already installed: refreshes the panel" 'omabump-check --no-notify --wait'
+
+# An epoch in the file name: its colon goes percent-encoded into the URL.
+rpe=$(rp_file rpepoch 1:2.0-1)
+rp_pkg rpepoch 1:2.0-1
+rp_db 'rpepoch 1:2.0-1'
+fresh 'rpepoch 1:1.0-1'
+STUB_PACMAN_U=ok rp_inst rpepoch
+same "install (repo), an epoch's file: a success" '0|rpepoch 1:2.0-1' "$irc|$(<"$idb/installed")"
+calls "install (repo), an epoch's file: fetched with the colon percent-encoded" "$rp_server/rpepoch-1%3A2.0-1-$rp_arch.pkg.tar.zst"
+calls "install (repo), an epoch's file: and its signature" "$rp_server/rpepoch-1%3A2.0-1-$rp_arch.pkg.tar.zst.sig"
+calls "install (repo), an epoch's file: staged by its name" "sudo pacman -U -- $istaging/$rpe"
+
+# An omarchy row: the repo has the vendor's newest, so its package, not a
+# build; the repo behind the vendor, or no vendor's version to go by, the
+# build as before.
+rp_pkg testpkg 2.0.0-1
+rp_db 'testpkg 2.0.0-1'
+fresh 'testpkg 1.0.0-1'
+shown testpkg 2.0.0 1.0.0-1
+STUB_PACMAN_U=ok rp_inst testpkg
+same "install (omarchy), the repo at the vendor's newest: a success" '0|testpkg 2.0.0-1' "$irc|$(<"$idb/installed")"
+says "install (omarchy), the repo at the vendor's newest: says it installs the repo's package" \
+  "Omarchy's repo ($rp_server) has testpkg 2.0.0-1, the vendor's newest release: installing its package, nothing to build."
+calls "install (omarchy), the repo at the vendor's newest: the signature is verified" "pacman-key --verify $rp_cache/$(rp_file testpkg 2.0.0-1).sig"
+no_call "install (omarchy), the repo at the vendor's newest: no build" 'makepkg'
+same "install (omarchy), the repo at the vendor's newest: the clone is not touched, nor sync-upstream run" "$pk_head|$pk_status|no" \
+  "$(git -C "$pk" rev-parse HEAD)|$(git -C "$pk" status --porcelain)|$([[ -e $pk/.git/test-sync-token ]] && echo ran || echo no)"
+fresh 'testpkg 1.0.0-1'
+shown testpkg 2.0.0 1.0.0-1
+rp_inst --prepare testpkg
+same "install --prepare (omarchy), the repo at the vendor's newest: the repo path's steps" '0|Prepared: stopping before the download.' \
+  "$irc|$(tail -n1 <<<"$iout")"
+no_call "install --prepare (omarchy), the repo at the vendor's newest: no download, no makepkg" "$(rp_file testpkg 2.0.0-1)"
+rp_pkg testpkg 1.5.0-1
+rp_db 'testpkg 1.5.0-1'
+fresh 'testpkg 1.0.0-1'
+shown testpkg 2.0.0 1.0.0-1
+STUB_PACMAN_U=ok rp_inst testpkg
+same "install (omarchy), the repo behind the vendor: the build, a success" '0|testpkg 2.0.0-1' "$irc|$(<"$idb/installed")"
+says "install (omarchy), the repo behind the vendor: says why it builds" \
+  "Omarchy's repo has testpkg 1.5.0-1, the vendor's feed 2.0.0; building Omarchy's recipe instead."
+calls "install (omarchy), the repo behind the vendor: makepkg builds" ' -sfC'
+no_call "install (omarchy), the repo behind the vendor: the repo's package is not downloaded" "$(rp_file testpkg 1.5.0-1)"
+rp_pkg testpkg 2.0.0-1
+rp_db 'testpkg 2.0.0-1'
+fresh 'testpkg 1.0.0-1'
+rp_inst --prepare testpkg
+says "install --prepare (omarchy), no vendor's version known: the build" \
+  "Omarchy's repo has testpkg 2.0.0-1, and the vendor's newest version is not known; building Omarchy's recipe instead."
+says "install --prepare (omarchy), no vendor's version known: up to makepkg" 'Prepared: stopping before makepkg builds.'
+rm -f "$iserved/omarchy.db" "$iserved"/rpapp-* "$iserved"/rpepoch-* "$iserved"/testpkg-* "$rp_cache"/rp* "$rp_cache"/testpkg-*
 
 # --- Omabump's own update: the fast-forward and its rollback ---------------------------
 

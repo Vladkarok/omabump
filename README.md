@@ -34,7 +34,8 @@ The widget lands in the bar's right section. Move it with `omarchy bar move io.g
 
 Nothing changes until you press Update (or Switch) on a row. Update opens a floating terminal and runs `bin/omabump-install <pkg>`, and the row's route decides what that does ([each route in detail](docs/internals.md#update-routes)):
 
-- **omarchy**: runs `bin/sync-upstream` and the recipe's hook from the omarchy-pkgs commit this release pins ([why a pin](docs/internals.md#pinned-snapshots)), prints the recipe diff, builds the package with makepkg and installs it with `sudo pacman -U`.
+- **repo** (the CLI tools): downloads the package Omarchy's own repo publishes, checks its sha256 and its signature against pacman's keyring, and installs it with `sudo pacman -U`. Nothing is built and no code from omarchy-pkgs runs. When the vendor is ahead of the repo, the row shows the update and gets its Update once the repo has it, usually within the hour.
+- **omarchy**: installs the package from Omarchy's repo as above when the repo already has the vendor's newest release; otherwise runs `bin/sync-upstream` and the recipe's hook from the omarchy-pkgs commit this release pins ([why a pin](docs/internals.md#pinned-snapshots)), prints the recipe diff, builds the package with makepkg and installs it with `sudo pacman -U`.
 - **vendor**: downloads the vendor's own Arch package over HTTPS, checks it against the checksum the vendor publishes, and installs it with `sudo pacman -U`.
 - **mise**: `mise install <tool>@<version>`, with `MISE_MINIMUM_RELEASE_AGE=0` as Omarchy's own agent wrappers run it, so a `minimum_release_age` you set does not hold a release back. No sudo, and your mise config is not touched; when a lockfile keeps the old version, Update then runs `mise up <tool>`, which rewrites the lockfile.
 - **Switch** (`w`, on a row installed under another package name, such as Codex as the AUR's `chatgpt-desktop` or ZCode as `z-code-bin`): `bin/omabump-install --switch <pkg>` installs the canonical package in place of the installed one, and pacman asks before it removes the old package ([details](docs/internals.md#switch)).
@@ -103,29 +104,27 @@ Omarchy's settings schema has no array or object type, so `mutedApps` and `skipp
 | <picture><source media="(prefers-color-scheme: light)" srcset="assets/kimi-light.svg"><img src="assets/kimi.svg" width="16" height="16" alt=""></picture> Kimi | `kimi-bin` | indicator, version from Moonshot's update feed |
 | <picture><source media="(prefers-color-scheme: light)" srcset="assets/trae-light.svg"><img src="assets/trae.svg" width="16" height="16" alt=""></picture> Trae | `trae-bin` | indicator, version from the AUR; `omarchy update` updates it |
 
-CLI tools Omarchy installs as packages of its repo (since its migration of 2026-11-23, which moved the coding agents from mise to pacman), listed when the package is installed. These have Update, on the omarchy route:
+CLI tools Omarchy installs as packages of its repo (since its migration of 2026-11-23, which moved the coding agents from mise to pacman), listed when the package is installed. Each has Update, from Omarchy's repo (the repo route):
+<img src="assets/claude.svg" width="14" height="14" alt=""> Claude Code (`claude-code`),
 <picture><source media="(prefers-color-scheme: light)" srcset="assets/codex-light.svg"><img src="assets/codex.svg" width="14" height="14" alt=""></picture> Codex CLI (`openai-codex`),
 <picture><source media="(prefers-color-scheme: light)" srcset="assets/grok-light.svg"><img src="assets/grok.svg" width="14" height="14" alt=""></picture> Grok CLI (`grok-cli`),
 <picture><source media="(prefers-color-scheme: light)" srcset="assets/copilot-light.svg"><img src="assets/copilot.svg" width="14" height="14" alt=""></picture> Copilot CLI (`github-copilot-cli`),
 <picture><source media="(prefers-color-scheme: light)" srcset="assets/crush-light.svg"><img src="assets/crush.svg" width="14" height="14" alt=""></picture> Crush (`crush-bin`),
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/opencode-light.svg"><img src="assets/opencode.svg" width="14" height="14" alt=""></picture> OpenCode (`opencode`),
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/cursor-light.svg"><img src="assets/cursor.svg" width="14" height="14" alt=""></picture> Cursor CLI (`cursor-cli`),
 <picture><source media="(prefers-color-scheme: light)" srcset="assets/antigravity-light.svg"><img src="assets/antigravity.svg" width="14" height="14" alt=""></picture> Antigravity CLI (`antigravity-cli`),
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/muse-light.svg"><img src="assets/muse.svg" width="14" height="14" alt=""></picture> Muse Code (`muse-code`),
 <picture><source media="(prefers-color-scheme: light)" srcset="assets/oh-my-pi-light.svg"><img src="assets/oh-my-pi.svg" width="14" height="14" alt=""></picture> Oh My Pi (`oh-my-pi`),
 <picture><source media="(prefers-color-scheme: light)" srcset="assets/ori-light.svg"><img src="assets/ori.svg" width="14" height="14" alt=""></picture> Ori (`openrouter-ori`),
 <picture><source media="(prefers-color-scheme: light)" srcset="assets/kimi-light.svg"><img src="assets/kimi.svg" width="14" height="14" alt=""></picture> Kimi CLI (`kimi-code`),
 <img src="assets/qwen.svg" width="14" height="14" alt=""> Qwen Code (`qwen-code`),
+<img src="assets/deepseek.svg" width="14" height="14" alt=""> DeepSeek Harness (`deepseek-dsh`),
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/minimax-light.svg"><img src="assets/minimax.svg" width="14" height="14" alt=""></picture> MiniMax Code (`minimax-code`),
 <picture><source media="(prefers-color-scheme: light)" srcset="assets/freebuff-light.svg"><img src="assets/freebuff.svg" width="14" height="14" alt=""></picture> Freebuff (`freebuff`),
+<picture><source media="(prefers-color-scheme: light)" srcset="assets/kilo-light.svg"><img src="assets/kilo.svg" width="14" height="14" alt=""></picture> Kilo (`kilocode-cli`),
 <picture><source media="(prefers-color-scheme: light)" srcset="assets/devin-light.svg"><img src="assets/devin.svg" width="14" height="14" alt=""></picture> Devin CLI (`devin-cli`),
 <picture><source media="(prefers-color-scheme: light)" srcset="assets/amp-light.svg"><img src="assets/amp.svg" width="14" height="14" alt=""></picture> Amp (`amp-cli`), and
 <picture><source media="(prefers-color-scheme: light)" srcset="assets/pi-light.svg"><img src="assets/pi.svg" width="14" height="14" alt=""></picture> Pi (`pi-coding-agent`).
-
-These show their versions only, and `omarchy update` updates them ([why they have no Update](docs/internals.md#how-cli-tools-are-found)):
-<img src="assets/claude.svg" width="14" height="14" alt=""> Claude Code (`claude-code`),
-<picture><source media="(prefers-color-scheme: light)" srcset="assets/opencode-light.svg"><img src="assets/opencode.svg" width="14" height="14" alt=""></picture> OpenCode (`opencode`),
-<picture><source media="(prefers-color-scheme: light)" srcset="assets/cursor-light.svg"><img src="assets/cursor.svg" width="14" height="14" alt=""></picture> Cursor CLI (`cursor-cli`),
-<picture><source media="(prefers-color-scheme: light)" srcset="assets/muse-light.svg"><img src="assets/muse.svg" width="14" height="14" alt=""></picture> Muse Code (`muse-code`),
-<img src="assets/deepseek.svg" width="14" height="14" alt=""> DeepSeek Harness (`deepseek-dsh`),
-<picture><source media="(prefers-color-scheme: light)" srcset="assets/minimax-light.svg"><img src="assets/minimax.svg" width="14" height="14" alt=""></picture> MiniMax Code (`minimax-code`), and
-<picture><source media="(prefers-color-scheme: light)" srcset="assets/kilo-light.svg"><img src="assets/kilo.svg" width="14" height="14" alt=""></picture> Kilo (`kilocode-cli`).
 
 mise tools, for an agent your own mise config still asks for, listed when mise has them installed and active ([how they are found](docs/internals.md#how-cli-tools-are-found)):
 <img src="assets/claude.svg" width="14" height="14" alt=""> Claude Code,

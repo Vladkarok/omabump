@@ -72,12 +72,13 @@ else
     local a='{"pkg": "a", "source": "omarchy", "error": ""}' b='{"pkg": "b", "source": "omarchy", "error": ""}'
     local s='{"pkg": "s", "source": "omarchy", "selfUpdating": true, "error": ""}'
     local m='{"pkg": "mise:m", "source": "mise", "error": ""}' v='{"pkg": "v", "source": "vendor-pkg", "error": ""}'
-    local rows="[$a, $b, $s, $m, $v]" perr='"omarchyPkgs": {"error": "Could not fetch omarchy-pkgs"}'
+    local r='{"pkg": "r", "source": "repo", "section": "cli", "error": ""}'
+    local rows="[$a, $b, $s, $m, $v, $r]" perr='"omarchyPkgs": {"error": "Could not fetch omarchy-pkgs"}'
     jq -c --argjson rows "$rows" '.file.apps //= $rows' <<EOF
 {"name": "nothing failed", "file": {}, "muted": [], "mise": 1, "want": "ok"}
 {"name": "a file with nothing in it", "file": {"apps": []}, "muted": [], "mise": 1, "want": "ok"}
 {"name": "runError", "file": {"runError": "The check stopped early (exit 143)"}, "muted": [], "mise": 1, "want": "failed"}
-{"name": "runError, every row muted", "file": {"runError": "x"}, "muted": ["a", "b", "s", "mise:m", "v"], "mise": 1, "want": "failed"}
+{"name": "runError, every row muted", "file": {"runError": "x"}, "muted": ["a", "b", "s", "mise:m", "v", "r"], "mise": 1, "want": "failed"}
 {"name": "omarchy-pkgs error, no omarchy row muted", "file": {$perr}, "muted": [], "mise": 1, "want": "failed"}
 {"name": "omarchy-pkgs error, some omarchy rows muted", "file": {$perr}, "muted": ["a"], "mise": 1, "want": "failed"}
 {"name": "omarchy-pkgs error, every omarchy row muted", "file": {$perr}, "muted": ["a", "b"], "mise": 1, "want": "ok"}
@@ -94,6 +95,9 @@ else
 {"name": "a self-updating row's error", "file": {}, "muted": [], "mise": 1, "want": "failed", "rowError": "s"}
 {"name": "a mise row's error, Show CLI tools off", "file": {}, "muted": [], "mise": 0, "want": "ok", "rowError": "mise:m"}
 {"name": "a mise row's error, Show CLI tools on", "file": {}, "muted": [], "mise": 1, "want": "failed", "rowError": "mise:m"}
+{"name": "a CLI repo row's error, Show CLI tools off", "file": {}, "muted": [], "mise": 0, "want": "ok", "rowError": "r"}
+{"name": "a CLI repo row's error, Show CLI tools on", "file": {}, "muted": [], "mise": 1, "want": "failed", "rowError": "r"}
+{"name": "omarchy-pkgs error, every omarchy row muted, a repo row not", "file": {$perr}, "muted": ["a", "b"], "mise": 1, "want": "ok"}
 {"name": "selfUpdating not exactly true takes its route", "file": {$perr, "apps": [$a, {"pkg": "t", "source": "omarchy", "selfUpdating": "true"}]}, "muted": ["a"], "mise": 1, "want": "failed"}
 {"name": "rows that are no objects count for nothing", "file": {$perr, "apps": [1, "x", null, [], $a]}, "muted": ["a"], "mise": 1, "want": "ok"}
 {"name": "rows missing fields", "file": {$perr, "apps": [{"pkg": "a"}, {"source": "omarchy"}, {}]}, "muted": [], "mise": 1, "want": "failed"}

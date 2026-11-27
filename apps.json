@@ -179,7 +179,7 @@
   {
     "pkg": "claude-code",
     "label": "Claude Code",
-    "source": "indicator",
+    "source": "repo",
     "section": "cli",
     "feed": {
       "type": "regex",
@@ -191,7 +191,7 @@
   {
     "pkg": "openai-codex",
     "label": "Codex CLI",
-    "source": "omarchy",
+    "source": "repo",
     "section": "cli",
     "feed": {
       "type": "json",
@@ -204,7 +204,7 @@
   {
     "pkg": "grok-cli",
     "label": "Grok CLI",
-    "source": "omarchy",
+    "source": "repo",
     "section": "cli",
     "feed": {
       "type": "regex",
@@ -217,7 +217,7 @@
   {
     "pkg": "opencode",
     "label": "OpenCode",
-    "source": "indicator",
+    "source": "repo",
     "section": "cli",
     "feed": {
       "type": "json",
@@ -230,7 +230,7 @@
   {
     "pkg": "github-copilot-cli",
     "label": "Copilot CLI",
-    "source": "omarchy",
+    "source": "repo",
     "section": "cli",
     "feed": {
       "type": "json",
@@ -243,7 +243,7 @@
   {
     "pkg": "crush-bin",
     "label": "Crush",
-    "source": "omarchy",
+    "source": "repo",
     "section": "cli",
     "feed": {
       "type": "github-release",
@@ -255,7 +255,7 @@
   {
     "pkg": "cursor-cli",
     "label": "Cursor CLI",
-    "source": "indicator",
+    "source": "repo",
     "section": "cli",
     "feed": {
       "type": "regex",
@@ -268,7 +268,7 @@
   {
     "pkg": "antigravity-cli",
     "label": "Antigravity CLI",
-    "source": "omarchy",
+    "source": "repo",
     "section": "cli",
     "feed": {
       "type": "github-release",
@@ -280,7 +280,7 @@
   {
     "pkg": "muse-code",
     "label": "Muse Code",
-    "source": "indicator",
+    "source": "repo",
     "section": "cli",
     "feed": {
       "type": "regex",
@@ -293,7 +293,7 @@
   {
     "pkg": "oh-my-pi",
     "label": "Oh My Pi",
-    "source": "omarchy",
+    "source": "repo",
     "section": "cli",
     "feed": {
       "type": "github-release",
@@ -305,7 +305,7 @@
   {
     "pkg": "openrouter-ori",
     "label": "Ori",
-    "source": "omarchy",
+    "source": "repo",
     "section": "cli",
     "feed": {
       "type": "regex",
@@ -318,7 +318,7 @@
   {
     "pkg": "kimi-code",
     "label": "Kimi CLI",
-    "source": "omarchy",
+    "source": "repo",
     "section": "cli",
     "feed": {
       "type": "json",
@@ -331,7 +331,7 @@
   {
     "pkg": "qwen-code",
     "label": "Qwen Code",
-    "source": "omarchy",
+    "source": "repo",
     "section": "cli",
     "feed": {
       "type": "json",
@@ -343,7 +343,7 @@
   {
     "pkg": "deepseek-dsh",
     "label": "DeepSeek Harness",
-    "source": "indicator",
+    "source": "repo",
     "section": "cli",
     "feed": {
       "type": "regex",
@@ -355,7 +355,7 @@
   {
     "pkg": "minimax-code",
     "label": "MiniMax Code",
-    "source": "indicator",
+    "source": "repo",
     "section": "cli",
     "feed": {
       "type": "json",
@@ -368,7 +368,7 @@
   {
     "pkg": "freebuff",
     "label": "Freebuff",
-    "source": "omarchy",
+    "source": "repo",
     "section": "cli",
     "feed": {
       "type": "json",
@@ -381,7 +381,7 @@
   {
     "pkg": "kilocode-cli",
     "label": "Kilo",
-    "source": "indicator",
+    "source": "repo",
     "section": "cli",
     "feed": {
       "type": "json",
@@ -394,7 +394,7 @@
   {
     "pkg": "devin-cli",
     "label": "Devin CLI",
-    "source": "omarchy",
+    "source": "repo",
     "section": "cli",
     "feed": {
       "type": "json",
@@ -407,7 +407,7 @@
   {
     "pkg": "amp-cli",
     "label": "Amp",
-    "source": "omarchy",
+    "source": "repo",
     "section": "cli",
     "feed": {
       "type": "regex",
@@ -420,7 +420,7 @@
   {
     "pkg": "pi-coding-agent",
     "label": "Pi",
-    "source": "omarchy",
+    "source": "repo",
     "section": "cli",
     "feed": {
       "type": "github-release",

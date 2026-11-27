@@ -132,7 +132,7 @@ jq_name_rules='
   def home_path_ok: type == "string" and length <= 200 and test("^~(/[A-Za-z0-9._+-]+)+\\z")
     and (contains("..") | not) and (test("/\\.(/|\\z)") | not);
   def entry_ok: (.pkg | id_ok) and ((.pkg | pkg_ok) or .source == "mise")
-    and (.source | IN("omarchy", "vendor-pkg", "mise", "indicator"))
+    and (.source | IN("omarchy", "repo", "vendor-pkg", "mise", "indicator"))
     and ((.section // "cli") | IN("desktop", "cli")) and (.source != "mise" or (.section // "cli") == "cli")
     and ((.installed // []) | type == "array" and all(.[]; pkg_ok))
     and ([.tool // empty] | flatten | all(.[]; tool_ok))
@@ -226,6 +226,7 @@ row_muted() { [[ $muted_json == *"\"$1\""* ]]; }
 # its version from a file and compared by self_row.
 route_table='
   omarchy     vercmp  feed  pacman    yes  desktop
+  repo        vercmp  feed  pacman    no   desktop
   vendor-pkg  vercmp  feed  pacman    yes  desktop
   indicator   vercmp  feed  pacman    no   desktop
   mise        exact   mise  mise      no   cli
@@ -408,7 +409,7 @@ jq_apps_merge='
 # either file), which feed_version requires for a command feed. An entry
 # whose pkg, installed names, tool names, appImage, npmPackage, updateBlocked
 # or selfUpdate break the rules above is dropped with a line on stderr. The
-# source must be one of the four route names; "self" is Omabump's own row and
+# source must be one of the five route names; "self" is Omabump's own row and
 # never comes from a file. An entry larger than app_entry_max bytes is
 # dropped the same way: an entry goes to jq as one argv string (--argjson
 # app), and the kernel refuses a string over 128 KiB (E2BIG), which would end
@@ -429,7 +430,7 @@ apps_table() {
     | apps_merge($u)
     | [.order[] as $p | .by[$p] | select(.disabled != true)]' "$shipped_apps") || return 1
   jq -r --argjson max "$app_entry_max" "$jq_name_rules"' .[]
-    | if entry_ok | not then "ignoring app \(.pkg | tojson): a pkg, installed or tool name with characters Omabump does not accept, an appImage or npmPackage that is not a ~/ path Omabump accepts, an updateBlocked or selfUpdate too long, a source other than omarchy, vendor-pkg, mise or indicator, or a section other than desktop or cli"
+    | if entry_ok | not then "ignoring app \(.pkg | tojson): a pkg, installed or tool name with characters Omabump does not accept, an appImage or npmPackage that is not a ~/ path Omabump accepts, an updateBlocked or selfUpdate too long, a source other than omarchy, repo, vendor-pkg, mise or indicator, or a section other than desktop or cli"
       elif (tojson | utf8bytelength) > $max then "ignoring app \(.pkg | tojson): its entry is larger than \($max) bytes"
       else empty end' <<<"$merged" >&2
   jq -c --argjson max "$app_entry_max" "$jq_name_rules"' map(select(entry_ok and (tojson | utf8bytelength) <= $max))' <<<"$merged"
@@ -1437,6 +1438,154 @@ feed_version() {
   echo "$v"
 }
 
+# --- Omarchy's package repo ------------------------------------------------
+#
+# Omarchy builds its packages, the coding agents among them, in its own
+# pacman repo [omarchy], signed with its key, and follows the vendors'
+# releases within the hour. A repo row's Update installs that package, and
+# an omarchy row's does when the repo already has the vendor's newest
+# version, so no recipe is built. The repo's database (omarchy.db) is not
+# signed (pacman.conf says DatabaseOptional), so it is only an index: it
+# names the file and its sha256, and the installer checks every claim on
+# the file itself, the signature with pacman-key above all, before sudo.
+#
+# The database is read once per check, and once per Update, never from
+# status.json. Nothing in it is run: bsdtar streams each package's desc to
+# awk, and only these fields are kept, each checked (repo_entry_ok):
+#   %NAME%       the package name, matched exactly (crush-bin-debug sits
+#                beside crush-bin)
+#   %VERSION%    the full version, [epoch:]pkgver-pkgrel
+#   %FILENAME%   <name>-<version>-<arch>.pkg.tar.<ext>, one path component
+#   %SHA256SUM%  64 hex digits
+repo_name=omarchy
+# The database is about 90 KiB; its packages' descs, unpacked, a few hundred.
+repo_db_max=8M repo_desc_max=$(( 64 * 1024 * 1024 ))
+
+# The first https Server pacman.conf gives the repo, as pacman-conf prints
+# it with $repo and $arch filled in, less a trailing slash; one with any
+# other character than a URL's plain ones, or a "..", is passed over. Sets
+# repo_server, or fails with repo_error saying why.
+repo_server=""
+repo_server_find() {
+  local servers line
+  repo_server=""
+  servers=$(run_unlocked timeout 10 pacman-conf --repo "$repo_name" Server 2>/dev/null </dev/null) || servers=""
+  if [[ -z $servers ]]; then
+    repo_error="No [$repo_name] repo in pacman.conf"
+    return 1
+  fi
+  while IFS= read -r line; do
+    line=${line%/}
+    if [[ $line =~ ^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~%+-]+)*$ && $line != *..* ]]; then
+      repo_server=$line
+      return 0
+    fi
+  done <<<"$servers"
+  repo_error="No https Server for [$repo_name] in pacman.conf"
+  return 1
+}
+
+# True when a database entry is one Omabump takes: $1 name, $2 full
+# version, $3 file name, $4 sha256. The file name is exactly the package
+# file pacman's tools name for that name and version, for this machine's
+# architecture or any: a single path component, so it cannot point
+# anywhere but the repo's directory and the packages cache.
+repo_entry_ok() {
+  local name=$1 version=$2 file=$3 sum=$4 rest
+  pkg_name_ok "$name" && full_version_ok "$version" && [[ $sum =~ ^[0-9a-f]{64}$ ]] || return 1
+  [[ $file != */* && $file != *..* ]] || return 1
+  rest=${file#"$name-$version-"}
+  [[ $rest != "$file" ]] || return 1
+  [[ $rest =~ ^([a-z0-9_]+)\.pkg\.tar\.(zst|xz|gz|bz2|lz4)$ ]] || return 1
+  [[ ${BASH_REMATCH[1]} == any || ${BASH_REMATCH[1]} == "$repo_arch" ]]
+}
+# This machine's architecture, read once.
+repo_arch=$(uname -m)
+
+# The entries of the database file $1 that repo_entry_ok takes, one a line:
+# name, full version, file name and sha256, split by tabs. Each desc starts
+# with %FILENAME%, which is where awk starts a new package; a field given
+# twice in one package drops it. Fails when bsdtar cannot read the file,
+# when its descs run past repo_desc_max, or when no entry is left: a real
+# database names hundreds.
+repo_db_entries() {
+  local out name version file sum n=0
+  out=$(set -o pipefail
+    run_unlocked timeout -k 5 30 bsdtar -xOf "$1" 2>/dev/null </dev/null | head -c "$repo_desc_max" | awk '
+      function flush() {
+        if (!bad && fn != "" && nm != "" && vr != "" && sh != "") print nm "\t" vr "\t" fn "\t" sh
+        fn = nm = vr = sh = ""; bad = 0
+      }
+      { sub(/\r$/, "") }
+      /^%[A-Z0-9]+%$/ { key = $0; if (key == "%FILENAME%") flush(); next }
+      $0 == "" { key = ""; next }
+      key == "%FILENAME%" { if (fn != "") bad = 1; fn = $0; next }
+      key == "%NAME%" { if (nm != "") bad = 1; nm = $0; next }
+      key == "%VERSION%" { if (vr != "") bad = 1; vr = $0; next }
+      key == "%SHA256SUM%" { if (sh != "") bad = 1; sh = $0; next }
+      END { flush() }') || return 1
+  while IFS=$'\t' read -r name version file sum; do
+    repo_entry_ok "$name" "$version" "$file" "$sum" || continue
+    printf '%s\t%s\t%s\t%s\n' "$name" "$version" "$file" "$sum"
+    n=$((n + 1))
+  done <<<"$out"
+  (( n > 0 ))
+}
+
+# Reads the repo's database into repo_entries, name to "<version> <file>
+# <sha256>" (a name listed twice maps to "", which no lookup takes), in the
+# calling shell. repo_state says how it went:
+#   ready   read; repo_server is where from
+#   none    this machine has no such repo with an https Server (not
+#           Omarchy, or another pacman.conf): nothing failed
+#   failed  the database could not be fetched or read
+# and repo_error why, for the last two. The download is bounded as every
+# fetch is, with repo_db_max for its size.
+repo_state="" repo_error=""
+declare -gA repo_entries=()
+repo_load() {
+  local db out rc=0 name version file sum
+  repo_entries=() repo_error=""
+  if ! repo_server_find; then
+    repo_state=none
+    return 1
+  fi
+  mkdir -p "$cache_dir"
+  db=$(mktemp "${run_tmp:-$cache_dir}/.repo.XXXXXX")
+  max_size=$repo_db_max fetch -fsSL "$repo_server/$repo_name.db" >"$db" 2>/dev/null || rc=$?
+  if (( rc )); then
+    rm -f "$db"
+    repo_state=failed repo_error="could not fetch Omarchy's repo database from $repo_server (curl exit $rc)"
+    return 1
+  fi
+  if ! out=$(repo_db_entries "$db"); then
+    rm -f "$db"
+    repo_state=failed repo_error="Omarchy's repo database from $repo_server could not be read"
+    return 1
+  fi
+  rm -f "$db"
+  while IFS=$'\t' read -r name version file sum; do
+    if [[ -n ${repo_entries[$name]+set} ]]; then repo_entries[$name]=""
+    else repo_entries[$name]="$version $file $sum"; fi
+  done <<<"$out"
+  repo_state=ready
+}
+
+# The repo's package $1, from repo_load's entries: sets repo_version,
+# repo_file and repo_sha256, or fails, all three "", when the repo has no
+# such package (or names it twice).
+repo_version="" repo_file="" repo_sha256=""
+repo_lookup() {
+  repo_version="" repo_file="" repo_sha256=""
+  [[ $repo_state == ready && -n ${repo_entries[$1]:-} ]] || return 1
+  read -r repo_version repo_file repo_sha256 <<<"${repo_entries[$1]}"
+}
+
+# The URL of the repo's file $1: the file name is a single path component
+# of repo_entry_ok's characters, and only an epoch's ":" is percent-encoded,
+# as no server's path needs it raw.
+repo_file_url() { echo "$repo_server/${1//:/%3A}"; }
+
 # --- omarchy-pkgs ----------------------------------------------------------
 
 # What building an Omarchy recipe needs, as tool:package. makepkg and sudo
@@ -1812,13 +1961,76 @@ row_hold() {
   note="$hold_clause${note:+; $note}"
 }
 
+# What Omarchy's repo adds to a repo row before row_derive, in a check that
+# read the repo (repo_load). The vendor's feed still gives the newest
+# release; the repo's package (repo_lookup sets repo_version) is what
+# Update installs. When the feed failed and the repo answered, or the repo
+# has a newer package than what is installed while the feed shows none (a
+# pkgrel, or a feed behind), the repo's full version is the newest known,
+# from "repo" (row_have then compares full versions). So it is too when the
+# repo has something newer than what is installed but not yet the feed's
+# release: the row offers, and announces, what Update installs, and the
+# feed's release once that is installed and the repo has it. A repo that cannot
+# say what Update would install is the row's error only when the row shows
+# an update, or knows nothing else: then neither Update nor "Not in the
+# repo yet" could be backed. A machine without the repo, or a repo without
+# the package, has no Update, and the note says why. Reads pkg, installed,
+# latest, from, feed_error and installable; sets repo_version and may set
+# latest, from, stale, feed_error, route_error, installable and note.
+# shellcheck disable=SC2154 # the row's fields, the caller's variables
+repo_row() {
+  local feed_new=false repo_new=false why=""
+  repo_lookup "$pkg" || true
+  if [[ -n $repo_version ]] && newer "$repo_version" "$installed"; then repo_new=true; fi
+  if [[ -n $feed_error && -n $repo_version ]]; then
+    latest=$repo_version from=repo stale=false feed_error=""
+  elif [[ -z $feed_error && -n $latest ]] && row_newer "$latest" "$installed" "$from"; then
+    feed_new=true
+  fi
+  if [[ $repo_new == true ]] && { [[ $feed_new == false ]] || newer "$latest" "$(upstream_part "$repo_version")"; }; then
+    latest=$repo_version from=repo
+  fi
+  [[ -z $repo_version ]] || return 0
+  case $repo_state in
+    none) why=$repo_error ;;
+    ready) why="Omarchy's repo has no $pkg" ;;
+    *) if [[ $feed_new == true || -n $feed_error ]]; then route_error=$repo_error; fi ;;
+  esac
+  [[ -n $why ]] || return 0
+  installable=false note="${note:+$note; }$why"
+}
+
+# A repo row whose update the repo does not have yet: the vendor's feed is
+# ahead of Omarchy's repo, which usually follows within the hour. Update
+# could install nothing newer than what is installed, so until a check
+# finds the package in the repo the row has no Update and no notification:
+# held, as a recipe's release-age hold is, with the hold's clause first in
+# its note (holdClause), which the local refresh takes off once the
+# release is installed. A repo row with an update its repo_version does
+# not reach and no repo_version at all has no Update either; repo_row's
+# note or error says why. Reads update, installable (the route's, true
+# unless Update is off or a tool is missing), repo_version and installed;
+# sets hold_clause and may set held, installable and note. The check calls
+# it in row_derive, the local refresh on its own.
+# shellcheck disable=SC2154 # the row's fields, the caller's variables
+repo_hold() {
+  hold_clause=""
+  [[ $update == true && $installable == true ]] || return 0
+  if [[ -n $repo_version ]] && newer "$repo_version" "$installed"; then return 0; fi
+  installable=false
+  [[ -n $repo_version ]] || return 0
+  held=true hold_clause="Not in Omarchy's repo yet"
+  note="$hold_clause${note:+; $note}"
+}
+
 # The rest of a check's row once its route and its feed (or mise) have
 # been read. Reads pkg, source, app, label, installed_name, installed,
 # latest, from, mise_update (mise's answer, a mise row's update),
 # self_updating, hold and now, and the route's installable, note, held and
 # unchecked. Sets update (row_newer, or self_row for a copy that updates
 # itself), switchable (row_switchable), and muted, skipped, skip_end and
-# quiet (row_quiet), and hold_clause (row_hold); row_hold and self_row may
+# quiet (row_quiet), and hold_clause (row_hold, or repo_hold on a repo row,
+# which also reads repo_version); row_hold, repo_hold and self_row may
 # change installable, held, note and unchecked. Call it in the calling
 # shell: it answers through these variables.
 # shellcheck disable=SC2154 # the row's fields, the caller's variables
@@ -1830,6 +2042,7 @@ row_derive() {
     row_newer "$latest" "$installed" "$from" && update=true
   fi
   row_hold
+  if [[ $source == repo && $self_updating == false ]]; then repo_hold; fi
   switchable=false
   row_switchable "$source" "$installed_name" "$pkg" "$installable" "$update" "$latest" "$installed" && switchable=true
   row_quiet "$pkg" "$source" "$update" "$latest" "$installed"
@@ -1841,8 +2054,10 @@ row_derive() {
 # (versionFrom), update (updateAvailable), installable, error, note, stale,
 # switchable, recipe, request, muted, skipped, skip_end (skipEnded),
 # unchecked, held, omarchy_update, blocked (the reason, "" when Update is
-# not off), self_updating, hold_clause (holdClause, row_hold's), unread
-# (written by a local refresh, read by no check since), and the icon and
+# not off), self_updating, hold_clause (holdClause, row_hold's or
+# repo_hold's), unread (written by a local refresh, read by no check
+# since), repo_version (repoVersion: the full version Omarchy's repo has of
+# a repo or omarchy row's package, "" when unknown), and the icon and
 # iconLight of the entry app; section and switchRoute are its route's
 # (route_table), for the panel. Every string from a feed, mise, pacman or
 # apps.json goes through clean_text on its way in. The fields are listed
@@ -1858,6 +2073,7 @@ row_json() {
     --arg skipEnded "$skip_end" --argjson unchecked "$unchecked" --argjson held "$held" \
     --argjson omarchyUpdate "$omarchy_update" --arg blocked "$blocked" --argjson selfUpdating "$self_updating" \
     --arg holdClause "$(clean_text "$hold_clause")" --argjson unread "$unread" \
+    --arg repoVersion "$(clean_text "${repo_version:-}")" \
     --arg section "${route_facts[$source.section]:-desktop}" --argjson switchRoute "$(route "$source" switch yes && echo true || echo false)" \
     --argjson app "$app" \
     '{pkg: $pkg, label: $label, source: $source, installedName: $installedName,
@@ -1868,7 +2084,8 @@ row_json() {
       held: $held, omarchyUpdate: $omarchyUpdate, blocked: ($blocked != ""),
       selfUpdating: $selfUpdating, icon: ($app.icon // "" | tostring), iconLight: ($app.iconLight // "" | tostring),
       holdClause: $holdClause, unread: $unread,
-      section: (($app.section | select(IN("desktop", "cli"))) // $section), switchRoute: $switchRoute}'
+      section: (($app.section | select(IN("desktop", "cli"))) // $section), switchRoute: $switchRoute,
+      repoVersion: $repoVersion}'
 }
 
 # --- status.json -----------------------------------------------------------------
@@ -1901,10 +2118,11 @@ row_json() {
 # switchable, recipe, request, muted, skipped, skipEnded, unchecked, held,
 # omarchyUpdate, blocked, selfUpdating, icon and iconLight, and since they
 # came holdClause and unread, then section and switchRoute (the route's
-# section and switch, route_table). A file from an older checker may lack
-# the later ones: inventoryAt, retry, selfUpdating, holdClause, unread,
-# section and switchRoute, and a row the local refresh carries over from
-# such a file lacks section and switchRoute until a check reads it. No
+# section and switch, route_table), then repoVersion. A file from an older
+# checker may lack the later ones: inventoryAt, retry, selfUpdating,
+# holdClause, unread, section, switchRoute and repoVersion, and a row the
+# local refresh carries over from such a file lacks section, switchRoute
+# and repoVersion until a check reads it. No
 # field is removed or renamed within a version: a panel still loaded from
 # an older release reads a newer checker's file.
 status_schema=1

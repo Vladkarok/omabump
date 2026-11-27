@@ -7,7 +7,13 @@
 #   omarchy     Omarchy's own recipe from omarchy-pkgs at the commit pinned
 #               in pins.json, checked out detached, moved to the vendor's
 #               newest release by omarchy-pkgs' bin/sync-upstream. The recipe
-#               diff is shown before anything is built.
+#               diff is shown before anything is built. First, though, when
+#               Omarchy's repo already has the vendor's newest version, its
+#               package is installed as on the repo path, and nothing is built.
+#   repo        The package Omarchy's own repo [omarchy] publishes, signed
+#               with Omarchy's key: downloaded, its sha256, signature, name
+#               and version checked, installed with pacman -U. No code from
+#               omarchy-pkgs runs.
 #   vendor-pkg  The Arch package the vendor publishes, at the version the
 #               app's feed advertises, installed with pacman -U.
 #   mise        mise install <tool>@<version>, the version mise outdated
@@ -35,7 +41,8 @@
 # --prepare fetches, syncs and prepares the recipe (this runs omarchy-pkgs'
 # sync tool and the recipe's hook, and makepkg reads the PKGBUILD), and stops
 # before makepkg builds. On the vendor path it downloads and checks the
-# package and stops before pacman -U. Nothing is installed and sudo is never
+# package and stops before pacman -U. On the repo path it reads the repo's
+# database and stops before it downloads the package. Nothing is installed and sudo is never
 # called; the staging and install commands are printed instead. On the self
 # row it fetches the release tag, prints the plan and stops before asking.
 # Where a run would end without installing (a version refused, nothing left
@@ -432,11 +439,15 @@ panel_row() { status_field "$pkg" "$1" 2>/dev/null | head -n1 | term_safe || tru
 # version installed then).
 shown=""
 panel_reached() {
+  local from
   shown=$(panel_row latest)
   [[ -n $shown ]] || return 0
+  # A repo row's newest known version may be the repo's own, a full one.
+  from=$(panel_row versionFrom)
+  [[ $from == repo ]] || from=feed
   if string_versions "$source"; then
     [[ $1 == "$shown" || $1 != "$(panel_row installed)" || $(panel_row updateAvailable) != true ]]
-  elif row_newer "$shown" "$1" feed; then
+  elif row_newer "$shown" "$1" "$from"; then
     return 1
   fi
 }
@@ -465,10 +476,11 @@ already_installed() {
 # shows that check until the next one. When the version installed has
 # reached the one the panel showed (panel_reached), nothing is left to do
 # (already_installed). Otherwise the route is behind the panel, and Update
-# fails with "$2, not the <latest> $3". Either way the run ends here.
+# fails with "$2, not the <latest> $3", and $4 after it when given. Either
+# way the run ends here.
 nothing_newer() {
   panel_reached "$1" && already_installed "$1"
-  refuse "$2, not the $shown $3; Update cannot install it yet."
+  refuse "$2, not the $shown $3; Update cannot install it yet.${4:+ $4}"
 }
 
 # pacman -Qi wraps long fields to COLUMNS when it is set, which would hide
@@ -661,7 +673,9 @@ require_root_owners() {
 # the pacman holding it may be one an earlier run left at its prompt, about
 # to read a copy of the same name that this run would overwrite and then
 # remove. $1 is the verified file, $2 the expected "<name> <full version>".
-# With --prepare it prints the commands and calls no sudo.
+# With --prepare it prints the commands and calls no sudo. pacman_hint, when
+# set, is a line said before the failure when pacman installs nothing.
+pacman_hint=""
 stage_and_install() {
   local file=$1 expect=$2 algo=${3:-} want=${4:-} staged got line now rc=0 locked
   staged=$staging_dir/${file##*/}
@@ -720,6 +734,7 @@ stage_and_install() {
     echo "omabump: warning: pacman reported an error, but $expect is installed; read pacman's output above for the hook or install script that failed" >&2
     return 0
   fi
+  [[ -z $pacman_hint ]] || echo "omabump: $pacman_hint" >&2
   die "pacman did not install $expect (you answered no, or it failed above). The verified package stays in $file for a retry"
 }
 
@@ -959,6 +974,158 @@ install_vendor_pkg() {
   target_version=$ver
 }
 
+# Omarchy's repo [omarchy]: the package omarchy update would install from
+# it, now. The repo's database is read again here (repo_load), never taken
+# from status.json, and it is not signed (pacman.conf has DatabaseOptional),
+# so it only names the file and its sha256: every claim is checked on the
+# file itself. curl fetches the package and its .sig over HTTPS into the
+# packages cache; the file's sha256 must be the database's; pacman-key
+# must find a good signature on it from a key in pacman's keyring, where
+# Omarchy keeps its own; pacman -Qp must name the package at the
+# database's full version, newer than what is installed now. Only then
+# does the file go to the staging, the owner check and pacman -U that the
+# other routes use. pacman -U on a local file would not check the
+# signature itself: pacman.conf's LocalFileSigLevel is Optional. No code
+# from omarchy-pkgs runs, and its clone is not touched.
+
+# A repo row's Update: refuses when this machine has no such repo or the
+# repo no such package, and ends as under nothing_newer when the repo's
+# version is not newer than the installed one (the vendor is ahead of the
+# repo, or something else installed it).
+install_repo() {
+  local said hint
+  command -v pacman-key >/dev/null || die "pacman-key is missing; it comes with pacman"
+  echo "Reading Omarchy's repo database..."
+  if ! repo_load; then
+    [[ $repo_state != none ]] || refuse "$repo_error, so there is no package to install $label from"
+    die "$repo_error"
+  fi
+  repo_lookup "$pkg" || refuse "Omarchy's repo has no $pkg package"
+  echo "Omarchy's repo ($repo_server) has $pkg $repo_version"
+  # The route has no Switch: it installs the repo's package over itself only.
+  if replaces_other; then
+    refuse "$label is installed as $installed_name; Update from Omarchy's repo replaces only $pkg itself, so remove $installed_name or install $pkg with pacman"
+  fi
+  if [[ -n $installed ]] && ! newer "$repo_version" "$installed"; then
+    # The vendor ahead of the repo, which usually catches up soon; or a
+    # repo version the last check saw that the repo no longer has.
+    said="the vendor's feed shows" hint="It usually follows within the hour."
+    if [[ $(panel_row versionFrom) == repo ]]; then said="the repo had at the last check" hint=""; fi
+    nothing_newer "$installed" "Omarchy's repo has $repo_version" "$said" "$hint"
+  fi
+  repo_install
+}
+
+# Whether an omarchy row's Update takes the repo's package instead of a
+# build: when the repo has a package newer than what is installed, at the
+# vendor's newest release or past it (its feed's now, else the one the
+# panel showed). The same package omarchy update installs, signed, and no
+# recipe to build. Anything else (no repo, no such package, the repo behind
+# the vendor, a --switch, no version of the vendor's to compare with)
+# builds the recipe as before, and says why when the repo was read. Leaves
+# repo_version, repo_file and repo_sha256 for repo_install.
+omarchy_repo_ok() {
+  local vendor
+  (( ! switch )) && command -v pacman-key >/dev/null || return 1
+  if ! repo_load; then
+    [[ $repo_state == none ]] || echo "Omarchy's repo: $repo_error; building Omarchy's recipe instead."
+    return 1
+  fi
+  if ! repo_lookup "$pkg"; then
+    echo "Omarchy's repo has no $pkg package; building Omarchy's recipe instead."
+    return 1
+  fi
+  if [[ -n $installed ]] && ! newer "$repo_version" "$installed"; then
+    echo "Omarchy's repo has $pkg $repo_version, not newer than the installed $installed; building Omarchy's recipe instead."
+    return 1
+  fi
+  vendor=$(feed_version "$app" 2>/dev/null) || vendor=$(panel_row latest)
+  version_ok "$vendor" || vendor=""
+  if [[ -z $vendor ]]; then
+    echo "Omarchy's repo has $pkg $repo_version, and the vendor's newest version is not known; building Omarchy's recipe instead."
+    return 1
+  fi
+  if newer "$vendor" "$(upstream_part "$repo_version")"; then
+    echo "Omarchy's repo has $pkg $repo_version, the vendor's feed $vendor; building Omarchy's recipe instead."
+    return 1
+  fi
+  echo "Omarchy's repo ($repo_server) has $pkg $repo_version, the vendor's newest release: installing its package, nothing to build."
+}
+
+# Downloads, checks and installs the repo's package repo_file (repo_lookup
+# set it) as above. With --prepare it says each step and stops before the
+# download.
+repo_install() {
+  local file sig url line msg got now_line now out rc=0
+  file=$PKGDEST/$repo_file sig=$PKGDEST/$repo_file.sig url=$(repo_file_url "$repo_file")
+  echo "Package: $url"
+  echo "sha256 in the repo's database: $repo_sha256"
+  if (( prepare )); then
+    echo "Would download: $url to $file, and its signature $url.sig to $sig"
+    echo "Would check: sha256sum of $file is $repo_sha256"
+    echo "Would check: pacman-key --verify $sig $file finds a good signature from a key in pacman's keyring"
+    echo "Would check: pacman -Qp $file is $pkg $repo_version, newer than the installed ${installed:-nothing}"
+    echo "Would check: every file in $file is owned by root, in group root, tty, ftp or games"
+    if replaces_other; then echo "Would check: $pkg or $installed_name declares a conflict with the other, and show their install scripts"; fi
+    stage_and_install "$file" "$pkg $repo_version" sha256 "$repo_sha256"
+    prepare_stop "Prepared: stopping before the download."
+  fi
+  started=1
+  if [[ -f $file && $(sha256sum -- "$file" | cut -d' ' -f1) == "$repo_sha256" ]]; then
+    echo "Using the download from an earlier run: $file"
+  else
+    rm -f -- "$file"
+    max_time=1800 max_size=4G fetch -fL --retry 2 -o "$file.part" "$url" || die "could not download $url"
+    mv -f -- "$file.part" "$file"
+  fi
+  # The signature comes fresh each time; a few hundred bytes.
+  rm -f -- "$sig"
+  fetch -fL --retry 2 -o "$sig.part" "$url.sig" || die "could not download $url.sig"
+  mv -f -- "$sig.part" "$sig"
+  got=$(sha256sum -- "$file" | cut -d' ' -f1)
+  if [[ $got != "$repo_sha256" ]]; then
+    rm -f -- "$file" "$sig"
+    started=0
+    die "sha256 of the download is $got, Omarchy's repo database lists $repo_sha256; removed the file, not installing"
+  fi
+  echo "sha256 matches."
+  out=$(run_unlocked timeout -k 5 60 pacman-key --verify "$sig" "$file" 2>&1 </dev/null) || rc=$?
+  if (( rc )); then
+    [[ -z $out ]] || term_safe <<<"$out" >&2
+    rm -f -- "$file" "$sig"
+    started=0
+    die "the signature of $repo_file did not verify (pacman-key --verify exited $rc): it is not a good signature from a key in pacman's keyring. Removed the download, not installing"
+  fi
+  line=$(grep -m1 'Good signature' <<<"$out" | term_safe) || line=""
+  echo "Signature: ${line:-good}"
+  line=$(pacman -Qp -- "$file") || die "cannot read $file"
+  [[ $line == "$pkg $repo_version" ]] \
+    || die "the package is '$line', and Omarchy's repo database names '$pkg $repo_version'; not installing"
+  if ! msg=$(guard_version "$repo_version"); then
+    # omarchy update may have installed the same package meanwhile.
+    now=$(installed_package "$installed_name") || now=" $installed"
+    if (( ! switch )) && panel_reached "${now#* }"; then
+      rm -f -- "$file" "$sig"
+      started=0
+      already_installed "${now#* }"
+    fi
+    refuse "Omarchy's repo package: $msg; not installing"
+  fi
+  # Before sudo; the staged copy is checked again.
+  require_root_owners "$file" "$line" "the download stays in $file"
+  echo "Package file: $file ($line)"
+  show_switch "$file"
+  pacman_hint="if pacman stopped on a dependency, run omarchy update: it updates the rest of the system with Omarchy's repo"
+  stage_and_install "$file" "$line" sha256 "$repo_sha256"
+  pacman_hint=""
+  now_line=$(installed_package "$pkg") || die "pacman -Q $pkg finds nothing after the install"
+  [[ $now_line == "$pkg $repo_version" ]] || die "pacman -Q says '$now_line', expected '$pkg $repo_version'"
+  echo "Installed $now_line."
+  clean_after_install "$file" "$sig"
+  started=0
+  target_version=$repo_version
+}
+
 # mise outdated finds the version the configured request reaches (an exact
 # pin or a range), the same policy the check used, and like it runs with no
 # release-age cooldown; mise install puts in exactly that version, so the
@@ -1103,7 +1270,9 @@ install_self() {
 install_main() {
   case $source in
     self) install_self ;;
-    omarchy) install_omarchy ;;
+    # The repo's package when it has the vendor's newest; else the build.
+    omarchy) if omarchy_repo_ok; then repo_install; else install_omarchy; fi ;;
+    repo) install_repo ;;
     vendor-pkg) install_vendor_pkg ;;
     mise) install_mise ;;
     # An indicator row has no route: install_setup refused it (rule_refusal).
