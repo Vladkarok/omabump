@@ -46,9 +46,9 @@
       {
         "key": "showMise",
         "type": "boolean",
-        "label": "Show mise tools",
+        "label": "Show CLI tools",
         "defaultValue": true,
-        "description": "List the agent CLIs mise has installed (Claude Code, Codex CLI, OpenCode...) after the desktop apps."
+        "description": "List the agent CLIs installed as packages or by mise (Claude Code, Codex CLI, OpenCode...) after the desktop apps."
       },
       {
         "key": "barIconOnlyWithUpdates",

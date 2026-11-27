@@ -177,6 +177,259 @@
     "iconLight": "assets/trae-light.svg"
   },
   {
+    "pkg": "claude-code",
+    "label": "Claude Code",
+    "source": "repo",
+    "section": "cli",
+    "feed": {
+      "type": "regex",
+      "url": "https://downloads.claude.ai/claude-code-releases/latest",
+      "pattern": "^([0-9]+(?:\\.[0-9]+)*)\\s*$"
+    },
+    "icon": "assets/claude.svg"
+  },
+  {
+    "pkg": "openai-codex",
+    "label": "Codex CLI",
+    "source": "repo",
+    "section": "cli",
+    "feed": {
+      "type": "json",
+      "url": "https://registry.npmjs.org/@openai/codex/latest",
+      "path": ".version"
+    },
+    "icon": "assets/codex.svg",
+    "iconLight": "assets/codex-light.svg"
+  },
+  {
+    "pkg": "grok-cli",
+    "label": "Grok CLI",
+    "source": "repo",
+    "section": "cli",
+    "feed": {
+      "type": "regex",
+      "url": "https://x.ai/cli/stable",
+      "pattern": "^([0-9]+(?:\\.[0-9]+)*)\\s*$"
+    },
+    "icon": "assets/grok.svg",
+    "iconLight": "assets/grok-light.svg"
+  },
+  {
+    "pkg": "opencode",
+    "label": "OpenCode",
+    "source": "repo",
+    "section": "cli",
+    "feed": {
+      "type": "json",
+      "url": "https://registry.npmjs.org/@opencode/cli/latest",
+      "path": ".version"
+    },
+    "icon": "assets/opencode.svg",
+    "iconLight": "assets/opencode-light.svg"
+  },
+  {
+    "pkg": "github-copilot-cli",
+    "label": "Copilot CLI",
+    "source": "repo",
+    "section": "cli",
+    "feed": {
+      "type": "json",
+      "url": "https://registry.npmjs.org/@github/copilot/latest",
+      "path": ".version"
+    },
+    "icon": "assets/copilot.svg",
+    "iconLight": "assets/copilot-light.svg"
+  },
+  {
+    "pkg": "crush-bin",
+    "label": "Crush",
+    "source": "repo",
+    "section": "cli",
+    "feed": {
+      "type": "github-release",
+      "repo": "charmbracelet/crush"
+    },
+    "icon": "assets/crush.svg",
+    "iconLight": "assets/crush-light.svg"
+  },
+  {
+    "pkg": "cursor-cli",
+    "label": "Cursor CLI",
+    "source": "repo",
+    "section": "cli",
+    "feed": {
+      "type": "regex",
+      "url": "https://raw.githubusercontent.com/omacom/omarchy-pkgs/master/pkgbuilds/cursor-cli/PKGBUILD",
+      "pattern": "(?m)^pkgver=([0-9A-Za-z._+~]+)\\s*$"
+    },
+    "icon": "assets/cursor.svg",
+    "iconLight": "assets/cursor-light.svg"
+  },
+  {
+    "pkg": "antigravity-cli",
+    "label": "Antigravity CLI",
+    "source": "repo",
+    "section": "cli",
+    "feed": {
+      "type": "github-release",
+      "repo": "google-antigravity/antigravity-cli"
+    },
+    "icon": "assets/antigravity.svg",
+    "iconLight": "assets/antigravity-light.svg"
+  },
+  {
+    "pkg": "muse-code",
+    "label": "Muse Code",
+    "source": "repo",
+    "section": "cli",
+    "feed": {
+      "type": "regex",
+      "url": "https://raw.githubusercontent.com/omacom/omarchy-pkgs/master/pkgbuilds/muse-code/PKGBUILD",
+      "pattern": "(?m)^pkgver=([0-9A-Za-z._+~]+)\\s*$"
+    },
+    "icon": "assets/muse.svg",
+    "iconLight": "assets/muse-light.svg"
+  },
+  {
+    "pkg": "oh-my-pi",
+    "label": "Oh My Pi",
+    "source": "repo",
+    "section": "cli",
+    "feed": {
+      "type": "github-release",
+      "repo": "can1357/oh-my-pi"
+    },
+    "icon": "assets/oh-my-pi.svg",
+    "iconLight": "assets/oh-my-pi-light.svg"
+  },
+  {
+    "pkg": "openrouter-ori",
+    "label": "Ori",
+    "source": "repo",
+    "section": "cli",
+    "feed": {
+      "type": "regex",
+      "url": "https://openrouter.ai/labs/ori/version",
+      "pattern": "^([0-9]+(?:\\.[0-9]+)*)\\+[0-9a-f]+\\s*$"
+    },
+    "icon": "assets/ori.svg",
+    "iconLight": "assets/ori-light.svg"
+  },
+  {
+    "pkg": "kimi-code",
+    "label": "Kimi CLI",
+    "source": "repo",
+    "section": "cli",
+    "feed": {
+      "type": "json",
+      "url": "https://registry.npmjs.org/@moonshot-ai/kimi-code/latest",
+      "path": ".version"
+    },
+    "icon": "assets/kimi.svg",
+    "iconLight": "assets/kimi-light.svg"
+  },
+  {
+    "pkg": "qwen-code",
+    "label": "Qwen Code",
+    "source": "repo",
+    "section": "cli",
+    "feed": {
+      "type": "json",
+      "url": "https://registry.npmjs.org/@qwen-code/qwen-code/latest",
+      "path": ".version"
+    },
+    "icon": "assets/qwen.svg"
+  },
+  {
+    "pkg": "deepseek-dsh",
+    "label": "DeepSeek Harness",
+    "source": "repo",
+    "section": "cli",
+    "feed": {
+      "type": "regex",
+      "url": "https://raw.githubusercontent.com/omacom/omarchy-pkgs/master/pkgbuilds/deepseek-dsh/PKGBUILD",
+      "pattern": "(?m)^pkgver=([0-9A-Za-z._+~]+)\\s*$"
+    },
+    "icon": "assets/deepseek.svg"
+  },
+  {
+    "pkg": "minimax-code",
+    "label": "MiniMax Code",
+    "source": "repo",
+    "section": "cli",
+    "feed": {
+      "type": "json",
+      "url": "https://registry.npmjs.org/@minimax-ai/code/latest",
+      "path": ".version"
+    },
+    "icon": "assets/minimax.svg",
+    "iconLight": "assets/minimax-light.svg"
+  },
+  {
+    "pkg": "freebuff",
+    "label": "Freebuff",
+    "source": "repo",
+    "section": "cli",
+    "feed": {
+      "type": "json",
+      "url": "https://registry.npmjs.org/freebuff/latest",
+      "path": ".version"
+    },
+    "icon": "assets/freebuff.svg",
+    "iconLight": "assets/freebuff-light.svg"
+  },
+  {
+    "pkg": "kilocode-cli",
+    "label": "Kilo",
+    "source": "repo",
+    "section": "cli",
+    "feed": {
+      "type": "json",
+      "url": "https://registry.npmjs.org/@kilocode/cli/latest",
+      "path": ".version"
+    },
+    "icon": "assets/kilo.svg",
+    "iconLight": "assets/kilo-light.svg"
+  },
+  {
+    "pkg": "devin-cli",
+    "label": "Devin CLI",
+    "source": "repo",
+    "section": "cli",
+    "feed": {
+      "type": "json",
+      "url": "https://static.devin.ai/cli/current/manifest.json",
+      "path": ".version"
+    },
+    "icon": "assets/devin.svg",
+    "iconLight": "assets/devin-light.svg"
+  },
+  {
+    "pkg": "amp-cli",
+    "label": "Amp",
+    "source": "repo",
+    "section": "cli",
+    "feed": {
+      "type": "regex",
+      "url": "https://static.ampcode.com/cli/cli-version.txt",
+      "pattern": "^(0\\.0\\.[0-9]+)-g[0-9a-f]+\\s*$"
+    },
+    "icon": "assets/amp.svg",
+    "iconLight": "assets/amp-light.svg"
+  },
+  {
+    "pkg": "pi-coding-agent",
+    "label": "Pi",
+    "source": "repo",
+    "section": "cli",
+    "feed": {
+      "type": "github-release",
+      "repo": "earendil-works/pi"
+    },
+    "icon": "assets/pi.svg",
+    "iconLight": "assets/pi-light.svg"
+  },
+  {
     "pkg": "mise:claude",
     "label": "Claude Code",
     "source": "mise",

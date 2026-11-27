@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- The coding agents Omarchy now installs as packages are back in the CLI section. Omarchy's migration of 2026-11-23 moved them from mise to its pacman repo, and Omabump listed only mise tools there, so the rows went. Twenty packages have a row, each with Update. The mise rows stay for a tool your own mise config asks for.
+- A new route, `repo`, which those twenty rows take: Update installs the package from Omarchy's own repo [omarchy], which follows the vendors within the hour, instead of building a recipe. The repo's database is unsigned, so it only names the file; Update checks the download's sha256 against it, its signature with gpg in pacman's keyring, which must be by a key that keyring trusts (`pacman-key --verify` lets a good signature by an untrusted key through), and its name and version with `pacman -Qp`, before the usual staging and `sudo pacman -U`; the staged copy's signature is checked again before pacman opens it. No code from omarchy-pkgs runs. When the vendor is ahead of the repo, the row shows the update without an Update button or a notification, and says "Not in Omarchy's repo yet", until the repo has it. A repo row notifies only for an update its Update can install: not when this machine has no [omarchy] repo, the repo has no such package, or the app is installed under another package name, which the route does not replace (that row has no Update either).
+- An omarchy row's Update installs the repo's package the same way when the repo already has the vendor's newest release, and builds the recipe only when it does not. Such a row is then neither held by the recipe's release-age window nor without Update for a missing build tool, in the panel or in Update.
+- A row of status.json gains `repoVersion`, the version Omarchy's repo has of a repo or omarchy row's package. The check reads the repo's database once, from the first https Server `pacman-conf` gives the [omarchy] repo; without that repo nothing fails, and repo rows say they have no Update.
+- "Show mise tools" is now "Show CLI tools" and hides the whole CLI section, packages included. The setting's key is still `showMise`, and the checker's flag still `--no-mise`.
+- An `apps.json` entry can say `"section": "cli"` to list a pacman package among the CLI tools.
+- The pinned omarchy-pkgs commit moves to `a4a3f954` (2026-11-27).
+- Update no longer passes `UPSTREAM_GITHUB_TOKEN` to omarchy-pkgs' sync tool. At the new commit the tool, given a token, swaps in a curl configuration of its own, which would take Omabump's HTTPS-only rule and download limits off the run.
+- An `apps.json` entry larger than 64 KiB is dropped with a line on stderr. One over 128 KiB used to end every check with "Argument list too long".
+
 ## 0.1.18 (2026-11-27)
 
 - The panel, the checks and Update work as in 0.1.17. This release moves code: the rules that make a row, the reading and writing of status.json and what each Update route can do each have one place in `bin/omabump-common`, which the check, the local refresh and the installer all use, and the panel's layout and the command lines it starts are in `Model.js`.

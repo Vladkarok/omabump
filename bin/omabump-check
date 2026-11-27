@@ -6,7 +6,11 @@
 #               recipe at the omarchy-pkgs commit pinned in pins.json is only
 #               read (PKGBUILD and .omarchy/ as text, with git show) to see
 #               whether bin/sync-upstream could move it. Nothing fetched is run: sync-upstream runs only in
-#               omabump-install, after the user pressed Update.
+#               omabump-install, after the user pressed Update. The row also
+#               says what Omarchy's repo has of the package (repoVersion).
+#   repo        the feed in apps.json gives the vendor's newest version, and
+#               the database of Omarchy's repo [omarchy] (read once per
+#               check, as text) the package Update would install.
 #   vendor-pkg  the feed in apps.json; the vendor publishes the package.
 #   indicator   the feed in apps.json; no install path.
 #   mise        `mise outdated`: what `mise up` would reach under the
@@ -151,7 +155,7 @@ fi
 # the notify and showMise settings are read under the lock, so a run that
 # waited for it checks with
 # the settings as they are when it starts: the widget counts on a check
-# that took the lock after a change of Show mise tools to honour it.
+# that took the lock after a change of Show CLI tools to honour it.
 load_quiet
 [[ -n $notify ]] || if [[ $setting_notify == false ]]; then notify=0; else notify=1; fi
 [[ -n $with_mise ]] || if [[ $setting_show_mise == false ]]; then with_mise=0; else with_mise=1; fi
@@ -233,7 +237,7 @@ rm -rf -- "$state_dir"/.run.* "$state_dir"/.status.* "$state_dir"/.state.*
 # An Update makes these while it runs, without this lock. One more than a
 # day old belongs to no live run.
 find "$state_dir" "$cache_dir" -mindepth 1 -maxdepth 1 \( -name '.mise.??????' \
-  -o -name '.mise-select.??????' -o -name '.feed.??????' \) -mmin +1440 -exec rm -rf -- {} + 2>/dev/null || true
+  -o -name '.mise-select.??????' -o -name '.feed.??????' -o -name '.repo.??????' \) -mmin +1440 -exec rm -rf -- {} + 2>/dev/null || true
 # A killed Update's half download (curl writes to it until it stops, within
 # 30 minutes, and a new download starts it over) and sync-upstream's mktemp
 # dir (it runs at most 15 minutes and removes its own). Only mktemp's names
@@ -247,10 +251,14 @@ find "$cache_dir/scratch" -mindepth 1 -maxdepth 1 -name 'tmp.??????????' -mmin +
 # mise's inventory as mise_load left it), split by \x1f: the entry is
 # compact JSON, and the pkg and source are names the table allows
 # (apps_table), so none holds one. One jq for the table, not one per app.
+# With Show CLI tools off (with_mise 0) the apps of the CLI section are left
+# out, whatever their route: their rows are neither read nor written.
 table_lines() {
   # shellcheck disable=SC2016 # jq variables, not the shell's
-  jq -r --argjson self "$self_app" --slurpfile ls <(printf '%s\n' "$mise_ls_json") "$jq_app_facts"'
-    (.[], $self) | [.pkg, .source, tojson, app_facts($ls[0])] | join("\u001f")' <<<"$1"
+  jq -r --argjson self "$self_app" --argjson cli "$with_mise" --slurpfile ls <(printf '%s\n' "$mise_ls_json") \
+    "$jq_routes$jq_app_facts"'
+    (.[], $self) | select($cli == 1 or route_section != "cli")
+    | [.pkg, .source, tojson, app_facts($ls[0])] | join("\u001f")' <<<"$1"
 }
 
 # --- a local refresh (--local) -------------------------------------------------
@@ -381,9 +389,9 @@ local_pacman_busy() {
 # when only a check can read the rest. Fails, row unset, when the row stays
 # as it is.
 local_row() {
-  local p_source p_name p_installed p_latest p_from p_installable p_held p_unchecked p_self p_unread
+  local p_source p_name p_installed p_latest p_from p_installable p_held p_unchecked p_self p_unread p_repo
   local update held=false installable unhold=false switchable=false past=false self=false blocked unchecked note
-  local unread=false
+  local unread=false clause="" repo_version="" hold_clause=""
   row="" why=""
   self_updating_name "$name" && self=true
   if [[ $prev == '{}' ]]; then
@@ -405,9 +413,9 @@ local_row() {
   # or moved between package and its own copy), its field unread
   # (row_unread). For a self-updating app, unchecked alone does not say so:
   # its unknown or pre-release version is unchecked too.
-  IFS=$'\x1f' read -r p_source p_name p_installed p_latest p_from p_installable p_held p_unchecked p_self p_unread < <(jq -r "$jq_status"'
+  IFS=$'\x1f' read -r p_source p_name p_installed p_latest p_from p_installable p_held p_unchecked p_self p_unread p_repo < <(jq -r "$jq_status"'
     [.source // "", .installedName // "", .installed // "", .latest // "", .versionFrom // "",
-     .installable == true, .held == true, .unchecked == true, .selfUpdating == true, row_unread]
+     .installable == true, .held == true, .unchecked == true, .selfUpdating == true, row_unread, .repoVersion // ""]
     | map(tostring) | join("\u001f")' <<<"$prev")
   if [[ $p_source != "$source" ]]; then
     why="$pkg has another source in the app table"
@@ -485,6 +493,22 @@ local_row() {
   installable=$p_installable
   if [[ $update == false && $p_held == true ]]; then installable=true unhold=true; fi
   [[ $update == true ]] && held=$p_held
+  # A repo row: what Update installs is the package the last check found in
+  # Omarchy's repo (repoVersion), kept as it was, against the version
+  # installed now. omarchy update installs that same package, after which
+  # the row is current, or held while the vendor is ahead of the repo
+  # (repo_hold); its hold's clause is the one in its note. Its route works
+  # (Update not off, the tools there) when the check gave it Update or held
+  # it.
+  if [[ $source == repo ]]; then
+    repo_version=$p_repo
+    if [[ -n $repo_version ]] && newer "$repo_version" "$installed"; then update=true; fi
+    installable=false held=false unhold=true
+    if [[ $p_installable == true || $p_held == true ]]; then installable=true; fi
+    note=""
+    repo_hold
+    clause=$hold_clause
+  fi
   row_switchable "$source" "$name" "$pkg" "$installable" "$update" "$p_latest" "$installed" && switchable=true
   # Past the newest version known: a release no check has seen, as for a
   # self-updating copy above. What the check knew about the route
@@ -493,7 +517,7 @@ local_row() {
   if [[ -n $p_latest ]] && row_past "$installed" "$p_latest" "$p_from"; then past=true; fi
   row=$(jq -c --arg name "$name" --arg installed "$installed" --argjson update "$update" --argjson held "$held" \
     --argjson installable "$installable" --argjson switchable "$switchable" --argjson unhold "$unhold" \
-    --argjson past "$past" "$jq_status"'
+    --argjson past "$past" --arg clause "$clause" "$jq_status"'
     . + {installedName: $name, installed: $installed, updateAvailable: $update, held: $held,
          installable: $installable, switchable: $switchable}
     | if $update then . else .skipped = false end
@@ -502,6 +526,8 @@ local_row() {
             then .[($c | length):] | ltrimstr("; ") else . end)
         | .holdClause = ""
       else . end
+    | if $clause != "" then .note = $clause + (.note | strings // "" | if . != "" then "; " + . else . end)
+        | .holdClause = $clause else . end
     | if $past then . + {updateAvailable: false, switchable: false, skipped: false, unchecked: true, note: "Not checked yet",
         unread: true} else . end' <<<"$prev")
   if [[ $past == true ]]; then
@@ -510,6 +536,11 @@ local_row() {
     why="$pkg is installed as $name now"
   elif [[ $p_unchecked == true ]]; then
     why="$pkg $installed is not checked yet"
+  elif [[ $source == repo && $p_from == repo && $update == false ]]; then
+    # The newest version known was the repo's, which stood in for the
+    # vendor's while the repo was behind it (repo_row): the vendor's own
+    # newest, which may be ahead still, only a check reads again.
+    why="$pkg reached $p_latest, the newest Omarchy's repo had; the vendor's newest is not known here"
   fi
   return 0
 }
@@ -548,7 +579,7 @@ trap 'exit 129' HUP
 # write_status reads the previous run from a file (--slurpfile), so a large
 # status.json never becomes a command-line argument.
 printf '%s\n' "$previous" >"$tmp/previous.json"
-missing_line=$(missing_tools_line)
+missing_line=$(missing_tools_line) repo_missing=$(repo_missing_line)
 
 # The clone is fetched on first need, so a machine without any Omarchy-packaged
 # app never fetches it. The check only reads it: no checkout, nothing run. The
@@ -654,7 +685,7 @@ while IFS=$'\x1f' read -r pkg source app facts; do
     | map(tostring) | join("\u001f")')
   latest="" from="" note="" installable=false stale=false
   route_error="" feed_error="" recipe="" mise_update=false request="" unchecked=false
-  hold=0 held=false omarchy_update=false self_updating=false hold_clause="" unread=false
+  hold=0 held=false omarchy_update=false self_updating=false hold_clause="" unread=false repo_version=""
 
   # Installed as a copy that updates itself: no route of its source applies,
   # and nothing of omarchy-pkgs is read for it. self_row words the row
@@ -672,6 +703,15 @@ while IFS=$'\x1f' read -r pkg source app facts; do
         note="No https vendor package for $(uname -m)"
       elif ! vendor_checksum_declared "$app"; then
         note="No published checksum for the vendor package"
+      else
+        installable=true
+      fi ;;
+    repo)
+      # Update installs the repo's signed package (omabump-install): what
+      # that takes, and the rest once the feed and the repo are read
+      # (repo_row, repo_hold).
+      if [[ -n $repo_missing ]]; then
+        note=$repo_missing
       else
         installable=true
       fi ;;
@@ -707,10 +747,9 @@ while IFS=$'\x1f' read -r pkg source app facts; do
       elif [[ $pkgs_state != ready ]]; then
         route_error=$pkgs_error
       fi
-      if [[ -n $missing_line ]]; then
-        installable=false
-        note="$missing_line${note:+; $note}"
-      fi ;;
+      # The build tools, and the recipe's hold, once the feed and the repo
+      # are read (omarchy_repo_row): the repo's package may serve the row.
+      ;;
     *)
       route_error="unknown source '$source'" ;;
   esac
@@ -749,6 +788,15 @@ while IFS=$'\x1f' read -r pkg source app facts; do
     # one while the installed version has not moved.
     if route "$source" newest mise && [[ $p_installed == "$installed" ]]; then mise_update=$p_update; fi
   fi
+  # Omarchy's repo, read on the first row that needs it: what it has of a
+  # repo row's package decides the row's Update; an omarchy row only says
+  # it (repoVersion), and Update reads the repo again. A repo that cannot
+  # be read fails no omarchy row: it still builds.
+  if [[ $self_updating == false ]] && [[ $source == repo || $source == omarchy ]]; then
+    [[ -n $repo_state ]] || repo_load || true
+    if [[ $source == repo ]]; then repo_row; else repo_lookup "$pkg" || true; fi
+  fi
+  if [[ $route == omarchy ]]; then omarchy_repo_row; fi
   # Their lines that are not empty, joined by "; ", as is every ";" in them.
   error=""
   while IFS= read -r line; do
@@ -763,18 +811,27 @@ while IFS=$'\x1f' read -r pkg source app facts; do
   # holds only the rest.
   row_derive
 
+  # A repo row announces only an update its Update can install
+  # (repo_update_ok), and by the repo's full version: its latest is the
+  # feed's upstream version at one check and the repo's full version at
+  # another, and vercmp ranks an epoch-less 1.2 below an announced
+  # 1:1.1-1. The notification still names latest.
   announced=$(jq -r --arg pkg "$pkg" '.[$pkg] // ""' <<<"$notified")
-  action=""
-  (( notify )) && [[ $held == false ]] && action=$(announce_action "$source" "$update" "$error" "$quiet" "$latest" "$announced")
+  action="" announce=$latest announces=true
+  if [[ $source == repo && $self_updating == false ]]; then
+    announces=false
+    if repo_update_ok "$installed" "$installed_name" "$pkg"; then announces=true announce=$repo_version; fi
+  fi
+  (( notify )) && [[ $held == false && $announces == true ]] && action=$(announce_action "$source" "$update" "$error" "$quiet" "$announce" "$announced")
   if [[ $action == record ]]; then
-    notified=$(jq -c --arg pkg "$pkg" --arg v "$latest" '.[$pkg] = $v' <<<"$notified")
+    notified=$(jq -c --arg pkg "$pkg" --arg v "$announce" '.[$pkg] = $v' <<<"$notified")
     save_notified
   elif [[ $action == send ]]; then
     body="Installed: $installed. Open the Omabump panel to update."
     [[ $installable == true ]] || body="Installed: $installed. ${note^}."
     [[ $self_updating == false ]] || body="Installed: $installed. Updates itself: $(self_update_text "$app" "$label")."
     if notify-send -a Omabump "$(clean_text "$label $latest available")" "$(clean_text "$body")" 2>/dev/null; then
-      notified=$(jq -c --arg pkg "$pkg" --arg v "$latest" '.[$pkg] = $v' <<<"$notified")
+      notified=$(jq -c --arg pkg "$pkg" --arg v "$announce" '.[$pkg] = $v' <<<"$notified")
       save_notified
     fi
   fi

@@ -1,0 +1,103 @@
+#!/bin/bash
+# shellcheck disable=SC2016 # the report is Markdown: backticks in it are text, not commands
+# Compares the agent list in Omarchy's bin/omarchy-install-ai-cli (the
+# `case "$agent" in` block, lines like "claude) package=claude-code ;;") with
+# apps.json, and prints, as Markdown:
+#
+#   - every package Omarchy installs that no apps.json entry has as its pkg
+#     (news: Omabump does not list it);
+#   - beside those, for information, every CLI entry of apps.json (section
+#     "cli", source not mise) whose pkg Omarchy's list does not name. Such
+#     entries alone are no news.
+#
+# The file is read as text and never sourced or run; only lines of exactly
+# that shape count. A file with no such line is news too: Omarchy's list has
+# moved or changed shape.
+#
+# Prints nothing and exits 0 when there is nothing to report. Exits 3 with the
+# report on stdout when there is (as pin-watch does). Anything else is an
+# error. Used by .github/workflows/apps-watch.yml; runs the same from a
+# terminal.
+#
+# The file comes from the default branch of omacom/omarchy through gh, or from
+# the file APPS_WATCH_SOURCE names; APPS_WATCH_APPS names another apps.json.
+set -euo pipefail
+shopt -s inherit_errexit
+
+repo=omacom/omarchy
+path=bin/omarchy-install-ai-cli
+plugin_dir=$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)
+apps=${APPS_WATCH_APPS:-$plugin_dir/apps.json}
+[[ -r $apps ]] || { echo "apps-watch: cannot read $apps" >&2; exit 1; }
+# Read below through mapfile, which cannot see jq fail: a file jq could not
+# read would be an empty list, and every package Omarchy installs missing.
+jq -e 'type == "array" and all(.[]; type == "object")' "$apps" >/dev/null 2>&1 \
+  || { echo "apps-watch: $apps is not a JSON array of objects" >&2; exit 1; }
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+if [[ -n ${APPS_WATCH_SOURCE:-} ]]; then
+  [[ -r $APPS_WATCH_SOURCE ]] || { echo "apps-watch: cannot read $APPS_WATCH_SOURCE" >&2; exit 1; }
+  cp -- "$APPS_WATCH_SOURCE" "$work/source"
+  from=$APPS_WATCH_SOURCE
+else
+  branch=$(timeout 60 gh api "repos/$repo" --jq .default_branch </dev/null) \
+    || { echo "apps-watch: cannot read $repo's default branch" >&2; exit 1; }
+  [[ $branch =~ ^[A-Za-z0-9._/-]+$ && $branch != *..* ]] || { echo "apps-watch: bad default branch '$branch'" >&2; exit 1; }
+  timeout 60 gh api -H "Accept: application/vnd.github.raw+json" "repos/$repo/contents/$path?ref=$branch" >"$work/source" </dev/null \
+    || { echo "apps-watch: cannot read $path on $branch" >&2; exit 1; }
+  from="$repo@$branch"
+fi
+
+# "agent) package=name ;;" lines, as text: agent and package of lowercase
+# letters, digits and + . _ - only. Anything else is left out, unrun.
+rc=0
+grep -E '^[[:space:]]*[a-z0-9+._-]+\)[[:space:]]*package=[a-z0-9+._-]+[[:space:]]*;;[[:space:]]*$' -- "$work/source" >"$work/lines" || rc=$?
+(( rc < 2 )) || { echo "apps-watch: grep failed on the source" >&2; exit 1; }
+sed -E 's/^[[:space:]]*([a-z0-9+._-]+)\)[[:space:]]*package=([a-z0-9+._-]+)[[:space:]]*;;[[:space:]]*$/\1 \2/' "$work/lines" >"$work/map"
+
+if [[ ! -s $work/map ]]; then
+  printf "## Omarchy's list has moved or changed shape\n\n"
+  printf 'No line like `claude) package=claude-code ;;` was found in `%s` (%s). Check where Omarchy installs its coding agents now, and teach `.github/scripts/apps-watch` that.\n' "$path" "$from"
+  exit 3
+fi
+
+mapfile -t omarchy_pkgs < <(awk '{ print $2 }' "$work/map" | sort -u)
+# shellcheck disable=SC2034 # read through absent's nameref
+mapfile -t have < <(jq -r '.[] | .pkg // empty' "$apps" | sort -u)
+mapfile -t cli < <(jq -r '.[] | select(.section == "cli" and .source != "mise") | .pkg // empty' "$apps" | sort -u)
+
+# The names among $2... that are not in the array named $1.
+absent() {
+  local -n set=$1
+  shift
+  local x y found
+  for x; do
+    found=0
+    for y in "${set[@]}"; do
+      [[ $x == "$y" ]] && { found=1; break; }
+    done
+    (( found )) || echo "$x"
+  done
+}
+mapfile -t missing < <(absent have "${omarchy_pkgs[@]}")
+mapfile -t extra < <(absent omarchy_pkgs "${cli[@]}")
+
+# An entry Omarchy's list does not name is no news by itself: Pi comes with
+# the base install, so the list never names its package. It is said only
+# beside a missing package, where the two may be one rename.
+(( ${#missing[@]} )) || exit 0
+
+agent_of() { awk -v p="$1" '$2 == p { printf "%s%s", (n++ ? ", " : ""), $1 }' "$work/map"; }
+printf "## Omarchy's agent list and apps.json differ\n\n"
+printf 'Compared `%s` (%s) with `apps.json`.\n' "$path" "$from"
+if (( ${#missing[@]} )); then
+  printf "\n### Installed by Omarchy, not in apps.json\n\n"
+  for p in "${missing[@]}"; do printf -- '- `%s` (agent: %s)\n' "$p" "$(agent_of "$p")"; done
+fi
+if (( ${#extra[@]} )); then
+  printf "\n### In apps.json as a CLI, no longer named by Omarchy (for information)\n\n"
+  for p in "${extra[@]}"; do printf -- '- `%s`\n' "$p"; done
+fi
+exit 3

@@ -280,12 +280,18 @@ test("parseStatus: the fields the widget reads", () => {
   })
 })
 
+test("parseStatus: Show CLI tools off hides the CLI section, a pacman package in it included", () => {
+  const apps = [row({}), row({ pkg: "mise:x", source: "mise" }), row({ pkg: "claude-code", source: "omarchy", section: "cli" })]
+  const pkgs = (show) => m.parseStatus(JSON.stringify({ schemaVersion: 1, apps }), show).apps.map((a) => a.pkg)
+  same([pkgs(true).length, pkgs(false)], [3, [row({}).pkg]])
+})
+
 test("parseStatus: no inventoryAt (a file from before it), or one that is no time, is 0", () => {
   same([m.parseStatus("{}", true).inventoryMs, m.parseStatus('{"inventoryAt": ""}', true).inventoryMs,
     m.parseStatus('{"inventoryAt": "soon"}', true).inventoryMs], [0, 0, 0])
 })
 
-test("parseStatus: Show mise tools off drops mise rows and mise's error", () => {
+test("parseStatus: Show CLI tools off drops mise rows and mise's error", () => {
   const status = m.parseStatus(JSON.stringify({ miseError: "m", apps: [row({}), row({ pkg: "mise:x", source: "mise" })] }), false)
   same([status.apps.length, status.miseError, status.checkedAt, status.startedMs], [1, "", "", 0])
 })
@@ -585,6 +591,18 @@ test("rowTooltip: mise, vendor and Omabump's own rows, and a failure", () => {
   same(m.rowTooltip(row({ source: "vendor-pkg", error: "e", stale: true }), [], {}, ""),
     "Installed 1.0.0-1\nNewest 1.0.0 from an earlier check\nUpdates with the vendor's Arch package\nCheck failed: e")
   same(m.rowTooltip(row({ source: "self", installable: false, latest: "" }), [], {}, ""), "Installed 1.0.0-1\nomarchy update does not update plugins")
+  same(m.rowTooltip(row({ source: "repo", latest: "1.1.0", updateAvailable: true, repoVersion: "1.1.0-1" }), [], {}, ""),
+    "Installed 1.0.0-1\nNewest 1.1.0 from the vendor's release feed\nUpdates from Omarchy's repo to 1.1.0-1")
+  same(m.rowTooltip(row({ source: "repo", latest: "1.0.0-2", versionFrom: "repo", updateAvailable: true, repoVersion: "1.0.0-2" }), [], {}, ""),
+    "Installed 1.0.0-1\nNewest 1.0.0-2 from Omarchy's repo\nUpdates from Omarchy's repo to 1.0.0-2")
+  same(m.rowTooltip(row({ source: "repo", repoVersion: "1.0.0-1" }), [], {}, ""),
+    "Installed 1.0.0-1\nNewest 1.0.0 from the vendor's release feed\nUpdates from Omarchy's repo")
+  // The vendor ahead of the repo: held, as a recipe's hold is.
+  same(m.rowTooltip(row({ source: "repo", latest: "2.0", updateAvailable: true, installable: false, held: true,
+    note: "Not in Omarchy's repo yet", holdClause: "Not in Omarchy's repo yet", repoVersion: "1.0.0-1" }), [], {}, ""),
+    "Installed 1.0.0-1\nNewest 2.0 from the vendor's release feed\nNo Update yet: Not in Omarchy's repo yet")
+  same(m.rowTooltip(row({ source: "repo", latest: "2.0", updateAvailable: true, held: true, repoVersion: "1.0.0-1" }), [], {}, ""),
+    "Installed 1.0.0-1\nNewest 2.0 from the vendor's release feed\nUpdates from Omarchy's repo")
   same(m.rowTooltip(null, [], {}, ""), "")
 })
 
@@ -636,7 +654,7 @@ test("panelLayout: a current self row is left out of every section", () => {
   })
 })
 
-test("panelLayout: with Show mise tools off (parseStatus drops mise rows) the CLI section is empty", () => {
+test("panelLayout: with Show CLI tools off (parseStatus drops mise rows) the CLI section is empty", () => {
   const text = JSON.stringify({ apps: [row({ pkg: "mise:a", source: "mise" }), row({ pkg: "b" }), self({ error: "x" })] })
   same(sections(m.panelLayout(m.parseStatus(text, false).apps)), {
     desktop: ["b"], cli: [], plugin: ["self:omabump"], rows: ["b", "self:omabump"], offsets: { desktop: 0, cli: 1, plugin: 1 }
@@ -651,8 +669,8 @@ test("panelLayout: no rows, and a QVariantList of rows", () => {
 
 test("rowSection: the row's section field, else its source's (a 0.1.17 row has none)", () => {
   same([row({}), row({ source: "vendor-pkg" }), row({ source: "indicator" }), row({ source: "mise" }), self({}),
-    row({ source: "other" }), row({ source: undefined })].map(app => m.rowSection(app)),
-    ["desktop", "desktop", "desktop", "cli", "plugin", "desktop", "desktop"])
+    row({ source: "other" }), row({ source: undefined }), row({ source: "repo" })].map(app => m.rowSection(app)),
+    ["desktop", "desktop", "desktop", "cli", "plugin", "desktop", "desktop", "desktop"])
   same([row({ section: "cli" }), row({ source: "mise", section: "desktop" }), self({ section: "plugin" }),
     row({ source: "mise", section: "elsewhere" }), row({ source: "mise", section: 1 }), null].map(app => m.rowSection(app)),
     ["cli", "desktop", "plugin", "cli", "cli", "desktop"])
@@ -669,8 +687,8 @@ test("panelLayout: by the rows' section field when they have one", () => {
 
 test("switchRoute: the row's field, else omarchy and vendor-pkg (a 0.1.17 row has none)", () => {
   same([row({}), row({ source: "vendor-pkg" }), row({ source: "indicator" }), row({ source: "mise" }), self({}),
-    row({ switchRoute: false }), row({ source: "mise", switchRoute: true }), null]
-    .map(app => m.switchRoute(app)), [true, true, false, false, false, false, true, false])
+    row({ switchRoute: false }), row({ source: "mise", switchRoute: true }), null, row({ source: "repo" })]
+    .map(app => m.switchRoute(app)), [true, true, false, false, false, false, true, false, false])
   // A field that is not a boolean is no answer: the source decides, against
   // what the value would say coerced.
   same([row({ source: "mise", switchRoute: "yes" }), row({ source: "mise", switchRoute: 1 }),
