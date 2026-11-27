@@ -919,12 +919,12 @@ Panel {
 
         // Centred by its ink: a Nerd Font icon draws wider than its one-cell
         // advance, so centring the advance puts it off the column the
-        // marks share.
+        // marks share. On a whole pixel: text drawn between two renders soft.
         Text {
           id: fallbackMark
           textFormat: Text.PlainText
-          x: (parent.width - fallbackInk.tightBoundingRect.width) / 2 - fallbackInk.tightBoundingRect.x
-          y: (parent.height - fallbackInk.tightBoundingRect.height) / 2 - fallbackInk.tightBoundingRect.y - baselineOffset
+          x: Math.round((parent.width - fallbackInk.tightBoundingRect.width) / 2 - fallbackInk.tightBoundingRect.x)
+          y: Math.round((parent.height - fallbackInk.tightBoundingRect.height) / 2 - fallbackInk.tightBoundingRect.y - baselineOffset)
           visible: mark.status !== Image.Ready
           text: !appRow.app ? "" : Model.rowSection(appRow.app) === "cli" ? root.cliMark
             : Model.rowSection(appRow.app) === "plugin" ? root.glyph : root.appMark

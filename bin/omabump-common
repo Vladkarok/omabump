@@ -405,13 +405,17 @@ jq_apps_merge='
 # whose pkg, installed names, tool names, appImage, npmPackage, updateBlocked
 # or selfUpdate break the rules above is dropped with a line on stderr. The
 # source must be one of the four route names; "self" is Omabump's own row and
-# never comes from a file.
+# never comes from a file. An entry larger than app_entry_max bytes is
+# dropped the same way: an entry goes to jq as one argv string (--argjson
+# app), and the kernel refuses a string over 128 KiB (E2BIG), which would end
+# every check.
 #
 # The CLI rows are the mise entries of that table and nothing else: the
 # agents Omarchy offers are listed in apps.json, each with the keys mise may
 # have it under, and a row shows when mise has one of them installed and
 # active (mise_active). An agent Omarchy adds later needs its entry there, or
 # in the user's file.
+app_entry_max=65536
 apps_table() {
   local user merged
   user=$(user_apps_json)
@@ -420,9 +424,11 @@ apps_table() {
     ($user[0] // [] | map(select(type == "object"))) as $u
     | apps_merge($u)
     | [.order[] as $p | .by[$p] | select(.disabled != true)]' "$shipped_apps") || return 1
-  jq -r "$jq_name_rules"' .[] | select(entry_ok | not)
-    | "ignoring app \(.pkg | tojson): a pkg, installed or tool name with characters Omabump does not accept, an appImage or npmPackage that is not a ~/ path Omabump accepts, an updateBlocked or selfUpdate too long, or a source other than omarchy, vendor-pkg, mise or indicator"' <<<"$merged" >&2
-  jq -c "$jq_name_rules"' map(select(entry_ok))' <<<"$merged"
+  jq -r --argjson max "$app_entry_max" "$jq_name_rules"' .[]
+    | if entry_ok | not then "ignoring app \(.pkg | tojson): a pkg, installed or tool name with characters Omabump does not accept, an appImage or npmPackage that is not a ~/ path Omabump accepts, an updateBlocked or selfUpdate too long, or a source other than omarchy, vendor-pkg, mise or indicator"
+      elif (tojson | utf8bytelength) > $max then "ignoring app \(.pkg | tojson): its entry is larger than \($max) bytes"
+      else empty end' <<<"$merged" >&2
+  jq -c --argjson max "$app_entry_max" "$jq_name_rules"' map(select(entry_ok and (tojson | utf8bytelength) <= $max))' <<<"$merged"
 }
 
 # The table every step of one run works on: the merge happens once, here,

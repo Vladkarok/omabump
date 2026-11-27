@@ -1243,6 +1243,13 @@ jq -cn '[{pkg: "t3code-bin", appImage: "~/../t3code/T3-Code.AppImage", feed: {ty
 ai_run
 same "AppImage: an appImage path the rules refuse drops the entry, and says so" '|1' \
   "$(ai_row .pkg)|$(grep -c '^ignoring app "t3code-bin"' "$run_dir/ai.err")"
+# An entry is one argv string to jq; over the kernel's 128 KiB it would end
+# the whole check with "Argument list too long".
+jq -cn '[{pkg: "t3code-bin", icon: ("x" * 140000), feed: {type: "command", command: "echo 0.1.1"}}]' \
+  >"$run_dir/config/omarchy/omabump/apps.json"
+ai_run; rc=$?
+same "an oversized entry is dropped, said so, and the check still ends well" '0||1|0' \
+  "$rc|$(ai_row .pkg)|$(grep -c '^ignoring app "t3code-bin": its entry is larger than' "$run_dir/ai.err")|$(grep -c 'Argument list too long' "$run_dir/ai.err")"
 ai_feed
 
 # --local: the AppImage's own updater moves it between checks.

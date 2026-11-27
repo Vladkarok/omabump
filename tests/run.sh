@@ -221,6 +221,12 @@ EOF
 same "apps_table: entries with bad pkg, installed or tool names are dropped" \
   'a b c mise:g' "$(apps_table 2>/dev/null | jq -r 'map(.pkg) | join(" ")')"
 same "apps_table: each dropped entry is named on stderr" 5 "$(apps_table 2>&1 >/dev/null | grep -c '^ignoring app')"
+# One entry reaches jq as one argv string, which the kernel caps at 128 KiB.
+jq -n '[{pkg: "big", source: "indicator", icon: ("x" * 140000)}, {pkg: "edge", source: "indicator", icon: ("x" * 60000)}]' >"$user_apps"
+same "apps_table: an entry over app_entry_max is dropped, one under it stays" \
+  'no yes' "$(apps_table 2>/dev/null | jq -r '[(any(.[]; .pkg == "big")), (any(.[]; .pkg == "edge"))] | map(if . then "yes" else "no" end) | join(" ")')"
+same "apps_table: the oversized entry is named on stderr" 1 \
+  "$(apps_table 2>&1 >/dev/null | grep -c '^ignoring app "big": its entry is larger than 65536 bytes')"
 printf '[{"pkg": "a", "source": "indicator", "updateBlocked": true}, {"pkg": "b", "source": "indicator", "updateBlocked": "fine"}]\n' >"$user_apps"
 same "apps_table: updateBlocked must be a short string" 'b:fine' "$(apps_table 2>/dev/null | jq -r 'map(select(.pkg == "a" or .pkg == "b")) | map("\(.pkg):\(.updateBlocked // "")") | join(" ")')"
 # jq's $ matches before a final newline; bash's =~ and the rules here do not.

@@ -215,7 +215,7 @@ When the limit runs out, GitHub answers 403 or 429 until the hour is over. Omabu
 
 ## apps.json fields
 
-How your own `~/.config/omarchy/omabump/apps.json` is merged over the shipped one, with an example, is in the README's [Adding an app](../README.md#adding-an-app). The fields:
+How your own `~/.config/omarchy/omabump/apps.json` is merged over the shipped one, with an example, is in the README's [Adding an app](../README.md#adding-an-app). An entry larger than 64 KiB, after the merge, is dropped with a line on stderr. The fields:
 
 - `pkg`: the omarchy-pkgs recipe name, or the package name the vendor's package installs as. Any unique id for mise entries (`mise:<name>`).
 - `source`: `omarchy`, `vendor-pkg`, `mise` or `indicator`; an entry with any other source (`self` is Omabump's own row) is dropped.
@@ -236,7 +236,7 @@ How your own `~/.config/omarchy/omabump/apps.json` is merged over the shipped on
   - `regex` with `url` and `pattern`: a Python regex with one capture group.
   - `aur-rpc` with `name`: the AUR's version, pkgrel stripped.
   - `command` with `command`: a local shell command that prints the version. It runs during the background check, so it is accepted only when your own `~/.config/omarchy/omabump/apps.json` sets the entry's `feed`; a command feed from the shipped `apps.json` is refused.
-- `icon` and `iconLight` (optional): SVG marks for dark and light themes, as paths relative to the plugin directory. Absolute paths, URLs and `..` are ignored. Put your own marks in `assets/user/`, which git ignores, so they never count as local changes that would stop Omabump's own Update. A changed or removed mark shows at the next [local refresh](#the-local-refresh), the next time the panel opens.
+- `icon` and `iconLight` (optional): SVG marks for dark and light themes, as paths relative to the plugin directory. Absolute paths, URLs and `..` are ignored. Put your own marks in `assets/user/`, which git ignores, so they never count as local changes that would stop Omabump's own Update. A mark under a new path, or a removed one, shows at the next [local refresh](#the-local-refresh), the next time the panel opens. An SVG edited in place can keep its old picture until the shell restarts (`omarchy restart shell`), because the shell caches a picture by its path; give the file a new name to see it at once.
 
 pacman versions are compared with `vercmp`; mise versions are left to mise; a self-updating AppImage's stable version is compared with `vercmp` as it is, and a pre-release not at all.
 
