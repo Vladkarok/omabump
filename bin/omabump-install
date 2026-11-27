@@ -46,51 +46,161 @@ here=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 # shellcheck source=omabump-common
 source "$here/omabump-common"
 
-prepare=0 switch=0
-while [[ ${1:-} == --* ]]; do
-  case $1 in
-    --prepare) prepare=1 ;;
-    --switch) switch=1 ;;
-    *) echo "usage: omabump-install [--prepare] [--switch] <pkg>" >&2; exit 2 ;;
-  esac
-  shift
-done
-pkg=${1:?usage: omabump-install [--prepare] [--switch] <pkg>}
-
-die() { echo "omabump: $*" >&2; exit 1; }
-# Ends a run that cannot install: says why, $1, or with --prepare what a
-# run would refuse, and stops there as that run would.
-refuse() {
-  (( prepare )) && { echo "Would refuse: $1"; exit 0; }
-  die "$1"
-}
-
-command -v jq >/dev/null || die "jq is missing; install it with: sudo pacman -S --needed jq"
-
-if [[ $pkg == "$self_pkg" ]]; then
-  app=$self_app
-else
-  load_table
-  app=$(app_json "$pkg") || die "$pkg is not in the app table"
-fi
-pkg=$(jq -r .pkg <<<"$app")
-# The name becomes a lock file name below and reaches pacman and git.
-app_id_ok "$pkg" || die "'$pkg' is not a package name Omabump accepts"
-# A label may come from the user's apps.json: shown in the terminal only
-# after term_safe, on one line.
-label=$(jq -r '.label // .pkg' <<<"$app" | term_safe | tr '\t\n' '  ' | sed 's/ *$//')
+# Sourcing this file defines functions and constants and nothing else: it
+# takes no lock, reads no state and never exits. omabump_install, called at
+# the end when the file runs as a command, is the run.
+#
+# A run's facts are globals, set in this order and read by all that follows:
+#   install_args     prepare switch pkg (as given)
+#   install_app      app pkg (the table's) label staged_left
+#   installed_facts  source installed_name installed
+# The routes then set target_version and shown, and the bookkeeping on_exit
+# reads (restore_clone started self_before self_stop staged_copy
+# staging_running pacman_running).
 
 # pacman -U reads the package from a root-owned copy in staging_dir
 # (stage_and_install), a running pacman holds pacman_lock, and bin_dir is
-# where drop_orphan_link looks. Run as a command, nothing changes either,
-# whatever the environment says: only the tests, which source this file
-# (see the end), set their own first.
-(return 0 2>/dev/null) || unset staging_dir pacman_lock bin_dir
-staging_dir=${staging_dir:-/var/cache/omabump} pacman_lock=${pacman_lock:-/var/lib/pacman/db.lck} bin_dir=${bin_dir:-/usr/bin}
-# The staged copies stopped runs left (on_exit), one record per app: only a
-# run holding the app's lock (fd 7) reads or writes it, while updates of
-# other apps may run at the same time.
-staged_left=$cache_dir/staged-left/$pkg
+# where drop_orphan_link looks. Set here, whatever the environment says, so
+# a run as a command changes none of them: only the tests, which source this
+# file (see the end), set their own afterwards.
+staging_dir=/var/cache/omabump pacman_lock=/var/lib/pacman/db.lck bin_dir=/usr/bin
+prepare=0 switch=0 pkg="" app="" label="" staged_left=""
+source="" installed_name="" installed="" target_version=""
+
+die() { echo "omabump: $*" >&2; exit 1; }
+
+# Where --prepare stops: prints what the run would do or say from here, the
+# lines $@, and ends with 0. A real run goes on past it.
+prepare_stop() {
+  (( prepare )) || return 0
+  (( ! $# )) || printf '%s\n' "$@"
+  exit 0
+}
+
+# Ends a run that cannot install: says why, $1, or with --prepare what a
+# run would refuse, and stops there as that run would.
+refuse() {
+  prepare_stop "Would refuse: $1"
+  die "$1"
+}
+
+# The arguments: --prepare, --switch, then the package.
+install_args() {
+  local usage="usage: omabump-install [--prepare] [--switch] <pkg>"
+  prepare=0 switch=0
+  while [[ ${1:-} == --* ]]; do
+    case $1 in
+      --prepare) prepare=1 ;;
+      --switch) switch=1 ;;
+      *) echo "$usage" >&2; exit 2 ;;
+    esac
+    shift
+  done
+  pkg=${1:?$usage}
+}
+
+# The app's entry for the package named: Omabump's own row, or the table's,
+# found by its pkg or an installed name (z-code-bin finds ZCode).
+install_app() {
+  command -v jq >/dev/null || die "jq is missing; install it with: sudo pacman -S --needed jq"
+  if [[ $pkg == "$self_pkg" ]]; then
+    app=$self_app
+  else
+    load_table
+    app=$(app_json "$pkg") || die "$pkg is not in the app table"
+  fi
+  pkg=$(jq -r .pkg <<<"$app")
+  # The name becomes a lock file name below and reaches pacman and git.
+  app_id_ok "$pkg" || die "'$pkg' is not a package name Omabump accepts"
+  # A label may come from the user's apps.json: shown in the terminal only
+  # after term_safe, on one line.
+  label=$(jq -r '.label // .pkg' <<<"$app" | term_safe | tr '\t\n' '  ' | sed 's/ *$//')
+  # The staged copies stopped runs left (on_exit), one record per app: only
+  # a run holding the app's lock (fd 7) reads or writes it, while updates of
+  # other apps may run at the same time.
+  staged_left=$cache_dir/staged-left/$pkg
+}
+
+# What is installed for the app now: its source, the name it is installed
+# under (a package, a mise tool, a self-updating copy's path) and the
+# version, both empty when nothing is.
+installed_facts() {
+  installed_name="" installed=""
+  [[ $(jq -r '.source' <<<"$app") == mise ]] && mise_load 0
+  if read -r source installed_name installed < <(installed_app "$app"); then :; else
+    source=$(jq -r '.source // ""' <<<"$app")
+  fi
+}
+
+# The refusals Omabump's own rules make from the app's entry, the arguments
+# and what is installed, with no recipe, feed or package to read. Prints the
+# reason of the first that applies, as a run refuses with it, and succeeds;
+# fails with 1 when none applies, and with 2 when a rule could not read the
+# entry (update_blocked), which is neither: a run ends there as failed,
+# --prepare too, as a read under set -e ended it (rule_ask). It writes
+# nothing, locks nothing and asks no network: it reads the entry, the facts
+# installed_facts read, the plugin directory and, for copy, what
+# installed_app reads (pacman's database, an npm package.json, an
+# AppImage's desktop entry through 7z to stdout). It calls neither refuse
+# nor die: a run and --prepare act on the same answer (refuse), and a test
+# can ask it directly. $1 is how far the run has got, which names the
+# rules it asks:
+#   copy   the app's lock taken, the staged copies stopped runs left not yet
+#          removed: an app installed as a copy that updates itself
+#          (installed_app: an npmPackage, or an appImage with its package
+#          not installed). The app updates itself, replacing the copy, so
+#          nothing here may stage, build or call sudo for it. It reads what
+#          is installed itself.
+#   entry  those copies removed, which every other refusal leaves the run to
+#          do first: Update turned off in apps.json (updateBlocked), a known
+#          problem in what it would install. Not for a copy that updates
+#          itself: copy refuses that.
+#   route  installed_facts read: --switch on a row it does not work for, or
+#          with nothing to switch; an indicator row; Omabump run from a
+#          local checkout. The run has not written a file of its own yet,
+#          nor asked the network anything.
+# The rules that need the synced recipe (a hold, its version, its
+# conflicts), the feed (nothing newer, no https package or published
+# checksum for the release, a mise request or backend) or the package (its
+# owners, its full version) are the routes', where that data is.
+rule_refusal() {
+  local name how blocked
+  case $1 in
+    copy)
+      jq -e '(.appImage // "") != "" or (.npmPackage // "") != ""' >/dev/null 2>&1 <<<"$app" || return 1
+      read -r _ name _ < <(installed_app "$app") || return 1
+      self_updating_name "$name" || return 1
+      how=$(self_update_text "$app" "$label" | term_safe | tr '\t\n' '  ' | sed 's/ *$//')
+      echo "$label updates itself: $how (it is installed as $name, which Omabump does not replace)" ;;
+    entry)
+      blocked=$(update_blocked "$app" false) || return $(( $? == 1 ? 1 : 2 ))
+      echo "Update of $label is off in Omabump: $(term_safe <<<"$blocked" | tr '\t\n' '  ' | sed 's/ *$//')" ;;
+    route)
+      if (( switch )) && [[ $source != omarchy && $source != vendor-pkg ]]; then
+        echo "--switch works for omarchy and vendor rows only"
+      elif (( switch )) && [[ -z $installed_name || $installed_name == "$pkg" ]]; then
+        echo "$label is not installed under another name; nothing to switch"
+      elif [[ $source == indicator ]]; then
+        echo "$label has no Update here: omarchy update updates it when pacman or the AUR has its package, else update it the way you installed it"
+      elif [[ $source == self ]] && ! self_git_managed; then
+        echo "Omabump runs from a local checkout ($plugin_dir); update it with git"
+      else
+        return 1
+      fi ;;
+    *) return 1 ;;
+  esac
+}
+
+# Asks rule_refusal at the phase $1: sets why to the reason and succeeds
+# when a rule refuses, fails when none applies, and ends the run, with
+# --prepare too, when a rule could not read the app's entry: that is no
+# answer, and Update must not go on as if Update were not off.
+rule_ask() {
+  local rc=0
+  why=$(rule_refusal "$1") || rc=$?
+  (( rc < 2 )) || die "could not read the entry of $label in the app table; nothing was installed"
+  return "$rc"
+}
 
 # The staged copies earlier runs of this app recorded in $staged_left
 # (on_exit: stopped while sudo or pacman ran, or with the terminal closed)
@@ -139,54 +249,52 @@ clear_staged_left() {
   fi
 }
 
-# One update per app at a time; the clone lock below serialises Omarchy builds.
-mkdir -p "$cache_dir/locks"
-exec 7>"$cache_dir/locks/$pkg.lock"
-flock -n 7 || die "another update of $label is already running"
+# Everything a run does before its route, in this order: the arguments and
+# the app, the app's lock, the staged copies stopped runs left, what is
+# installed and the build directories, with the rule refusals
+# (rule_refusal) each asked once the run has got far enough for it. Ends
+# the run where one of them stops it.
+install_setup() {
+  local why copy left_copies
+  install_args "$@"
+  install_app
 
-# An app installed as a copy that updates itself (installed_app: an
-# npmPackage, or an appImage with its package not installed) is updated by
-# the app itself, which replaces the copy: nothing here may stage, build or
-# call sudo for it, so this comes before the staged copies go. A copy an
-# earlier Update of its package left would then stay for good, with no
-# next Update to remove it: each is named, with the command that removes
-# it.
-if jq -e '(.appImage // "") != "" or (.npmPackage // "") != ""' >/dev/null 2>&1 <<<"$app" \
-  && read -r _ installed_name _ < <(installed_app "$app") && self_updating_name "$installed_name"; then
-  mapfile -t left_copies < <(staged_left_copies)
-  for copy in "${left_copies[@]}"; do
-    echo "omabump: a stopped Update of the $pkg package left its staged copy in $copy, and no Update of $label will remove it now; remove it with: sudo rm -f -- $copy" >&2
-  done
-  how=$(self_update_text "$app" "$label" | term_safe | tr '\t\n' '  ' | sed 's/ *$//')
-  refuse "$label updates itself: $how (it is installed as $installed_name, which Omabump does not replace)"
-fi
+  # One update per app at a time; the clone lock serialises Omarchy builds.
+  mkdir -p "$cache_dir/locks"
+  exec 7>"$cache_dir/locks/$pkg.lock"
+  flock -n 7 || die "another update of $label is already running"
 
-# The copies stopped runs left go first, whatever the run does next (a
-# refusal, no newer version yet, a failed download).
-clear_staged_left
-# apps.json turned Update off for this app (updateBlocked): a known problem in
-# what it would install. The check shows the same reason on the row.
-blocked=$(jq -r '.updateBlocked // ""' <<<"$app")
-[[ -z $blocked ]] || refuse "Update of $label is off in Omabump: $(term_safe <<<"$blocked" | tr '\t\n' '  ' | sed 's/ *$//')"
+  # A copy that updates itself is refused before the staged copies go. A
+  # copy an earlier Update of its package left would then stay for good,
+  # with no next Update to remove it: each is named, with the command that
+  # removes it.
+  if rule_ask copy; then
+    mapfile -t left_copies < <(staged_left_copies)
+    for copy in "${left_copies[@]}"; do
+      echo "omabump: a stopped Update of the $pkg package left its staged copy in $copy, and no Update of $label will remove it now; remove it with: sudo rm -f -- $copy" >&2
+    done
+    refuse "$why"
+  fi
 
-installed_name="" installed=""
-[[ $(jq -r '.source' <<<"$app") == mise ]] && mise_load 0
-if read -r source installed_name installed < <(installed_app "$app"); then :; else
-  source=$(jq -r '.source // ""' <<<"$app")
-fi
-[[ $source == omarchy ]] && require_omarchy_tools
-echo "$label: installed ${installed:-nothing} (${installed_name:-$pkg}, $source)"
-if (( switch )); then
-  [[ $source == omarchy || $source == vendor-pkg ]] || refuse "--switch works for omarchy and vendor rows only"
-  [[ -n $installed_name && $installed_name != "$pkg" ]] || refuse "$label is not installed under another name; nothing to switch"
-  echo "Switching from $installed_name to $pkg at the same or a newer version."
-fi
+  # The copies stopped runs left go first, whatever the run does next (a
+  # refusal, no newer version yet, a failed download).
+  clear_staged_left
+  # The check shows the same reason on the row.
+  if rule_ask entry; then refuse "$why"; fi
 
-# PKGEXT without a compressor: the package is installed seconds after the
-# build, and zstd -22 on a 1.5 GB Electron app takes minutes. pacman -U reads
-# a plain .pkg.tar.
-export PKGDEST=$cache_dir/packages SRCDEST=$cache_dir/sources BUILDDIR=$cache_dir/build PKGEXT=.pkg.tar
-mkdir -p "$PKGDEST" "$SRCDEST" "$BUILDDIR"
+  installed_facts
+  [[ $source == omarchy ]] && require_omarchy_tools
+  echo "$label: installed ${installed:-nothing} (${installed_name:-$pkg}, $source)"
+  if rule_ask route; then refuse "$why"; fi
+  (( ! switch )) || echo "Switching from $installed_name to $pkg at the same or a newer version."
+
+  # PKGEXT without a compressor: the package is installed seconds after the
+  # build, and zstd -22 on a 1.5 GB Electron app takes minutes. pacman -U
+  # reads a plain .pkg.tar.
+  export PKGDEST=$cache_dir/packages SRCDEST=$cache_dir/sources BUILDDIR=$cache_dir/build PKGEXT=.pkg.tar
+  mkdir -p "$PKGDEST" "$SRCDEST" "$BUILDDIR"
+  trap on_exit EXIT
+}
 
 # Code from omarchy-pkgs (bin/sync-upstream, the recipe's hook) and makepkg
 # download with curl. Two files written on every run keep those downloads
@@ -284,7 +392,6 @@ on_exit() {
     echo "omabump: the build and download files stay in $cache_dir/{build,packages,sources}" >&2
   fi
 }
-trap on_exit EXIT
 
 # --wait: a check already running may have read the version from before the
 # install, so this one runs after it rather than not at all.
@@ -309,12 +416,8 @@ guard_version() {
 # The field $1 of this app's row in the last check's status.json, which the
 # panel shows until the next check, on one line; true or false for a flag.
 # Nothing when no check ran, the file is not one the check wrote, or the
-# row or field is missing.
-panel_row() {
-  jq -r --arg pkg "$pkg" --arg f "$1" \
-    '[.apps[]? | objects | select(.pkg == $pkg)][0][$f] | select(type == "string" or type == "boolean") | tostring' \
-    "$status_file" 2>/dev/null | head -n1 | term_safe || true
-}
+# row or field is missing (status_field).
+panel_row() { status_field "$pkg" "$1" 2>/dev/null | head -n1 | term_safe || true; }
 
 # True when the version installed now, $1 (the full version on pacman
 # rows), has reached the one the panel shows for this app, the row's latest
@@ -333,7 +436,7 @@ panel_reached() {
   [[ -n $shown ]] || return 0
   if string_versions "$source"; then
     [[ $1 == "$shown" || $1 != "$(panel_row installed)" || $(panel_row updateAvailable) != true ]]
-  elif newer "$shown" "$(upstream_part "$1")"; then
+  elif row_newer "$shown" "$1" feed; then
     return 1
   fi
 }
@@ -344,11 +447,7 @@ panel_reached() {
 # run would say and do.
 already_installed() {
   local msg="$label $1 is already installed; nothing to do."
-  if (( prepare )); then
-    echo "Would say: $msg"
-    echo "Would run: $here/omabump-check --no-notify --wait (the panel's refresh)"
-    exit 0
-  fi
+  prepare_stop "Would say: $msg" "Would run: $here/omabump-check --no-notify --wait (the panel's refresh)"
   echo "$msg"
   # The check reads the omarchy-pkgs clone: under this run's lock it would
   # find the clone busy and give every omarchy row the last result.
@@ -498,7 +597,7 @@ check_target() {
     # nothing_newer, unless the recipe reaches the version the panel showed
     # and the app has not: then an epoch installed, or a pkgrel above the
     # recipe's, is what stops Update, and guard_version's message names it.
-    if panel_reached "$now" || newer "$shown" "$(upstream_part "$target_version")"; then
+    if panel_reached "$now" || row_newer "$shown" "$target_version" feed; then
       nothing_newer "$now" "omarchy-pkgs' recipe reaches $target_version" "the vendor's feed shows"
     fi
   fi
@@ -645,6 +744,7 @@ build_and_install() {
     if replaces_other; then show_switch "$(recipe_install "$want")" "$PWD"; fi
     echo "After the build:"
     stage_and_install "$match" "$want $target_version" sha256 "the one taken of $match right after the build"
+    # install_omarchy puts the clone back; install_main ends the run.
     echo "Prepared: stopping before makepkg builds."
     return 0
   fi
@@ -802,7 +902,7 @@ install_vendor_pkg() {
   # An Update the feed has nothing newer for downloads nothing, so it ends
   # here: the package's URL and its checksum (a second request, for some
   # vendors) cannot fail it.
-  if (( ! switch )) && [[ -n $installed ]] && ! newer "$latest" "$(upstream_part "$installed")"; then
+  if (( ! switch )) && [[ -n $installed ]] && ! row_newer "$latest" "$installed" feed; then
     rm -f "$feed_file"
     nothing_newer "$installed" "the vendor's feed gives $latest now" "it gave at the last check"
   fi
@@ -812,7 +912,7 @@ install_vendor_pkg() {
   rm -f "$feed_file"
   read -r algo want <<<"$sum"
   echo "Published $algo: $want"
-  if (( switch )) && [[ -n $installed ]] && newer "$(upstream_part "$installed")" "$latest"; then
+  if (( switch )) && [[ -n $installed ]] && row_past "$installed" "$latest" feed; then
     refuse "$latest is older than the installed $installed_name $installed; nothing to do"
   fi
   file=$PKGDEST/${url##*/}
@@ -844,9 +944,8 @@ install_vendor_pkg() {
   stage_and_install "$file" "$line" "$algo" "$want"
   if (( prepare )); then
     drop_orphan_link
-    echo "Prepared: stopping before sudo."
     started=0
-    return 0
+    prepare_stop "Prepared: stopping before sudo."
   fi
   now_line=$(installed_package "$pkg") || die "pacman -Q $pkg finds nothing after the install"
   [[ $now_line == "$pkg $ver" ]] || die "pacman -Q says '$now_line', expected '$pkg $ver'"
@@ -860,43 +959,31 @@ install_vendor_pkg() {
 # mise outdated finds the version the configured request reaches (an exact
 # pin or a range), the same policy the check used, and like it runs with no
 # release-age cooldown; mise install puts in exactly that version, so the
-# target shown in the panel is the one installed here.
+# target shown in the panel is the one installed here. What mise's answer
+# means is the check's own reading of it (mise_row), here for the one tool.
 install_mise() {
-  local tool=$installed_name target request now
+  local tool=$installed_name target now
+  local latest from note installable mise_update request feed_error unchecked
   [[ -n $tool ]] || die "${mise_inventory_error:-mise has no active $label}"
   mise_load 1 "$tool"
-  mise_key_safe "$tool" || refuse "$(mise_skip_note "$tool"); Omabump updates mise tools on mise's own backends only. Update $tool with mise up yourself."
-  [[ -z $mise_error ]] || die "$mise_error"
-  [[ -z ${mise_fetch_failed[$tool]:-} ]] || die "mise could not fetch the versions of $tool: ${mise_fetch_failed[$tool]}"
-  # An entry mise_outdated_table could not read has no fields: read as such,
-  # it would say newest or held where the check (mise_row) says the answer
-  # could not be read. Each table is checked before its fields are read.
-  mise_entry_ok "$mise_outdated_json" "$tool" || die "mise outdated gave an entry for $tool that is not an object"
-  target=$(mise_field "$mise_outdated_json" "$tool" latest)
-  if [[ -z $target ]]; then
-    [[ -z $mise_bump_error ]] || die "$mise_bump_error"
-    mise_entry_ok "$mise_bump_json" "$tool" || die "mise outdated --bump gave an entry for $tool that is not an object"
-    # The release itself, as the panel's row shows it; bump is only the
-    # request rewritten to reach it.
-    request=$(mise_field "$mise_bump_json" "$tool" requested)
-    now=$(mise_field "$mise_bump_json" "$tool" latest)
-    [[ -n $now ]] || now=$(mise_field "$mise_bump_json" "$tool" bump)
-    if [[ -n $now && $now != "$installed" ]]; then
-      [[ $request == latest ]] && refuse "$label is held back at $installed by your mise settings ($now exists); mise up would not move it. See mise settings."
-      refuse "$label is held at $installed by its mise request '$request' ($now exists); mise up would not move it. Change the request with mise use."
-    fi
-    nothing_newer "$installed" "mise keeps $label at $installed" "mise showed at the last check"
-  fi
+  mise_row "$tool" "$installed"
+  case $mise_state in
+    unchecked) refuse "$note; Omabump updates mise tools on mise's own backends only. Update $tool with mise up yourself." ;;
+    error) die "$feed_error" ;;
+    pinned)
+      [[ $request == latest ]] && refuse "$label is held back at $installed by your mise settings ($latest exists); mise up would not move it. See mise settings."
+      refuse "$label is held at $installed by its mise request '$request' ($latest exists); mise up would not move it. Change the request with mise use." ;;
+    current) nothing_newer "$installed" "mise keeps $label at $installed" "mise showed at the last check" ;;
+    update) target=$latest ;;
+    *) die "no reading of mise's answer for $tool" ;;
+  esac
   # The version the request reaches now, as mise outdated just found it,
   # installed as it is: mise neither looks for the newest again nor lists
   # every release (mise_run, mise_versions_host), and the request in your
   # config, unchanged, makes it the active one.
   [[ $target =~ ^[A-Za-z0-9][A-Za-z0-9._+~-]*$ ]] || die "mise gave $tool an odd version '$target'"
   echo "mise install -- $tool@$target"
-  if (( prepare )); then
-    echo "Would run: mise install -- $tool@$target (in $HOME)"
-    return 0
-  fi
+  prepare_stop "Would run: mise install -- $tool@$target (in $HOME)"
   tool_name_ok "$tool" || die "'$tool' is not a mise tool name Omabump accepts"
   mise_timeout=900 mise_versions_host=1 mise_run install -- "$tool@$target"
   mise_load 0
@@ -976,7 +1063,7 @@ self_undo() {
 # read after the merge replaced it.
 install_self() {
   local latest answer before validate=(omarchy-plugin-validate)
-  self_git_managed || refuse "Omabump runs from a local checkout ($plugin_dir); update it with git"
+  # A local checkout of Omabump was refused before (rule_refusal route).
   command -v omarchy-plugin-validate >/dev/null || validate=(omarchy plugin validate)
   command -v "${validate[0]}" >/dev/null || die "omarchy-plugin-validate is missing"
   latest=$(feed_version "$app") || die "could not read Omabump's newest release"
@@ -991,11 +1078,8 @@ install_self() {
   echo
   self_git --no-pager diff --no-color --stat HEAD "$self_target" | term_safe
   echo
-  if (( prepare )); then
-    echo "Would ask: Update Omabump to $latest? [y/N]"
-    echo "Would run: git merge --ff-only $self_target in $plugin_dir, ${validate[*]} $plugin_dir (if either fails or the run is stopped before the validation passed: git reset --hard to the installed commit and git clean -fd), omarchy-shell shell rescanPlugins"
-    exit 0
-  fi
+  prepare_stop "Would ask: Update Omabump to $latest? [y/N]" \
+    "Would run: git merge --ff-only $self_target in $plugin_dir, ${validate[*]} $plugin_dir (if either fails or the run is stopped before the validation passed: git reset --hard to the installed commit and git clean -fd), omarchy-shell shell rescanPlugins"
   before=$(self_git rev-parse HEAD) || die "git rev-parse HEAD failed in $plugin_dir"
   read -r -p "Update Omabump to $latest? [y/N] " answer </dev/tty || answer=""
   [[ $answer == [yY] ]] || { echo "Not updated."; exit 0; }
@@ -1019,20 +1103,29 @@ install_main() {
     omarchy) install_omarchy ;;
     vendor-pkg) install_vendor_pkg ;;
     mise) install_mise ;;
-    indicator) refuse "$label has no Update here: omarchy update updates it when pacman or the AUR has its package, else update it the way you installed it" ;;
+    # An indicator row has no route: install_setup refused it (rule_refusal).
     *) die "unknown source '$source'" ;;
   esac
 
-  (( prepare )) && exit 0
+  # A --prepare run ends here once the route stopped and cleaned up: the
+  # omarchy route returns, having put the clone back; the others have ended
+  # the run where they stop.
+  prepare_stop
   refresh_panel
   if [[ $source != mise ]]; then
     if [[ -n $installed ]]; then echo "Restart $label to use $target_version."; else echo "$label $target_version is installed."; fi
   fi
 }
 
-# tests/install.sh sources this file with an app's arguments, stub commands
-# first on PATH, and staging_dir and pacman_lock in their own directory:
-# everything above runs as in a real run, then the tests call the functions
-# themselves, or install_main.
-if (return 0 2>/dev/null); then return 0; fi
-install_main
+# The run: its setup, then its route.
+omabump_install() {
+  install_setup "$@"
+  install_main
+}
+
+# tests/install.sh sources this file, which runs nothing, with stub
+# commands first on PATH, then sets staging_dir, pacman_lock and bin_dir to
+# its own directories and calls omabump_install, install_setup or single
+# functions. Run as a command, the run starts here; the exit means nothing
+# after this line is read, whatever the file holds by then.
+(return 0 2>/dev/null) || { omabump_install "$@"; exit; }

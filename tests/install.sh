@@ -204,30 +204,36 @@ inst_env=(env HOME="$ihome" PATH="$istubs:$PATH" XDG_CONFIG_HOME="$ihome/.config
   XDG_CACHE_HOME="$it/cache" GIT_CONFIG_NOSYSTEM=1
   STUB_DB="$idb" STUB_LOG="$ilog" STUB_SERVED="$iserved" STUB_STAGING="$istaging" STUB_BIN="$ibin"
   STUB_PKGS_LOCK="$it/cache/omabump/omarchy-pkgs.lock")
-# The child bash's first line: staging in $istaging, with $idb/db.lck as
-# pacman's lock file and $ibin as /usr/bin. All are set the only way there
-# is: before the installer is sourced.
+# The child bash sources the installer copy, which runs nothing, then stages
+# in $istaging, with $idb/db.lck as pacman's lock file and $ibin as
+# /usr/bin.
 # shellcheck disable=SC2016 # expanded by the child bash
-inst_dirs='staging_dir=$STUB_STAGING pacman_lock=$STUB_DB/db.lck bin_dir=$STUB_BIN; '
+inst_load='source "$1" || exit 99; staging_dir=$STUB_STAGING pacman_lock=$STUB_DB/db.lck bin_dir=$STUB_BIN; '
 # inst <args...>: a run of the installer copy; its output in $iout, status
 # in $irc.
 inst() {
   # shellcheck disable=SC2016 # expanded by the child bash
-  iout=$("${inst_env[@]}" timeout 120 bash -c "$inst_dirs"'source "$1" "${@:2}"; install_main' \
+  iout=$("${inst_env[@]}" timeout 120 bash -c "$inst_load"'omabump_install "${@:2}"' \
     omabump-test "$iplugin/bin/omabump-install" "$@" </dev/null 2>&1)
   irc=$?
 }
-# inst_src <code> <args...>: the installer sourced with <args> in a child
-# bash, so its setup runs as in a real run, then <code> there, under the
-# installer's set -euo pipefail.
+# inst_src <code> [<args...>]: <code> in a child bash that sourced the
+# installer copy, under its set -euo pipefail, with <args> as "$@". Nothing
+# of a run has happened: <code> sets the globals the functions it calls
+# read, or calls install_setup "$@" for a run's own.
 inst_src() {
   local code=$1
   shift
   # shellcheck disable=SC2016 # expanded by the child bash
-  iout=$("${inst_env[@]}" timeout 120 bash -c "$inst_dirs"'source "$1" "${@:2}" >/dev/null 2>&1 || exit 99; '"$code" \
+  iout=$("${inst_env[@]}" timeout 120 bash -c "$inst_load"'shift; '"$code" \
     omabump-test "$iplugin/bin/omabump-install" "$@" </dev/null 2>&1)
   irc=$?
 }
+# inst_src's code for a run's setup with <args>, under set -e and with its
+# output dropped, before the rest of the code. It sets on_exit as the trap
+# on EXIT; code without it runs with none.
+# shellcheck disable=SC2016 # expanded by the child bash
+isetup='install_setup "$@" >/dev/null 2>&1; '
 # says <name> <text>: the last run printed <text>. calls <name> <text>: a
 # stub was called with a line holding it.
 says() { if grep -qF -- "$2" <<<"$iout"; then pass "$1"; else fail "$1" "no '$2' in: $iout"; fi; }
@@ -278,7 +284,8 @@ cat >"$ihome/.config/omarchy/omabump/apps.json" <<'EOF'
   {"pkg": "npmapp", "label": "Npm App", "source": "omarchy", "npmPackage": "~/.npmapp/lib/node_modules/npmapp",
    "selfUpdate": "run npmapp update", "updateBlocked": "its package is the seed"},
   {"pkg": "npmesc", "label": "Npm Esc", "source": "omarchy", "npmPackage": "~/.npmesc/lib/node_modules/npmesc",
-   "selfUpdate": "run \u001b]0;x\u0007npmesc update"}
+   "selfUpdate": "run \u001b]0;x\u0007npmesc update"},
+  {"pkg": "indapp", "label": "Ind App", "source": "indicator"}
 ]
 EOF
 
@@ -337,7 +344,7 @@ check "install, a self-updating app: nothing ran the AppImage" test ! -e "$it/se
 # installer's setup goes past the refusal (the route itself is not run here).
 fresh 'selfapp 1.0-1'
 # shellcheck disable=SC2016 # expanded by the child bash
-inst_src 'echo "$installed_name $installed"' selfapp
+inst_src "$isetup"'echo "$installed_name $installed"' selfapp
 same "install, an app with an appImage whose package is installed: the package, no refusal" '0|selfapp 1.0-1' "$irc|$iout"
 rm -rf "$ihome/.local/share/selfapp"
 
@@ -374,12 +381,88 @@ inst npmapp
 same "install, the npm package's seed alone: its updateBlocked refuses" \
   '1|omabump: Update of Npm App is off in Omabump: its package is the seed' "$irc|$iout"
 
+# --- the rule refusals, asked directly ------------------------------------------------
+
+# rule <name> <phase> <reason> <args...>: rule_refusal, asked at each point
+# of a run in turn with the facts of a run with <args>, gives <reason> at
+# <phase> (none: at no point) and changes nothing; a run refuses with that
+# reason, and --prepare says it would, both as their last line.
+rule() {
+  local name=$1 phase=$2 reason=$3
+  shift 3
+  # shellcheck disable=SC2016 # expanded by the child bash
+  inst_src 'install_args "$@"; install_app; installed_facts >/dev/null 2>&1
+    for p in copy entry route; do if why=$(rule_refusal "$p"); then echo "$p|$why"; exit 0; fi; done; echo none' "$@"
+  if [[ $phase == none ]]; then
+    same "rule_refusal, $name: none applies" '0|none' "$irc|$iout"
+    return
+  fi
+  same "rule_refusal, $name: asked directly, at $phase" "0|$phase|$reason" "$irc|$iout"
+  no_call "rule_refusal, $name: asked directly, calls no sudo" 'sudo'
+  inst "$@"
+  same "rule_refusal, $name: a run refuses with it" "1|omabump: $reason" "$irc|$(tail -n1 <<<"$iout")"
+  inst --prepare "$@"
+  same "rule_refusal, $name: --prepare says the run would" "0|Would refuse: $reason" "$irc|$(tail -n1 <<<"$iout")"
+}
+fresh 'blockedapp 1.0-1'
+rule "updateBlocked" entry 'Update of Blocked App is off in Omabump: a known problem in its install script, see x#1' blockedapp
+mkdir -p "$ihome/.local/share/selfapp" "$ihome/.npmapp/lib/node_modules/npmapp"
+printf '#!/bin/sh\n: >"%s/selfapp-ran"\n' "$it" >"$ihome/.local/share/selfapp/Self.AppImage"
+chmod +x "$ihome/.local/share/selfapp/Self.AppImage"
+echo '{"name": "npmapp", "version": "2.0.0"}' >"$ihome/.npmapp/lib/node_modules/npmapp/package.json"
+fresh 'npmapp 1.0-1'
+rule "a self-updating AppImage" copy \
+  'Self App updates itself: open Self App to update (it is installed as ~/.local/share/selfapp/Self.AppImage, which Omabump does not replace)' selfapp
+rule "a self-updating npm package, over its updateBlocked" copy \
+  'Npm App updates itself: run npmapp update (it is installed as ~/.npmapp/lib/node_modules/npmapp, which Omabump does not replace)' npmapp
+fresh 'selfapp 1.0-1'
+rule "an AppImage whose package is installed" none '' selfapp
+check "rule_refusal: nothing ran the AppImage" test ! -e "$it/selfapp-ran"
+rm -rf "$ihome/.local/share/selfapp" "$ihome/.npmapp"
+fresh 'testapp 1.0.0-1'
+rule "--switch with nothing to switch" route 'Test App is not installed under another name; nothing to switch' --switch testapp
+rule "an Update of a vendor row" none '' testapp
+fresh 'testapp-bin 1.0.0-1'
+rule "--switch from another name" none '' --switch testapp
+fresh
+rule "--switch on a mise row" route '--switch works for omarchy and vendor rows only' --switch mise:testtool
+rule "an indicator row" route \
+  'Ind App has no Update here: omarchy update updates it when pacman or the AUR has its package, else update it the way you installed it' indapp
+rule "Omabump from a local checkout" route "Omabump runs from a local checkout ($iplugin); update it with git" self:omabump
+
 # --- the vendor route ------------------------------------------------------------
 
 vpkg=testapp-2.0.0-1-x86_64.pkg.tar
 vstaged=$istaging/$vpkg vcached=$it/cache/omabump/packages/$vpkg
 install_text='post_install() { echo hello; }' make_pkg "$iserved/$vpkg" 'pkgname = testapp' 'pkgver = 2.0.0-1' 'conflict = testapp-bin'
 printf 'version: 2.0.0\nfiles:\n  - url: https://example.invalid/%s\n    sha512: %s\n' "$vpkg" "$(sha512_b64 "$iserved/$vpkg")" >"$iserved/latest.yml"
+
+# A jq that fails, as a killed one does, on the read of updateBlocked alone
+# (update_blocked's filter): that is no answer, so a run ends there, failed,
+# before any sudo, and --prepare too, never as "Would refuse" nor as an
+# Update that is not off. testapp's feed has a newer release by now, so a
+# run that took the failure for "not off" would reach sudo pacman -U.
+ijq=$it/jq-killed
+mkdir -p "$ijq"
+# shellcheck disable=SC2016 # expanded by the stub, not here
+printf '#!/bin/bash\nfor a; do [[ $a == %q ]] && exit 137; done\nexec %q "$@"\n' '.updateBlocked // ""' "$(command -v jq)" >"$ijq/jq"
+chmod +x "$ijq/jq"
+inst_env_was=("${inst_env[@]}")
+inst_env+=(PATH="$ijq:$istubs:$PATH")
+unread_line='omabump: could not read the entry of %s in the app table; nothing was installed'
+for case in 'blockedapp:Blocked App:blockedapp 1.0-1' 'testapp:Test App:testapp 1.0.0-1'; do
+  IFS=: read -r upkg ulabel uinstalled <<<"$case"
+  # shellcheck disable=SC2059 # the line's format
+  uline=$(printf "$unread_line" "$ulabel")
+  for uargs in '' --prepare; do
+    fresh "$uinstalled"
+    inst ${uargs:+"$uargs"} "$upkg"
+    same "updateBlocked unread, $upkg${uargs:+ $uargs}: the run fails there" "1|$uline" "$irc|$(tail -n1 <<<"$iout")"
+    no_call "updateBlocked unread, $upkg${uargs:+ $uargs}: no sudo" 'sudo'
+    refuse "updateBlocked unread, $upkg${uargs:+ $uargs}: no refusal, no route" grep -qe 'Would refuse\|is off in Omabump\|installed 1' <<<"$iout"
+  done
+done
+inst_env=("${inst_env_was[@]}")
 
 fresh 'testapp 1.0.0-1'
 inst --prepare testapp
@@ -599,6 +682,12 @@ says "install (vendor), nothing newer, status.json unreadable: says so" 'Test Ap
 shown testpkg 3.0.0 1.0.0-1
 inst testapp
 same "install (vendor), nothing newer, no row in status.json: a success" 0 "$irc"
+# A status.json of another schemaVersion is none either, whatever its row
+# says (here: a newer version than the feed's).
+shown testapp 2.1.0 2.0.0-1
+jq '.schemaVersion = 2' "$istatus" >"$istatus.new" && mv "$istatus.new" "$istatus"
+inst testapp
+same "install (vendor), nothing newer, status.json of another schemaVersion: a success" 0 "$irc"
 
 # The feed gives less than the panel showed (the vendor pulled 2.1.0):
 # Update cannot install it, and says which two versions it found.
@@ -876,15 +965,15 @@ no_call "install --prepare (mise), mise behind the panel: mise install never run
 # --- functions, sourced ---------------------------------------------------------------
 
 fresh 'testapp 1.0.0-1'
-inst_src 'switch=0; guard_version 2.0.0-1 && echo newer; guard_version 1.0.0-1 || true' testapp
+inst_src 'installed_name=testapp switch=0; guard_version 2.0.0-1 && echo newer; guard_version 1.0.0-1 || true'
 same "guard_version: Update needs a newer full version" $'newer\n1.0.0-1 is not newer than the installed testapp 1.0.0-1' "$iout"
-inst_src 'switch=1; guard_version 1.0.0-1 && echo same; guard_version 1:0.9-1 && echo epoch; guard_version 0.9-1 || true' testapp
+inst_src 'installed_name=testapp switch=1; guard_version 1.0.0-1 && echo same; guard_version 1:0.9-1 && echo epoch; guard_version 0.9-1 || true'
 same "guard_version: Switch takes the same or newer, epochs counted" \
   $'same\nepoch\n0.9-1 is older than the installed testapp 1.0.0-1' "$iout"
 
 printf 'Name            : x\nProvides        : a=1  b>=2 c<3\nConflicts With  : None\n' >"$it/qi.txt"
 # shellcheck disable=SC2016 # expanded by the child bash
-T_QI=$it/qi.txt inst_src 'qi_names Provides <"$T_QI"; echo "[$(qi_names "Conflicts With" <"$T_QI")]"' testapp
+T_QI=$it/qi.txt inst_src 'qi_names Provides <"$T_QI"; echo "[$(qi_names "Conflicts With" <"$T_QI")]"'
 same "qi_names: names without version constraints, nothing for None" $'a\nb\nc\n[]' "$iout"
 
 # switch_conflicts with testapp-bin installed: one of the two must name the
@@ -895,7 +984,7 @@ conflicts_with() {  # <the installed package's Provides> <its Conflicts With> <.
   shift 2
   make_pkg "$it/new.pkg.tar" 'pkgname = testapp' 'pkgver = 2.0.0-1' "$@"
   # shellcheck disable=SC2016 # expanded by the child bash
-  T_PKG=$it/new.pkg.tar inst_src 'rc=0; switch_conflicts "$T_PKG" || rc=$?; echo "$rc"' testapp
+  T_PKG=$it/new.pkg.tar inst_src 'pkg=testapp installed_name=testapp-bin rc=0; switch_conflicts "$T_PKG" || rc=$?; echo "$rc"'
   echo "$iout"
 }
 same "switch_conflicts: the new package conflicts with the old name" 0 "$(conflicts_with None None 'conflict = testapp-bin')"
@@ -905,7 +994,7 @@ same "switch_conflicts: with something the new one provides" 0 "$(conflicts_with
 same "switch_conflicts: no conflict either way" 1 "$(conflicts_with 'testapp-bin' 'other' 'conflict = other' 'provides = more')"
 printf 'not a package' >"$it/new.pkg.tar"
 # shellcheck disable=SC2016 # expanded by the child bash
-T_PKG=$it/new.pkg.tar inst_src 'rc=0; switch_conflicts "$T_PKG" || rc=$?; echo "$rc"' testapp
+T_PKG=$it/new.pkg.tar inst_src 'pkg=testapp installed_name=testapp-bin rc=0; switch_conflicts "$T_PKG" || rc=$?; echo "$rc"'
 same "switch_conflicts: a package pacman cannot read is not 'no conflict'" 2 "$iout"
 rm -f "$it/new.pkg.tar" "$idb/qi/testapp-bin"
 
@@ -925,7 +1014,7 @@ cp "$fo/ok.tar" "$fo/esc.tar"
 bsdtar -rf "$fo/esc.tar" --uid 1000 --gid 0 -C "$fo/d" "x"$'\e'"[31m"
 printf 'not a package' >"$fo/junk.tar"
 # shellcheck disable=SC2016 # expanded by the child bash
-T_FO=$fo inst_src 'for f in ok bad esc junk; do rc=0; out=$(foreign_owners "$T_FO/$f.tar") || rc=$?; echo "$f $rc"; [[ -z $out ]] || printf "%s\n" "$out"; done' testapp
+T_FO=$fo inst_src 'for f in ok bad esc junk; do rc=0; out=$(foreign_owners "$T_FO/$f.tar") || rc=$?; echo "$f $rc"; [[ -z $out ]] || printf "%s\n" "$out"; done'
 same "foreign_owners: root, and groups root, tty, ftp and games pass; 3 others shown, then a count; escapes; junk" \
   $'ok 0\nbad 1\n1001:1001 opt/\n1001:1001 opt/a b/\n1001:1001 opt/a b/f1\nand 3 more\nesc 1\n1000:0 x\\033[31m\njunk 2' "$iout"
 # A listing past what a pipe holds at once (bash sends a here-string that
@@ -935,7 +1024,7 @@ mkdir -p "$fo/big"
 for fo_i in $(seq 3000); do : >"$fo/big/file-with-a-long-name-$fo_i"; done
 bsdtar -cf "$fo/big.tar" --uid 1001 --gid 1001 -C "$fo" big
 # shellcheck disable=SC2016 # expanded by the child bash
-T_FO=$fo inst_src 'ulimit -S -f 8; rc=0; out=$(foreign_owners "$T_FO/big.tar") || rc=$?; echo "$rc"; tail -1 <<<"$out"' testapp
+T_FO=$fo inst_src 'ulimit -S -f 8; rc=0; out=$(foreign_owners "$T_FO/big.tar") || rc=$?; echo "$rc"; tail -1 <<<"$out"'
 same "foreign_owners: a listing of 3000 entries, with no file writable: still refused" $'1\nand 2998 more' "$iout"
 rm -rf "$fo"
 
@@ -945,8 +1034,8 @@ fresh 'testpkg-bin 1.5.0-1'
 recipe_conflicts() {  # <the installed package's Conflicts With> <one .SRCINFO line>
   printf 'Name            : testpkg-bin\nProvides        : None\nConflicts With  : %s\n' "$1" >"$idb/qi/testpkg-bin"
   # shellcheck disable=SC2016 # expanded by the child bash
-  T_LINE=$2 inst_src 'mkpkg() { printf "pkgbase = testpkg\n\t%s\n\npkgname = testpkg\n" "$T_LINE"; }
-    rc=0; switch_conflicts "$HOME" || rc=$?; echo "$rc"' testpkg
+  T_LINE=$2 inst_src 'pkg=testpkg installed_name=testpkg-bin; mkpkg() { printf "pkgbase = testpkg\n\t%s\n\npkgname = testpkg\n" "$T_LINE"; }
+    rc=0; switch_conflicts "$HOME" || rc=$?; echo "$rc"'
   echo "$iout"
 }
 iarch=$(uname -m) iother=armv7h
@@ -1162,7 +1251,7 @@ rm -f "$idb/qi/testpkg-bin"
 # clears the row. A feed behind the panel names both versions.
 self_version=$(jq -r .version "$iplugin/manifest.json")
 # shellcheck disable=SC2016 # expanded by the child bash
-self_inst='feed_version() { echo "$T_FEED"; }; self_git_managed() { :; }; install_self'
+self_inst='feed_version() { echo "$T_FEED"; }; self_git_managed() { :; }; '$isetup'install_self'
 fresh
 shown self:omabump "$self_version" 0.0.1
 T_FEED=$self_version inst_src "$self_inst" self:omabump
@@ -1209,19 +1298,19 @@ export T_BEFORE=$before T_TARGET=$target
 
 self_reset
 # shellcheck disable=SC2016 # expanded by the child bash
-inst_src 'self_target=$T_TARGET; self_merge "$T_BEFORE" omarchy-plugin-validate; echo applied' self:omabump
+inst_src "$isetup"'self_target=$T_TARGET; self_merge "$T_BEFORE" omarchy-plugin-validate; echo applied' self:omabump
 same "self_merge: a validated release stays" "0|applied|$target" "$irc|$iout|$(git -C "$iplugin" rev-parse HEAD)"
 
 self_reset
 # shellcheck disable=SC2016 # expanded by the child bash
-STUB_VALIDATE=fail inst_src 'self_target=$T_TARGET; self_merge "$T_BEFORE" omarchy-plugin-validate' self:omabump
+STUB_VALIDATE=fail inst_src "$isetup"'self_target=$T_TARGET; self_merge "$T_BEFORE" omarchy-plugin-validate' self:omabump
 says "self_merge: a failed validation rolls back" "the new version failed validation; rolled back to ${before:0:12}, the old version is still installed"
 check "self_merge: back at the installed commit, the release's files gone" at_before
 
 # A merge that moved HEAD and then failed.
 self_reset
 # shellcheck disable=SC2016 # expanded by the child bash
-inst_src 'eval "$(declare -f self_git_held | sed "1s/^self_git_held/real_self_git_held/")"
+inst_src "$isetup"'eval "$(declare -f self_git_held | sed "1s/^self_git_held/real_self_git_held/")"
   self_git_held() { real_self_git_held "$@" || return; [[ $1 != merge ]]; }
   self_target=$T_TARGET; self_merge "$T_BEFORE" omarchy-plugin-validate' self:omabump
 says "self_merge: a merge that fails after moving HEAD rolls back" "git merge --ff-only $target failed; rolled back to ${before:0:12}, the old version is still installed"
@@ -1241,7 +1330,7 @@ chmod +x "$istubs/git"
 for sig in TERM INT HUP; do
   self_reset
   # shellcheck disable=SC2016 # expanded by the child bash
-  T_SIG=$sig inst_src 'T_KILL=$$; [[ $T_SIG == TERM ]] || { T_KILL=$(ps -o pgid= -p $$); T_KILL=-${T_KILL// /}; }; export T_KILL
+  T_SIG=$sig inst_src "$isetup"'T_KILL=$$; [[ $T_SIG == TERM ]] || { T_KILL=$(ps -o pgid= -p $$); T_KILL=-${T_KILL// /}; }; export T_KILL
     self_target=$T_TARGET; self_merge "$T_BEFORE" omarchy-plugin-validate; echo applied' self:omabump
   says "self_merge: $sig during the merge rolls back once it ends" "the update stopped part way; rolled back to ${before:0:12}, the old version is still installed"
   check "self_merge: back at the installed commit after $sig during the merge" at_before
@@ -1252,7 +1341,7 @@ rm -f "$istubs/git"
 # Stopped by a signal while validating: the rollback follows the validator.
 self_reset
 # shellcheck disable=SC2016 # expanded by the child bash
-STUB_VALIDATE=term inst_src 'self_target=$T_TARGET; self_merge "$T_BEFORE" omarchy-plugin-validate; echo applied' self:omabump
+STUB_VALIDATE=term inst_src "$isetup"'self_target=$T_TARGET; self_merge "$T_BEFORE" omarchy-plugin-validate; echo applied' self:omabump
 says "self_merge: a run stopped while validating rolls back" "the update stopped part way; rolled back to ${before:0:12}, the old version is still installed"
 check "self_merge: back at the installed commit after the signal" at_before
 refuse "self_merge: and the run is a failure" test "$irc" = 0
@@ -1269,7 +1358,7 @@ PATH=${PATH#*:} exec git "$@"   # the real git, after the stubs directory
 EOF
 chmod +x "$istubs/git"
 # shellcheck disable=SC2016 # expanded by the child bash
-STUB_VALIDATE=fail inst_src 'T_PGID=$(ps -o pgid= -p $$) && export T_PGID=${T_PGID// /}
+STUB_VALIDATE=fail inst_src "$isetup"'T_PGID=$(ps -o pgid= -p $$) && export T_PGID=${T_PGID// /}
   self_target=$T_TARGET; self_merge "$T_BEFORE" omarchy-plugin-validate' self:omabump
 rm -f "$istubs/git"
 says "self_merge: Ctrl-C during the rollback does not cut it short" "the new version failed validation; rolled back to ${before:0:12}, the old version is still installed"
@@ -1282,7 +1371,7 @@ check "self_merge: the reset finished under Ctrl-C" at_before
 for sig in INT HUP; do
   self_reset
   # shellcheck disable=SC2016 # expanded by the child bash
-  STUB_VALIDATE=fail T_SIG=$sig inst_src 'T_PGID=$(ps -o pgid= -p $$) && T_PGID=${T_PGID// /}
+  STUB_VALIDATE=fail T_SIG=$sig inst_src "$isetup"'T_PGID=$(ps -o pgid= -p $$) && T_PGID=${T_PGID// /}
     eval "$(declare -f self_git_held | sed "1s/^self_git_held/real_self_git_held/")"
     self_git_held() { [[ $1 != clean ]] || kill -s "$T_SIG" -- "-$T_PGID"; real_self_git_held "$@"; }
     self_target=$T_TARGET; self_merge "$T_BEFORE" omarchy-plugin-validate' self:omabump

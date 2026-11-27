@@ -471,6 +471,24 @@ same "--wait: a wait that gives up exits Model.lockBusyExit, saying no check ran
 same "--wait: and leaves status.json as it was" "$before" "$(md5sum <"$run_state/status.json")"
 rm -rf "$run_dir/busy" "$run_dir/held" "$run_dir/go" "$run_dir/wait.err" "$run_dir/busy.err"
 
+# A jq that fails, as a killed one does, on the read of updateBlocked alone
+# (update_blocked's filter, which every installed row reads): the check
+# ends there, failed, as that read under set -e ended it, and status.json
+# says so; no row reads as one whose Update is on.
+mkdir -p "$run_dir/jq-killed"
+printf '#!/bin/bash\nfor a; do [[ $a == %q ]] && exit 137; done\nexec %q "$@"\n' '.updateBlocked // ""' "$(command -v jq)" \
+  >"$run_dir/jq-killed/jq"
+chmod +x "$run_dir/jq-killed/jq"
+env "${run_env[@]}" PATH="$run_dir/jq-killed:$run_dir/bin:$PATH" timeout -k 5 120 "$root/bin/omabump-check" --no-notify \
+  >/dev/null 2>"$run_dir/jq.err"; rc=$?
+same "updateBlocked unread: the check fails with jq's status, and status.json says it stopped early" \
+  '137|The check stopped early (exit 137)|false|0' \
+  "$rc|$(run_status '"\(.runError)|\(.checking)|\([.apps[] | select(.checking == true)] | length)"')"
+same "updateBlocked unread: stderr names the row" 'claude-desktop' \
+  "$(grep -o 'could not read the updateBlocked of [a-z-]*' "$run_dir/jq.err" | sed 's/.* //')"
+rm -rf "$run_dir/jq-killed" "$run_dir/jq.err"
+check_run
+
 # --- status.json's shape: schemaVersion, the switch, old scratch files ---------------------
 
 # A vendor package installed under another name (foo-old for foo-bin), its
@@ -493,6 +511,8 @@ foo_app 2.0
 check_run
 same "switch: with a newer version Update switches, the note has no switch clause" 'foo-old|true|true|false|' "$(run_status "$foo_row")"
 same "status.json: every row has unchecked" 0 "$(run_status '[.apps[] | select(.unchecked | type != "boolean")] | length')"
+same "status.json: a check's rows are read (unread false) and held by no hold (holdClause empty)" 0 \
+  "$(run_status '[.apps[] | select(.unread != false or .holdClause != "")] | length')"
 # The same row with its Update turned off in apps.json: the update still
 # shows, the route does not, and the row says why.
 jq -c '.[0].updateBlocked = "a known problem, see x#1"' "$run_dir/config/omarchy/omabump/apps.json" >"$run_dir/blocked.json"
@@ -589,7 +609,7 @@ loc_status() {
     | .apps |= map({label: "", installedName: "", installed: "", latest: "", versionFrom: "feed", updateAvailable: false,
     installable: true, error: "", note: "", stale: false, switchable: false, recipe: "", request: "",
     muted: false, skipped: false, skipEnded: "", unchecked: false, held: false, omarchyUpdate: false, blocked: false, selfUpdating: false,
-    icon: "", iconLight: ""} + .)' \
+    icon: "", iconLight: "", holdClause: "", unread: false} + .)' \
     >"$run_dir/fixture.json" <<'JSON'
 {"schemaVersion": 1, "checkedAt": "2026-01-01T00:10:00+00:00", "checking": false, "startedAt": "2026-01-01T00:09:00+00:00",
  "inventoryAt": "2026-01-01T00:09:00+00:00", "runError": "", "omarchyPkgs": {"commit": "", "following": false, "error": "", "note": ""},
@@ -598,7 +618,7 @@ loc_status() {
    "skipped": true, "note": "Recipe from omarchy-pkgs 0123456789ab"},
   {"pkg": "loc-b", "source": "vendor-pkg", "installedName": "loc-b", "installed": "2.0-1", "latest": "2.0"},
   {"pkg": "loc-held", "source": "omarchy", "installedName": "loc-held", "installed": "1.0-1", "latest": "1.1", "updateAvailable": true,
-   "installable": false, "held": true,
+   "installable": false, "held": true, "holdClause": "omarchy-pkgs holds new releases for 24 h, Update from Jan 2 00:09",
    "note": "omarchy-pkgs holds new releases for 24 h, Update from Jan 2 00:09; Recipe from omarchy-pkgs 0123456789ab"},
   {"pkg": "loc-gone", "source": "indicator", "installedName": "loc-gone", "installed": "3.0-1", "latest": "3.0", "installable": false,
    "note": "No supported install path"},
@@ -646,6 +666,12 @@ same "--local: installed at the newest known version: no update, no skip, and no
   '0|1.2-1|false|false|Recipe from omarchy-pkgs 0123456789ab' "$rc|$(loc_row loc-a '"\(.installed)|\(.updateAvailable)|\(.skipped)|\(.note)"')"
 same "--local: a held release once installed: no hold, Update back, the hold's clause gone" \
   'false|false|true|Recipe from omarchy-pkgs 0123456789ab' "$(loc_row loc-held '"\(.updateAvailable)|\(.held)|\(.installable)|\(.note)"')"
+same "--local: and its holdClause with it" '' "$(loc_row loc-held .holdClause)"
+# A held row 0.1.17 wrote has no holdClause: its note says the clause.
+jq '.apps |= map(if .pkg == "loc-held" then del(.holdClause, .unread) else . end)' "$run_dir/fixture.json" >"$run_state/status.json"
+local_run
+same "--local: a held row from before holdClause, its release installed: the clause goes all the same" \
+  'false|true|Recipe from omarchy-pkgs 0123456789ab|' "$(loc_row loc-held '"\(.held)|\(.installable)|\(.note)|\(.holdClause)"')"
 same "--local: an app no longer installed loses its row" '' "$(loc_row loc-gone .pkg)"
 same "--local: a row that did not move stays as it was" "$(loc_was loc-b)" "$(loc_row loc-b 'tojson')"
 # The panel drops a skip from the settings only on skipEnded.
@@ -667,8 +693,8 @@ same "--local: installed past the newest known version: not checked yet, no upda
   "$rc|$(loc_row loc-a '"\(.installed)|\(.updateAvailable)|\(.installable)|\(.unchecked)|\(.note)"')"
 same "--local: and the newest known version stays for the check" 1.2 "$(loc_row loc-a .latest)"
 local_run; rc=$?
-same "--local: the next refresh, nothing moved: the row stays unread, no second check asked" "0|true|Not checked yet" \
-  "$rc|$(loc_row loc-a '"\(.unchecked)|\(.note)"')"
+same "--local: the next refresh, nothing moved: the row stays unread, no second check asked" "0|true|Not checked yet|true" \
+  "$rc|$(loc_row loc-a '"\(.unchecked)|\(.note)|\(.unread)"')"
 same "--local: and makes no notified.json or seen.json" '' \
   "$(find "$run_state" -maxdepth 1 \( -name notified.json -o -name seen.json \) -printf '%f\n')"
 
@@ -701,9 +727,14 @@ local_run; rc=$?
 same "--local: an app installed since the check: an unchecked row, and a check asked for" \
   "$local_full|Loc New|indicator|loc-new|5.0-1||false|false|true|Not checked yet|assets/new.svg" \
   "$rc|$(loc_row loc-new '"\(.label)|\(.source)|\(.installedName)|\(.installed)|\(.latest)|\(.updateAvailable)|\(.installable)|\(.unchecked)|\(.note)|\(.icon)"')"
+same "--local: and it is unread, until a check reads it" true "$(loc_row loc-new .unread)"
 same "--local: the new row in table order" 'loc-a loc-b loc-held loc-gone loc-new mise:t mise:u mise:k self:omabump' \
   "$(run_status '[.apps[].pkg] | join(" ")')"
-same "--local: the new row has every field a check writes" "$(jq -c '.apps[0] | keys' "$run_dir/fixture.json")" "$(loc_row loc-new 'keys | tojson')"
+# The fixture's rows are a 0.1.17 check's, without the route's section and
+# switchRoute; a row this release writes has them too.
+same "--local: the new row has every field a check writes" \
+  "$(jq -c '.apps[0] | keys + ["section", "switchRoute"] | sort' "$run_dir/fixture.json")" "$(loc_row loc-new 'keys | tojson')"
+same "--local: and its route's section and switch (indicator)" "desktop false" "$(loc_row loc-new '"\(.section) \(.switchRoute)"')"
 
 # Icons updated in apps.json (a plugin update, a user override) land on
 # existing rows on the next local refresh without asking for a full check.
@@ -857,7 +888,7 @@ rm -f "$run_state/status.json"
 local_run; rc=$?
 same "--local: no status.json: a check asked for, nothing written" "$local_nostatus|no file" \
   "$rc|$([[ -e $run_state/status.json ]] && echo file || echo no file)"
-for bad in '{"apps": []}' '{"schemaVersion": 1, "checking": true, "apps": []}' '{"schemaVersion": 1, "apps": [{"pkg": 1}]}' 'not json'; do
+for bad in '{"apps": []}' '{"schemaVersion": 2, "apps": []}' '{"schemaVersion": 1, "checking": true, "apps": []}' '{"schemaVersion": 1, "apps": [{"pkg": 1}]}' 'not json'; do
   printf '%s\n' "$bad" >"$run_state/status.json"
   local_run; rc=$?
   same "--local: from $bad: a check asked for, the file as it was" "$local_nostatus|$bad" "$rc|$(cat "$run_state/status.json")"
@@ -911,6 +942,50 @@ same "and a local refresh after it keeps that" true "$(run_status .retry)"
 loc_status
 same "while a check runs, inventoryAt stays the last one's" '2026-01-01T00:09:00+00:00' "$(status_mid_run .inventoryAt)"
 same "--local and the checks around it leave no scratch files" '' "$(leftovers)"
+
+# TERM while jq makes the new status.json: bash runs the trap once jq is
+# done, before the rename, so the run stops on its trap and the file it
+# was making never takes status.json's place. A jq first on PATH sends TERM
+# to the run on its first status write (the one with --slurpfile prevs),
+# then works as asked; on a later one (the dying check's) it first copies
+# status.json as it then is. The run notes its pid before it execs the
+# check, so the TERM goes to the check's own shell.
+mkdir -p "$run_dir/jq-term"
+printf '#!/bin/bash\nfor a; do\n  [[ $a == prevs ]] || continue\n  if [[ -e $OMABUMP_TEST_TERM.sent ]]; then cp "$OMABUMP_TEST_STATUS" "$OMABUMP_TEST_TERM.seen"\n  else : >"$OMABUMP_TEST_TERM.sent"; kill -TERM "$(cat "$OMABUMP_TEST_TERM")"; fi\n  break\ndone\nexec %q "$@"\n' \
+  "$(command -v jq)" >"$run_dir/jq-term/jq"
+chmod +x "$run_dir/jq-term/jq"
+term_in_write() {
+  rm -f "$run_dir/term.pid" "$run_dir/term.pid.sent" "$run_dir/term.pid.seen"
+  env "${run_env[@]}" PATH="$run_dir/jq-term:$run_dir/bin:$PATH" OMABUMP_TEST_TERM="$run_dir/term.pid" \
+    OMABUMP_TEST_STATUS="$run_state/status.json" OMABUMP_TEST_PKGS="$run_dir/pkgs" OMABUMP_TEST_MISE_LS="$run_dir/mise-ls.json" \
+    timeout -k 5 120 bash -c 'echo $$ >"$0"; exec "$@"' "$run_dir/term.pid" "$root/bin/omabump-check" --no-notify "$@" \
+    >/dev/null 2>&1
+}
+loc_status
+loc_tools t=1.1 u=2.1 k=1.0
+before=$(loc_md5)
+term_in_write --local; rc=$?
+same "--local: TERM while jq writes status.json: the run ends on its trap, status.json as it was" \
+  "143|yes|$before" "$rc|$([[ -e $run_dir/term.pid.sent ]] && echo yes)|$(loc_md5)"
+loc_status
+before=$(loc_md5)
+term_in_write; rc=$?
+same "a check: TERM while jq writes its first rows: the dying run's write finds status.json as it was" \
+  "143|$before" "$rc|$(md5sum <"$run_dir/term.pid.seen" 2>&1)"
+same "a check: and that write says the run stopped early" 'The check stopped early (exit 143)|false' \
+  "$(run_status '"\(.runError)|\(.checking)"')"
+same "TERM in a status write leaves no scratch files" '' "$(leftovers)"
+# A jq killed on every status write: the run fails with its status, and the
+# dying run's write, in the EXIT trap where set -e is off, puts no empty
+# file in status.json's place either.
+printf '#!/bin/bash\nfor a; do [[ $a == prevs ]] && exit 137; done\nexec %q "$@"\n' "$(command -v jq)" >"$run_dir/jq-term/jq"
+loc_status
+before=$(loc_md5)
+term_in_write; rc=$?
+same "a check whose status writes all fail: jq's status, status.json as it was" "137|$before" "$rc|$(loc_md5)"
+same "and no scratch files" '' "$(leftovers)"
+rm -rf "$run_dir/jq-term" "$run_dir/term.pid" "$run_dir/term.pid.sent" "$run_dir/term.pid.seen"
+
 rm -f "$run_dir/config/omarchy/omabump/apps.json" "$run_state/status.json" "$run_dir/fixture.json" "$run_dir/pkgs" \
   "$run_dir/mise-ls.json" "$run_dir/held" "$run_dir/go"
 
@@ -943,6 +1018,10 @@ before=$(md5sum <"$run_state/status.json")
 same "--if-due: within the interval less 30 s of the last start: exit 76, no mise call, nothing written" \
   "76|none|false|$before|no attempt" \
   "$(due_run)|$(md5sum <"$run_state/status.json")|$([[ -e $due_attempt ]] && echo attempt || echo no attempt)"
+# A file of another schemaVersion (status_load) is no last check to count
+# from: a check is due.
+due_status -3500 '{"schemaVersion": 2}'
+same "--if-due: a status.json of another schemaVersion: a check runs" '0|ran|false' "$(due_run)"
 due_status -3580
 same "--if-due: past it, a check runs, no retry" '0|ran|false' "$(due_run)"
 same "--if-due: and notes its start outside the leftover sweep" '' "$(leftovers)"

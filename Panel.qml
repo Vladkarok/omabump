@@ -38,16 +38,14 @@ Panel {
   readonly property var shellApi: barApi ? barApi.shell : null
 
   readonly property var apps: checker.apps
-  // Desktop apps first, then the mise CLIs: the keyboard cursor walks
-  // this order across both sections.
-  readonly property var desktopApps: apps.filter(function(app) { return app.source !== "mise" && app.source !== "self" })
-  readonly property var cliApps: apps.filter(function(app) { return app.source === "mise" })
-  // Omabump's own row, while a newer release exists or its check failed;
-  // hidden while current.
-  readonly property var pluginApps: apps.filter(function(app) {
-    return app.source === "self" && (app.updateAvailable === true || String(app.error || "") !== "")
-  })
-  readonly property var orderedApps: desktopApps.concat(cliApps).concat(pluginApps)
+  // Desktop apps, the mise CLIs, then Omabump's own row while it has
+  // something to say (Model.panelLayout): the keyboard cursor walks
+  // orderedApps across the sections.
+  readonly property var layout: Model.panelLayout(apps)
+  readonly property var desktopApps: layout.desktop
+  readonly property var cliApps: layout.cli
+  readonly property var pluginApps: layout.plugin
+  readonly property var orderedApps: layout.rows
   // The row Repeaters build rows only while the panel shows, its fade-out
   // included. A check replaces apps once per row it writes and each time
   // every row is rebuilt, tooltips and all; otherwise that happened in
@@ -77,10 +75,10 @@ Panel {
     { key: "barIconOnlyWithUpdates", fallback: false, label: "Bar icon only when updates exist", description: "It also shows while a check fails" },
     { key: "notify", fallback: true, label: "Notify on new releases", description: "" }
   ]
-  readonly property int intervalRow: 0
-  // The "Muted: …" line with its Clear button, after the toggles, when any.
-  readonly property int quietRow: settingRows.length + 1
   readonly property string quietText: Model.quietText(apps, checker.mutedApps, checker.skippedVersions)
+  // Which row is which: the interval, the toggles, then the "Muted: …" line
+  // with its Clear button, while it lists any (Model.settingsLayout).
+  readonly property var settingsLayout: Model.settingsLayout(settingRows.length, quietText !== "")
   readonly property var intervalChoices: [300, 900, 1800, 3600, 21600, 86400]
 
   // "checked 3 min ago" reads this instead of Date.now() so it keeps moving
@@ -90,19 +88,13 @@ Panel {
 
   function refreshNow() { checker.refresh() }
 
-  // IPC refresh: anything on the session bus can call it, so it may not keep
-  // this shell checking back to back. A check that starts after the call is
-  // already on its way (queued, or waiting for another check to end): that
-  // one answers it. While this shell's own check for a Refresh runs, or for
-  // a minute after its last check ended with none running now, it is
-  // throttled and starts nothing. So it queues one more only behind the
-  // timer's check or one for a Show mise tools change, and during
-  // another's (a terminal's, another monitor's) it runs after that one, as
-  // Refresh does.
+  // IPC refresh, throttled (Model.ipcRefreshAction): "ok" when a check that
+  // starts after the call is on its way or starts now, else "throttled".
   function ipcRefresh() {
-    if (checker.refreshPending) return "ok"
-    if (checker.refreshRunning || !checker.checking && Date.now() - checker.lastCheckEndMs < 60000) return "throttled"
-    checker.refresh()
+    var action = Model.ipcRefreshAction(checker.refreshPending, checker.refreshRunning, checker.checking,
+      Date.now(), checker.lastCheckEndMs)
+    if (action === "throttled") return "throttled"
+    if (action === "refresh") checker.refresh()
     return "ok"
   }
 
@@ -152,7 +144,7 @@ Panel {
   }
 
   function moveCursor(dy) {
-    if (settingsOpen) settingIndex = Model.clamp(settingIndex + dy, 0, settingRows.length + (quietText !== "" ? 1 : 0))
+    if (settingsOpen) settingIndex = Model.clamp(settingIndex + dy, 0, settingsLayout.lastRow)
     else if (orderedApps.length > 0) {
       rowIndex = Model.clamp(rowIndex + dy, 0, orderedApps.length - 1)
       cursorMoved = true
@@ -160,27 +152,25 @@ Panel {
     ensureCursorVisible()
   }
 
-  function rowItem(index) {
-    if (index < desktopApps.length) return desktopRepeater.itemAt(index)
-    if (index < desktopApps.length + cliApps.length) return cliRepeater.itemAt(index - desktopApps.length)
-    return pluginRepeater.itemAt(index - desktopApps.length - cliApps.length)
-  }
-
   function cursorItem() {
-    if (!settingsOpen) return rowItem(rowIndex)
-    if (settingIndex === intervalRow) return intervalSurface
-    if (settingIndex === quietRow) return quietSurface
-    return settingsRepeater.itemAt(settingIndex - 1)
+    if (settingsOpen) {
+      if (settingIndex === settingsLayout.intervalRow) return intervalSurface
+      if (settingIndex === settingsLayout.quietRow) return quietSurface
+      return settingsRepeater.itemAt(settingIndex - settingsLayout.toggleOffset)
+    }
+    // Model.rowPlace names the section; each has its own Repeater.
+    var place = Model.rowPlace(layout, rowIndex)
+    var repeaters = { desktop: desktopRepeater, cli: cliRepeater, plugin: pluginRepeater }
+    return repeaters[place.section].itemAt(place.index)
   }
 
   // The section whose first row holds the cursor: its header comes into
   // view with that row.
   function cursorSection() {
     if (settingsOpen) return null
-    if (rowIndex === 0 && desktopApps.length > 0) return desktopSection
-    if (rowIndex === desktopApps.length && cliApps.length > 0) return cliSection
-    if (rowIndex === desktopApps.length + cliApps.length && pluginApps.length > 0) return pluginSection
-    return null
+    var place = Model.rowPlace(layout, rowIndex)
+    var sections = { desktop: desktopSection, cli: cliSection, plugin: pluginSection }
+    return place.first ? sections[place.section] : null
   }
 
   // Keeps the keyboard cursor on screen: on open, back from the settings
@@ -242,16 +232,16 @@ Panel {
   function settingOn(row) { return Model.boolSetting(root.settings, row.key, row.fallback) }
 
   function activateSetting() {
-    if (settingIndex === intervalRow) {
+    if (settingIndex === settingsLayout.intervalRow) {
       intervalDropdown.open()
       return
     }
     // The quiet row is hidden while it has nothing to list.
-    if (settingIndex === quietRow) {
+    if (settingIndex === settingsLayout.quietRow) {
       if (quietText !== "") clearQuiet()
       return
     }
-    var row = settingRows[settingIndex - 1]
+    var row = settingRows[settingIndex - settingsLayout.toggleOffset]
     setSetting(row.key, !settingOn(row))
   }
 
@@ -308,12 +298,9 @@ Panel {
     return path !== "" ? Qt.resolvedUrl(path) : ""
   }
 
-  // Like the system update icon, it can stay out of the bar until there is
-  // something to install. A failed check shows it too, or a broken check
-  // would be invisible (a muted row's failure does not, as mute promises).
-  // While the panel is open (IPC open/toggle) it shows, so the panel has an
-  // anchor.
-  visible: !iconOnlyWithUpdates || updateCount > 0 || checker.checkFailed || checker.errorCount > 0 || opened
+  // Out of the bar until there is something to install, when the settings
+  // say so (Model.barIconShown).
+  visible: Model.barIconShown(checker.summary, iconOnlyWithUpdates, opened)
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
@@ -346,7 +333,9 @@ Panel {
   }
   // Clear, or a settings change from elsewhere, can leave the quiet line
   // empty, and then it hides: the settings cursor must not stay on it.
-  onQuietTextChanged: if (quietText === "") settingIndex = Model.clamp(settingIndex, 0, settingRows.length)
+  // Asked afresh: the settingsLayout binding may not have caught up yet.
+  onQuietTextChanged: if (quietText === "")
+    settingIndex = Model.clamp(settingIndex, 0, Model.settingsLayout(settingRows.length, false).lastRow)
 
   Main {
     id: checker
@@ -609,7 +598,7 @@ Panel {
                     required property int index
                     width: parent.width
                     app: modelData
-                    rowIndex: index
+                    rowIndex: root.layout.offsets.desktop + index
                   }
                 }
               }
@@ -646,7 +635,7 @@ Panel {
                     required property int index
                     width: parent.width
                     app: modelData
-                    rowIndex: root.desktopApps.length + index
+                    rowIndex: root.layout.offsets.cli + index
                   }
                 }
               }
@@ -685,7 +674,7 @@ Panel {
                     required property int index
                     width: parent.width
                     app: modelData
-                    rowIndex: root.desktopApps.length + root.cliApps.length + index
+                    rowIndex: root.layout.offsets.plugin + index
                   }
                 }
               }
@@ -701,7 +690,7 @@ Panel {
               // switch would be.
               BorderSurface {
                 id: intervalSurface
-                readonly property bool hot: root.cursorActive && root.settingIndex === root.intervalRow
+                readonly property bool hot: root.cursorActive && root.settingIndex === root.settingsLayout.intervalRow
                 width: parent.width
                 implicitHeight: Math.max(54, intervalTitle.implicitHeight + Style.spacing.huge)
                 radius: Style.cornerRadius
@@ -711,7 +700,7 @@ Panel {
                 HoverHandler {
                   onHoveredChanged: if (hovered) {
                     root.cursorActive = true
-                    root.settingIndex = root.intervalRow
+                    root.settingIndex = root.settingsLayout.intervalRow
                   }
                 }
 
@@ -763,14 +752,14 @@ Panel {
                   label: modelData.label
                   description: modelData.description
                   checked: root.settingOn(modelData)
-                  hasCursor: root.cursorActive && root.settingIndex === index + 1
+                  hasCursor: root.cursorActive && root.settingIndex === root.settingsLayout.toggleOffset + index
                   titleSize: Style.font.body
                   foreground: root.foreground
                   fontFamily: root.fontFamily
                   onHovered: function(on) {
                     if (!on) return
                     root.cursorActive = true
-                    root.settingIndex = index + 1
+                    root.settingIndex = root.settingsLayout.toggleOffset + index
                   }
                   onClicked: root.setSetting(modelData.key, !root.settingOn(modelData))
                 }
@@ -780,7 +769,7 @@ Panel {
               // (m, K) or all at once here.
               BorderSurface {
                 id: quietSurface
-                readonly property bool hot: root.cursorActive && root.settingIndex === root.quietRow
+                readonly property bool hot: root.cursorActive && root.settingIndex === root.settingsLayout.quietRow
                 visible: root.quietText !== ""
                 width: parent.width
                 implicitHeight: Math.max(54, quietLabel.implicitHeight + Style.spacing.huge)
@@ -791,7 +780,7 @@ Panel {
                 HoverHandler {
                   onHoveredChanged: if (hovered) {
                     root.cursorActive = true
-                    root.settingIndex = root.quietRow
+                    root.settingIndex = root.settingsLayout.quietRow
                   }
                 }
 
@@ -937,7 +926,8 @@ Panel {
           x: (parent.width - fallbackInk.tightBoundingRect.width) / 2 - fallbackInk.tightBoundingRect.x
           y: (parent.height - fallbackInk.tightBoundingRect.height) / 2 - fallbackInk.tightBoundingRect.y - baselineOffset
           visible: mark.status !== Image.Ready
-          text: !appRow.app ? "" : appRow.app.source === "mise" ? root.cliMark : appRow.app.source === "self" ? root.glyph : root.appMark
+          text: !appRow.app ? "" : Model.rowSection(appRow.app) === "cli" ? root.cliMark
+            : Model.rowSection(appRow.app) === "plugin" ? root.glyph : root.appMark
           color: root.foreground
           font.family: root.fontFamily
           font.pixelSize: Style.font.icon

@@ -277,6 +277,16 @@ function staleCount(apps, muted) {
   return count(apps, function(app) { return app.stale === true && !isMuted(muted, app) })
 }
 
+// Whether the bar shows its icon (Panel.qml's visible), s being Main.qml's
+// summary. Like the system update icon, it can stay out of the bar until
+// there is something to install (onlyWithUpdates). A failed check shows it
+// too, or a broken check would be invisible (a muted row's failure does
+// not, as mute promises). While the panel is open (IPC open/toggle) it
+// shows, so the panel has an anchor.
+function barIconShown(s, onlyWithUpdates, panelOpen) {
+  return !onlyWithUpdates || s.updateCount > 0 || s.checkFailed || s.errorCount > 0 || !!panelOpen
+}
+
 // --- status.json -----------------------------------------------------------------
 
 // status.json as the widget reads it, or null while it is empty. Throws on
@@ -286,6 +296,8 @@ function parseStatus(text, showMise) {
   var parsed = JSON.parse(String(text))
   var file = parsed && typeof parsed === "object" ? parsed : {}
   // A check that ran before Show mise tools was turned off still lists them.
+  // The rows status_apps in bin/omabump-common lists, but for an array
+  // row, which no checker writes (tests/model.sh).
   var apps = (Array.isArray(file.apps) ? file.apps : []).filter(function(app) {
     return !!app && typeof app === "object" && (showMise || app.source !== "mise")
   })
@@ -315,6 +327,26 @@ var pollSec = 60
 
 // --- this shell's checks ------------------------------------------------------------
 
+// How long after this shell's last check ended an IPC refresh starts none.
+var ipcThrottleMs = 60000
+
+// What an IPC refresh does (Panel.qml's ipcRefresh). Anything on the
+// session bus can call it, so it may not keep this shell checking back to
+// back. "pending": a check that starts after the call is already on its
+// way (queued, or waiting for another check to end), and that one answers
+// it. "throttled": this shell's own check for a Refresh runs (running), or
+// its last check ended (lastEndMs) less than ipcThrottleMs ago with none
+// running now; it starts nothing. Else "refresh", as Refresh does: queued
+// behind the timer's check or one for a Show mise tools change, and after
+// another's (a terminal's, another monitor's) when one runs. pending,
+// running and checking are Main.qml's refreshPending, refreshRunning and
+// checking.
+function ipcRefreshAction(pending, running, checking, nowMs, lastEndMs) {
+  if (pending) return "pending"
+  if (running || !checking && nowMs - lastEndMs < ipcThrottleMs) return "throttled"
+  return "refresh"
+}
+
 // What a run that never took the lock exits with: Main.qml's waitScript
 // when the lock stayed held past its wait, and bin/omabump-check when it
 // found the lock taken (or, with --wait, held past its own wait).
@@ -323,6 +355,50 @@ var lockBusyExit = 75
 // What bin/omabump-check --if-due exits with when no check is due
 // (not_due_exit there): it ran nothing and wrote nothing.
 var notDueExit = 76
+
+// The words a check's run says on stdout (Main.qml's checkProcess):
+// waitScript's that its wait is over and the check starts, and
+// bin/omabump-check --if-due's that a check is due and runs.
+var startedWord = "started"
+var dueWord = "due"
+
+// A check's overall deadline: checkDeadlineSec, then TERM, then KILL
+// killAfterSec later (timeout -k). Other waiters count on a check ending by
+// then: the installer's refresh (bin/omabump-check --wait) and another
+// bar's waitScript wait lockWaitSec for it, which is longer. Every wait for
+// the lock comes before the deadline (waitScript), so it bounds the check
+// alone, and a wait that gives up says so (lockBusyExit) instead of ending
+// in the deadline's kill.
+var checkDeadlineSec = 600
+var killAfterSec = 10
+// How long a run waits for a check holding the lock (waitScript): as long
+// as the checker's own --wait (flock -w in bin/omabump-check).
+var lockWaitSec = 660
+
+// What a run that waits for the lock runs before the checker's deadline
+// (checkCommand): $1 the checker's lock, $2 how long to wait for it, then
+// the command. It takes the lock and lets go at once, says startedWord on
+// stdout and runs the command. A lock still held after the wait is left
+// be, and the script exits lockBusyExit having run nothing; a lock file
+// that cannot be opened (no check has made its directory yet) has no check
+// behind it. With today's values:
+//   flock -E 75 -w "$2" "$1" true 2>/dev/null; (( $? == 75 )) && exit 75; echo started; shift 2; exec "$@"
+var waitScript = "flock -E " + lockBusyExit + ' -w "$2" "$1" true 2>/dev/null; (( $? == ' + lockBusyExit
+  + " )) && exit " + lockBusyExit + "; echo " + startedWord + '; shift 2; exec "$@"'
+
+// The command line of this shell's check (Main.qml's runCheck), under the
+// deadline. o.wait: wait for a check that holds lockPath first
+// (waitScript), instead of leaving at once on it; the checker itself never
+// gets --wait. o.ifDue: run only when a check is due, by o.intervalSec
+// (--if-due). o.notify and o.showMise false pass --no-notify and --no-mise.
+function checkCommand(checkScript, lockPath, o) {
+  var command = ["timeout", "-k", String(killAfterSec), String(checkDeadlineSec), checkScript]
+  if (!o.notify) command.push("--no-notify")
+  if (!o.showMise) command.push("--no-mise")
+  if (o.ifDue) command.push("--if-due", "--interval", String(o.intervalSec))
+  if (o.wait) command = ["bash", "-c", waitScript, "omabump-wait", lockPath, String(lockWaitSec)].concat(command)
+  return command
+}
 
 // What a check's exit means for this shell (Main.qml's onExited). Both
 // "notRun" and "left" ran nothing. "notRun": waitScript gave up on the
@@ -381,7 +457,9 @@ function showMiseRun(settingsReady, timerTicked, running) {
 // omarchy-pkgs could not be fetched, or mise could not list its tools. A
 // failure only muted rows share (the omarchy-pkgs fetch with every omarchy
 // row muted) signals nothing, like their own failures. f holds checkError,
-// runError, pkgsError and miseError.
+// runError, pkgsError and miseError. With errorCount, the rule the checker
+// retries a failed check by (check_failed in bin/omabump-common), save
+// this shell's own checkError: tests/model.sh sets the two side by side.
 function failureText(f, apps, muted) {
   if (f.checkError !== "") return f.checkError
   if (f.runError !== "") return f.runError
@@ -401,6 +479,18 @@ var localIntervalSec = 300
 var localFullExit = 80
 var localNoStatusExit = 81
 var localRetryExit = 82
+
+// A local refresh's deadline, then KILL killAfterSec later: a check that
+// finds one holding the lock waits for it as long as that (flock -w in
+// bin/omabump-check).
+var localDeadlineSec = 120
+
+// The command line of a local refresh (Main.qml's localRefresh).
+function localCommand(checkScript, showMise) {
+  var command = ["timeout", "-k", String(killAfterSec), String(localDeadlineSec), checkScript, "--local"]
+  if (!showMise) command.push("--no-mise")
+  return command
+}
 
 // What a local refresh's exit means (Main.qml's localProcess): "done";
 // "full", a row changed in a way only a check reads, or there is no
@@ -426,13 +516,18 @@ function localWantsCheck(outcome, checkRunning) {
   return outcome === "full" && !checkRunning
 }
 
+// The slack every bar allows a run that started at about the same time
+// (due_slack_sec and run_recent in bin/omabump-common, which decide when a
+// check is due).
+var dueSlackSec = 30
+
 // Whether the timer's local refresh is due. Every monitor's bar runs one,
-// so installed versions read less than an interval (less 30 s of slack)
+// so installed versions read less than an interval (less dueSlackSec)
 // ago, by another bar's refresh or by a check (inventoryAt), are recent
 // enough. A time ahead of the clock proves nothing.
 function localDue(nowMs, inventoryMs, intervalSec) {
   var age = nowMs - inventoryMs
-  return !(inventoryMs > 0 && age >= 0 && age < (intervalSec - 30) * 1000)
+  return !(inventoryMs > 0 && age >= 0 && age < (intervalSec - dueSlackSec) * 1000)
 }
 
 // --- rows ------------------------------------------------------------------------
@@ -443,6 +538,17 @@ function localDue(nowMs, inventoryMs, intervalSec) {
 function selfUpdating(app) { return !!app && app.selfUpdating === true }
 
 function updatable(app) { return !!app && app.updateAvailable === true && app.installable === true && !selfUpdating(app) }
+
+// Whether the row's route installs a package by the row's pkg, and so can
+// replace one installed under another name: the checker's switchRoute
+// (route_table in bin/omabump-common). A row a checker of 0.1.17 or
+// earlier wrote has no such field; the routes of then that could are
+// omarchy and vendor-pkg.
+function switchRoute(app) {
+  if (!app) return false
+  if (typeof app.switchRoute === "boolean") return app.switchRoute
+  return app.source === "omarchy" || app.source === "vendor-pkg"
+}
 
 // Installed under another package name at a version the canonical package
 // matches (the checker's switchable): Switch replaces it.
@@ -499,7 +605,7 @@ function cursorIndex(rows, pkg, moved, muted, skipped) {
 // exists, Switch does it at the same one. The checker writes the fields
 // and the widget says it (status.json schemaVersion 1).
 function switchClause(app) {
-  if (!app || (app.source !== "omarchy" && app.source !== "vendor-pkg") || app.installable !== true) return ""
+  if (!app || !switchRoute(app) || app.installable !== true) return ""
   var name = String(app.installedName || "")
   if (name === "" || name === app.pkg) return ""
   if (app.updateAvailable === true) return "Installed as " + name + ", Update switches to " + app.pkg
@@ -620,6 +726,70 @@ function iconPath(app, lightSurface) {
 function luminance(c) {
   function channel(v) { return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4) }
   return 0.2126 * channel(c.r) + 0.7152 * channel(c.g) + 0.0722 * channel(c.b)
+}
+
+// --- the panel's layout ------------------------------------------------------------
+
+// Omabump's own row (the plugin section's, rowSection) shows while a newer
+// release exists or its check failed; it hides while current.
+function selfRowShown(app) {
+  return !!app && rowSection(app) === "plugin" && (app.updateAvailable === true || String(app.error || "") !== "")
+}
+
+// The row's section: "desktop", "cli" (a mise CLI) or "plugin" (Omabump
+// itself), the checker's section (route_table in bin/omabump-common). A
+// row a checker of 0.1.17 or earlier wrote has no such field, and its
+// source says it.
+var rowSections = ["desktop", "cli", "plugin"]
+function rowSection(app) {
+  if (!app) return "desktop"
+  if (rowSections.indexOf(app.section) !== -1) return app.section
+  return app.source === "mise" ? "cli" : app.source === "self" ? "plugin" : "desktop"
+}
+
+// The panel's rows by section (Panel.qml's three Repeaters): desktop apps,
+// then the mise CLIs, then Omabump's own row (selfRowShown). rows is all of
+// them in that order, the one the keyboard cursor walks across sections,
+// and offsets says where each section starts in it. Only the rows apps
+// holds: parseStatus already left out mise rows while Show mise tools is
+// off.
+function panelLayout(apps) {
+  var desktop = [], cli = [], plugin = []
+  for (var i = 0; i < apps.length; i++) {
+    var app = apps[i]
+    var section = rowSection(app)
+    if (section === "cli") cli.push(app)
+    else if (section === "plugin") { if (selfRowShown(app)) plugin.push(app) }
+    else desktop.push(app)
+  }
+  return {
+    desktop: desktop, cli: cli, plugin: plugin,
+    rows: desktop.concat(cli).concat(plugin),
+    offsets: { desktop: 0, cli: desktop.length, plugin: desktop.length + cli.length }
+  }
+}
+
+// Where the cursor's row (index into layout.rows) sits: its section, its
+// index there, and whether it is that section's first row, whose header
+// comes into view with it. An index past the end lands past the end of the
+// last section.
+function rowPlace(layout, index) {
+  var section = index < layout.offsets.cli ? "desktop" : index < layout.offsets.plugin ? "cli" : "plugin"
+  var local = index - layout.offsets[section]
+  return { section: section, index: local, first: local === 0 && layout[section].length > 0 }
+}
+
+// The settings view's rows: the check interval dropdown, then the toggles
+// (toggleCount of them, from toggleOffset), then the quiet line with its
+// Clear button, shown only while it lists something (quietShown). lastRow
+// is the last row the cursor may reach.
+function settingsLayout(toggleCount, quietShown) {
+  return {
+    intervalRow: 0,
+    toggleOffset: 1,
+    quietRow: toggleCount + 1,
+    lastRow: toggleCount + (quietShown ? 1 : 0)
+  }
 }
 
 // --- panel text ------------------------------------------------------------------
