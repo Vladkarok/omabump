@@ -1057,7 +1057,13 @@ cat >"$scratch/confbin/pacman-conf" <<'EOF'
 printf '%s\n' "$OMABUMP_TEST_SERVERS"
 EOF
 chmod +x "$scratch/confbin/pacman-conf"
-servers_of() { (export OMABUMP_TEST_SERVERS=$1 PATH=$scratch/confbin:$PATH; repo_error=""; if repo_server_find; then echo "$repo_server"; else echo "$repo_error"; fi); }
+# The environment of servers_of and repo_of is their own: locals, exported
+# for the pacman-conf stub, not a subshell's.
+servers_of() {
+  local OMABUMP_TEST_SERVERS=$1 PATH=$scratch/confbin:$PATH repo_error="" repo_server=""
+  export OMABUMP_TEST_SERVERS PATH
+  if repo_server_find; then echo "$repo_server"; else echo "$repo_error"; fi
+}
 same "repo_server_find: the first https Server, less its trailing slash" 'https://pkgs.omarchy.org/edge/x86_64' \
   "$(servers_of $'http://mirror.example/x86_64\nhttps://pkgs.omarchy.org/edge/x86_64/\nhttps://other.example/x86_64')"
 same "repo_server_find: a server with odd characters is passed over" 'https://b.example/x86_64' \
@@ -1077,6 +1083,13 @@ same "repo_entry_ok: another name's, version's or architecture's file, a path, a
        "-x 1.0-1 -x-1.0-1-any.pkg.tar.zst $sum64"; do
        # shellcheck disable=SC2086 # the four fields, split on purpose
        repo_ok_of $a; done | paste -sd' ')"
+# Name and full version bounded, and so the file name: a pkgrel of 140 KB
+# would pass full_version_ok and reach jq as one argument.
+n128=$(head -c 128 /dev/zero | tr '\0' a) v128=1.0-$(head -c 124 /dev/zero | tr '\0' 1) long_rel=$(head -c 140000 /dev/zero | tr '\0' 1)
+same "repo_entry_ok: a name and a full version of 128 characters each" ok "$(repo_ok_of "$n128" "$v128" "$n128-$v128-any.pkg.tar.zst" "$sum64")"
+same "repo_entry_ok: one character more of either, or a pkgrel of 140 KB, is refused" 'no no no' \
+  "$(repo_ok_of "${n128}b" 1.0-1 "${n128}b-1.0-1-any.pkg.tar.zst" "$sum64") $(repo_ok_of x "${v128}1" "x-${v128}1-any.pkg.tar.zst" "$sum64") $(
+     repo_ok_of x "1.0-$long_rel" "x-1.0-$long_rel-any.pkg.tar.zst" "$sum64")"
 
 repo_db "$scratch/served/omarchy.db" 'crush-bin 0.20.0-1' 'crush-bin-debug 0.21.0-1' 'cursor-cli 1:2026.11.22.1.e9042b2-2' 'dup 1.0-1 dup-1.0-1-any.pkg.tar.zst twice' \
   'evil 1.0-1 ../evil-1.0-1-any.pkg.tar.zst'
@@ -1091,8 +1104,9 @@ refuse "repo_db_entries: a database with no package Omabump takes fails" repo_db
 # <file>|<error>|<size bound> <URL fetched>" for the package $1, with the
 # servers $servers (one by default).
 repo_of() {
-  ( export OMABUMP_TEST_SERVERS=${servers-https://pkgs.example/edge/x86_64} PATH=$scratch/confbin:$PATH
-    eval "$(declare -f fetch | sed '1s/^fetch/stub_fetch/')"
+  local OMABUMP_TEST_SERVERS=${servers-https://pkgs.example/edge/x86_64} PATH=$scratch/confbin:$PATH
+  export OMABUMP_TEST_SERVERS PATH
+  ( eval "$(declare -f fetch | sed '1s/^fetch/stub_fetch/')"
     fetch() { echo "${max_size:-} ${*: -1}" >>"$scratch/repo-fetch.log"; stub_fetch "$@"; }
     : >"$scratch/repo-fetch.log"
     repo_load || true
@@ -1118,12 +1132,73 @@ same "repo_file_url: an epoch's colon is percent-encoded" 'https://pkgs.example/
   "$(repo_server=https://pkgs.example/x repo_file_url cursor-cli-1:2.0-1-any.pkg.tar.zst)"
 rm -f "$scratch/served/omarchy.db" "$scratch/repo-junk.db" "$scratch/repo-none.db"
 
-# repo_derived <installed> <feed's latest> <feed error> <repo state> <repo's version> [<installable>]:
+# package_signature_ok against a gpg stub that prints $T_GPG_STATUS as its
+# status lines and exits $T_GPG_RC, and a pacman-conf whose GPGDir is
+# $T_GPGDIR: "<status>|<signer>|<error>|<gpg's arguments>".
+mkdir -p "$scratch/gpgbin"
+cat >"$scratch/gpgbin/gpg" <<'EOF'
+#!/bin/sh
+echo "$*" >"$T_GPG_ARGS"
+printf '%s\n' "$T_GPG_STATUS"
+echo "gpg: its own words" >&2
+exit "$T_GPG_RC"
+EOF
+cat >"$scratch/gpgbin/pacman-conf" <<'EOF'
+#!/bin/sh
+[ "$*" = GPGDir ] || exit 2
+printf '%s\n' "$T_GPGDIR"
+EOF
+chmod +x "$scratch/gpgbin/gpg" "$scratch/gpgbin/pacman-conf"
+printf 'binary signature' >"$scratch/sig.sig"
+printf 'package' >"$scratch/sig.pkg"
+sig_of() {
+  # shellcheck disable=SC2034 # read by the stubs
+  local PATH=$scratch/gpgbin:$PATH T_GPG_STATUS=$1 T_GPG_RC=${2:-0} T_GPGDIR=${3-/k/} T_GPG_ARGS=$scratch/gpg-args
+  local sig_signer sig_error rc=0
+  export PATH T_GPG_STATUS T_GPG_RC T_GPGDIR T_GPG_ARGS
+  rm -f "$scratch/gpg-args"
+  package_signature_ok "$scratch/sig.sig" "$scratch/sig.pkg" 2>/dev/null || rc=$?
+  echo "$rc|$sig_signer|$sig_error|$(cat "$scratch/gpg-args" 2>/dev/null)"
+}
+gpg_good=$'[GNUPG:] NEWSIG\n[GNUPG:] GOODSIG F0134EE680CAC571 Omarchy <pkgs@omarchy.org>\n[GNUPG:] VALIDSIG 40DFB630FF42BCFFB047046CF0134EE680CAC571 2026-09-07 1788804152 0 4 0 22 10 00 40DFB630FF42BCFFB047046CF0134EE680CAC571'
+gpg_args="--homedir /k/ --no-permission-warning --status-fd 1 --verify $scratch/sig.sig $scratch/sig.pkg"
+same "package_signature_ok: a good signature by a fully trusted key, gpg run as pacman-key runs it, in GPGDir" \
+  "0|Omarchy <pkgs@omarchy.org>, key 40DFB630FF42BCFFB047046CF0134EE680CAC571||$gpg_args" "$(sig_of "$gpg_good"$'\n[GNUPG:] TRUST_FULLY 0 pgp')"
+same "package_signature_ok: an ultimately trusted key" 0 "$(sig_of "$gpg_good"$'\n[GNUPG:] TRUST_ULTIMATE 0 pgp' | cut -d'|' -f1)"
+same "package_signature_ok: a good signature by a key the keyring does not trust, gpg exiting 0: refused" \
+  "1||the signature is good, but its key is not one pacman's keyring trusts|$gpg_args" "$(sig_of "$gpg_good"$'\n[GNUPG:] TRUST_UNDEFINED 0 pgp')"
+same "package_signature_ok: trust words that are no status line do not count" \
+  "1||the signature is good, but its key is not one pacman's keyring trusts" \
+  "$(sig_of "$gpg_good"$'\ngpg: [GNUPG:] TRUST_FULLY 0 pgp\n[GNUPG:] TRUST_FULLYX' | cut -d'|' -f1-3)"
+same "package_signature_ok: a bad signature" "1||gpg exited 1: it is not a good signature from a key in pacman's keyring" \
+  "$(sig_of $'[GNUPG:] BADSIG F0134EE680CAC571 Omarchy\n[GNUPG:] TRUST_FULLY 0 pgp' 1 | cut -d'|' -f1-3)"
+same "package_signature_ok: an expired or revoked key, or an expired signature, gpg exiting 0: refused" \
+  "1||gpg found a signature that has expired, or is by an expired or revoked key|1||gpg found a signature that has expired, or is by an expired or revoked key" \
+  "$(sig_of "${gpg_good/GOODSIG/REVKEYSIG}"$'\n[GNUPG:] TRUST_FULLY 0 pgp' | cut -d'|' -f1-3)|$(
+     sig_of "$gpg_good"$'\n[GNUPG:] EXPSIG F0134EE680CAC571 Omarchy\n[GNUPG:] TRUST_FULLY 0 pgp' | cut -d'|' -f1-3)"
+same "package_signature_ok: the primary key's fingerprint, VALIDSIG's last field" '0|Omarchy <pkgs@omarchy.org>, key 1111' \
+  "$(sig_of "${gpg_good% *} 1111"$'\n[GNUPG:] TRUST_FULLY 0 pgp' | cut -d'|' -f1,2)"
+same "package_signature_ok: gpg exiting 0 with no VALIDSIG" "1||gpg found no valid signature" \
+  "$(sig_of $'[GNUPG:] NEWSIG\n[GNUPG:] TRUST_FULLY 0 pgp' | cut -d'|' -f1-3)"
+same "package_signature_ok: no GPGDir from pacman-conf: pacman's own default" '0|--homedir /etc/pacman.d/gnupg' \
+  "$(sig_of "$gpg_good"$'\n[GNUPG:] TRUST_FULLY 0 pgp' 0 '' | cut -d'|' -f1,4 | cut -d' ' -f1-2)"
+same "package_signature_ok: a GPGDir that is no absolute path: refused, gpg not run" \
+  "1||pacman-conf names GPGDir 'k/', not an absolute path|" "$(sig_of "$gpg_good"$'\n[GNUPG:] TRUST_FULLY 0 pgp' 0 k/)"
+same "package_signature_ok: the signer's words are terminal-safe" '0|Om^[[2Jarchy, key 40DF' \
+  "$(sig_of $'[GNUPG:] GOODSIG F0 Om\e[2Jarchy\n[GNUPG:] VALIDSIG 40DF 2026\n[GNUPG:] TRUST_FULLY 0 pgp' | cut -d'|' -f1,2)"
+printf -- '-----BEGIN PGP SIGNATURE-----\n' >"$scratch/sig.sig"
+same "package_signature_ok: an armored signature: refused, as pacman-key refuses one, gpg not run" \
+  "1||the signature is armored; pacman takes only a binary one|" "$(sig_of "$gpg_good"$'\n[GNUPG:] TRUST_FULLY 0 pgp')"
+rm -rf "$scratch/gpgbin" "$scratch/sig.sig" "$scratch/sig.pkg" "$scratch/gpg-args"
+
+# repo_derived <installed> <feed's latest> <feed error> <repo state> <repo's version> [<installable>] [<installed name>]:
 # a check's repo row, the route's installable as given (true by default),
+# installed as r-app unless <installed name> says otherwise,
 # through repo_row, row_derive and row_json, and its fields
 # "update|installable|held|latest|versionFrom|stale|error|note|holdClause|repoVersion".
 repo_derived() {
-  local pkg=r-app source=repo installed_name=r-app installed=$1 latest=$2 from=feed feed_error=$3 route_error=""
+  local pkg=r-app source=repo installed_name=${7:-r-app} installed=$1 latest=$2 from=feed feed_error=$3 route_error=""
+  # shellcheck disable=SC2034 # repo_sha256 is repo_lookup's, set for it
   local repo_state=$4 repo_error="" repo_version="" repo_file="" repo_sha256="" stale=false installable=${6:-true} note=""
   local app='{"pkg": "r-app", "label": "R"}' label=R now=1767225600 hold=0 mise_update=false self_updating=false
   local held=false unchecked=false recipe="" request="" omarchy_update=false blocked="" error line
@@ -1167,8 +1242,58 @@ same "repo row: no such repo here: no Update, the note says so, no error" \
   'true|false|false|1.2|feed|false||No [omarchy] repo in pacman.conf||' "$(repo_derived 1.0-1 1.2 '' none '')"
 same "repo row: a repo without the package: no Update, the note says so" \
   "true|false|false|1.2|feed|false||Omarchy's repo has no r-app||" "$(repo_derived 1.0-1 1.2 '' ready '')"
-same "repo row: Update off (the route's installable false) and the vendor ahead: no hold, so it still notifies" \
+same "repo row: Update off (the route's installable false) and the vendor ahead: no hold, Update is off, not waiting" \
   'true|false|false|1.2|feed|false||||1.0-1' "$(repo_derived 1.0-1 1.2 '' ready 1.0-1 false)"
+same "repo row: installed under another name: no Update, and the installer's reason in the note" \
+  "true|false|false|1.2|feed|false||Installed as r-app-bin; Update from Omarchy's repo replaces only r-app itself||2.0-1" \
+  "$(repo_derived 1.0-1 1.2 '' ready 2.0-1 true r-app-bin)"
+# What a repo row may announce (repo_update_ok, the installer's rule):
+# "<installed> <installed name> <repo's version>" each, ok or no.
+upd_ok_of() { local repo_version=$3; if repo_update_ok "$1" "$2" r-app; then echo ok; else echo no; fi; }
+same "repo_update_ok: only a package the repo has, newer, over the row's own" 'ok no no no' \
+  "$(upd_ok_of 1.0-1 r-app 1.1-1) $(upd_ok_of 1.0-1 r-app '') $(upd_ok_of 1.1-1 r-app 1.1-1) $(upd_ok_of 1.0-1 r-app-bin 1.1-1)"
+
+# om_derived <installed> <latest> <repo's version> <hold s> <build tools missing> [<repo tools missing>] [<held>]:
+# an omarchy row as its route left it (Update there, the recipe's note)
+# through omarchy_repo_row and row_derive, the release first seen just now:
+# "update|installable|held|note".
+om_derived() {
+  local pkg=r-app source=omarchy installed_name=r-app installed=$1 latest=$2 from=feed repo_version=$3 hold=$4
+  local missing_line=$5 repo_missing=${6:-} app='{"pkg": "r-app", "label": "R"}' label=R now=1767225600
+  local mise_update=false self_updating=false installable=true note="Recipe from omarchy-pkgs 0123456789ab" held=${7:-false}
+  # A hold the last check's row carried, as a busy clone keeps it.
+  [[ $held == false ]] || installable=false
+  local unchecked=false error="" stale=false recipe="" request="" omarchy_update=false blocked="" unread=false
+  local muted_json='[]' skipped_json='{}' update switchable muted skipped skip_end quiet hold_clause=""
+  local seen_file=$scratch/om-seen.json
+  jq -n --arg v "$latest" --argjson at "$now" '{"r-app": {version: $v, at: $at}}' >"$seen_file"
+  ( repo_missing_line() { printf '%s' "$repo_missing"; }
+    omarchy_repo_row
+    row_derive
+    row_json ) | jq -r '"\(.updateAvailable)|\(.installable)|\(.held)|\(.note)"'
+}
+om_hold='omarchy-pkgs holds new releases for 24 h, Update from Jan 2 00:00'
+om_tools='Missing: makepkg; sudo pacman -S --needed base-devel'
+same "omarchy row: the repo at the vendor's newest: Update, the recipe's hold not applied" \
+  'true|true|false|Recipe from omarchy-pkgs 0123456789ab' "$(TZ=UTC om_derived 1.0-1 1.2 1.2-1 86400 '')"
+same "omarchy row: the repo past the vendor's newest: Update too" 'true|true|false|Recipe from omarchy-pkgs 0123456789ab' \
+  "$(TZ=UTC om_derived 1.0-1 1.2 1.3-1 86400 '')"
+same "omarchy row: the repo behind the vendor: the recipe's hold" "true|false|true|$om_hold; Recipe from omarchy-pkgs 0123456789ab" \
+  "$(TZ=UTC om_derived 1.0-1 1.2 1.1-1 86400 '')"
+same "omarchy row: no package in the repo: the recipe's hold" "true|false|true|$om_hold; Recipe from omarchy-pkgs 0123456789ab" \
+  "$(TZ=UTC om_derived 1.0-1 1.2 '' 86400 '')"
+same "omarchy row: a build tool missing, the repo at the vendor's newest: Update, no build tool asked for" \
+  'true|true|false|Recipe from omarchy-pkgs 0123456789ab' "$(TZ=UTC om_derived 1.0-1 1.2 1.2-1 0 "$om_tools")"
+same "omarchy row: a build tool missing, the repo behind the vendor: no Update, the tools named" \
+  "true|false|false|$om_tools; Recipe from omarchy-pkgs 0123456789ab" "$(TZ=UTC om_derived 1.0-1 1.2 1.1-1 0 "$om_tools")"
+same "omarchy row: a tool of the repo path missing, the repo at the vendor's newest: the build's rules, its hold" \
+  "true|false|true|$om_hold; Recipe from omarchy-pkgs 0123456789ab" \
+  "$(TZ=UTC om_derived 1.0-1 1.2 1.2-1 86400 '' 'Missing: gpg; sudo pacman -S --needed gnupg')"
+same "omarchy row: a hold the last check left (a busy clone), the repo at the vendor's newest: gone, Update back" \
+  'true|true|false|Recipe from omarchy-pkgs 0123456789ab' "$(TZ=UTC om_derived 1.0-1 1.2 1.2-1 0 '' '' true)"
+same "omarchy row: that hold with the repo behind the vendor: kept" 'true|false|true|Recipe from omarchy-pkgs 0123456789ab' \
+  "$(TZ=UTC om_derived 1.0-1 1.2 1.1-1 0 '' '' true)"
+rm -f "$scratch/om-seen.json"
 
 # --- status.json: written, read and checked in one place -------------------------------
 

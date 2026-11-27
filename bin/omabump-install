@@ -290,7 +290,6 @@ install_setup() {
   if rule_ask entry; then refuse "$why"; fi
 
   installed_facts
-  [[ $source == omarchy ]] && require_omarchy_tools
   echo "$label: installed ${installed:-nothing} (${installed_name:-$pkg}, $source)"
   if rule_ask route; then refuse "$why"; fi
   (( ! switch )) || echo "Switching from $installed_name to $pkg at the same or a newer version."
@@ -668,7 +667,12 @@ require_root_owners() {
 # or, when it cannot or sudo or pacman was still running, the next Update:
 # clear_staged_left), and one require_root_owners refuses (the copy is
 # faithful, the package is what is refused); only a copy that fails its
-# digest or version check stays, and the message says where. Nothing is staged
+# digest or version check stays, and the message says where. With $5, a
+# detached signature of the file, the staged copy's signature is checked
+# too (package_signature_ok), after its digest: the copy pacman opens is
+# then the signed file itself, whatever happened to the one in your cache
+# since it was checked. A copy whose signature does not verify goes, and
+# the run ends. Nothing is staged
 # while pacman's lock file is there: pacman -U could not take the lock, and
 # the pacman holding it may be one an earlier run left at its prompt, about
 # to read a copy of the same name that this run would overwrite and then
@@ -677,13 +681,14 @@ require_root_owners() {
 # set, is a line said before the failure when pacman installs nothing.
 pacman_hint=""
 stage_and_install() {
-  local file=$1 expect=$2 algo=${3:-} want=${4:-} staged got line now rc=0 locked
+  local file=$1 expect=$2 algo=${3:-} want=${4:-} sig=${5:-} staged got line now rc=0 locked
   staged=$staging_dir/${file##*/}
   locked="pacman's lock file $pacman_lock is there: a pacman is running, or one ended without removing it"
   if (( prepare )); then
     [[ ! -e $pacman_lock ]] || echo "Would refuse while $locked"
     echo "Would run: sudo install -o root -g root -m 0644 -D /dev/stdin $staged <$file"
     [[ -z $algo ]] || echo "Would check: ${algo}sum of $staged is $want"
+    [[ -z $sig ]] || echo "Would check: gpg --verify $sig $staged (pacman's keyring) finds a good signature by a key pacman trusts"
     echo "Would check: pacman -Qp $staged is $expect"
     echo "Would check: every file in $staged is owned by root, in group root, tty, ftp or games"
     echo "Would run: sudo pacman -U -- $staged (pacman asks before it installs)"
@@ -709,6 +714,10 @@ stage_and_install() {
   if [[ -n $algo ]]; then
     got=$("${algo}sum" -- "$staged" | cut -d' ' -f1)
     [[ $got == "$want" ]] || { staged_copy=""; die "$algo of the staged copy is $got, expected $want; not installing (the copy stays in $staged)"; }
+  fi
+  if [[ -n $sig ]] && ! package_signature_ok "$sig" "$staged"; then
+    unstage "$staged"
+    die "the staged copy's signature did not verify ($sig_error); removed $staged, not installing"
   fi
   line=$(pacman -Qp -- "$staged") || { staged_copy=""; die "cannot read $staged; not installing (the copy stays there)"; }
   [[ $line == "$expect" ]] || { staged_copy=""; die "the staged copy is '$line', expected '$expect'; not installing (the copy stays in $staged)"; }
@@ -979,22 +988,26 @@ install_vendor_pkg() {
 # from status.json, and it is not signed (pacman.conf has DatabaseOptional),
 # so it only names the file and its sha256: every claim is checked on the
 # file itself. curl fetches the package and its .sig over HTTPS into the
-# packages cache; the file's sha256 must be the database's; pacman-key
-# must find a good signature on it from a key in pacman's keyring, where
-# Omarchy keeps its own; pacman -Qp must name the package at the
-# database's full version, newer than what is installed now. Only then
+# packages cache; the file's sha256 must be the database's; gpg must find
+# a good signature on it by a key pacman's keyring trusts, where Omarchy
+# keeps its own (package_signature_ok, not pacman-key --verify, which lets
+# an untrusted key's signature pass); pacman -Qp must name the package at
+# the database's full version, newer than what is installed now. Only then
 # does the file go to the staging, the owner check and pacman -U that the
-# other routes use. pacman -U on a local file would not check the
-# signature itself: pacman.conf's LocalFileSigLevel is Optional. No code
-# from omarchy-pkgs runs, and its clone is not touched.
+# other routes use, and the staged copy, root's, is what the signature is
+# checked on once more: the sha256 came from the unsigned database, so the
+# copy pacman opens must itself be the signed file. pacman -U on a local
+# file would not check the signature itself: pacman.conf's
+# LocalFileSigLevel is Optional. No code from omarchy-pkgs runs, and its
+# clone is not touched.
 
 # A repo row's Update: refuses when this machine has no such repo or the
 # repo no such package, and ends as under nothing_newer when the repo's
 # version is not newer than the installed one (the vendor is ahead of the
 # repo, or something else installed it).
 install_repo() {
-  local said hint
-  command -v pacman-key >/dev/null || die "pacman-key is missing; it comes with pacman"
+  local said hint why
+  require_repo_tools
   echo "Reading Omarchy's repo database..."
   if ! repo_load; then
     [[ $repo_state != none ]] || refuse "$repo_error, so there is no package to install $label from"
@@ -1003,8 +1016,8 @@ install_repo() {
   repo_lookup "$pkg" || refuse "Omarchy's repo has no $pkg package"
   echo "Omarchy's repo ($repo_server) has $pkg $repo_version"
   # The route has no Switch: it installs the repo's package over itself only.
-  if replaces_other; then
-    refuse "$label is installed as $installed_name; Update from Omarchy's repo replaces only $pkg itself, so remove $installed_name or install $pkg with pacman"
+  if why=$(repo_other_name "$installed_name" "$pkg"); then
+    refuse "$label is $why, so remove $installed_name or install $pkg with pacman"
   fi
   if [[ -n $installed ]] && ! newer "$repo_version" "$installed"; then
     # The vendor ahead of the repo, which usually catches up soon; or a
@@ -1019,14 +1032,22 @@ install_repo() {
 # Whether an omarchy row's Update takes the repo's package instead of a
 # build: when the repo has a package newer than what is installed, at the
 # vendor's newest release or past it (its feed's now, else the one the
-# panel showed). The same package omarchy update installs, signed, and no
-# recipe to build. Anything else (no repo, no such package, the repo behind
-# the vendor, a --switch, no version of the vendor's to compare with)
-# builds the recipe as before, and says why when the repo was read. Leaves
-# repo_version, repo_file and repo_sha256 for repo_install.
+# panel showed), and the tools the repo path needs are there:
+# omarchy_repo_serves, by which the check words the row too. The same
+# package omarchy update installs, signed, and no recipe to build, so it
+# is asked before the build tools are. Anything else (no repo, no such
+# package, the repo behind the vendor, a --switch, no version of the
+# vendor's to compare with, a tool missing) builds the recipe as before,
+# and says why when the repo was read. Leaves repo_version, repo_file and
+# repo_sha256 for repo_install.
 omarchy_repo_ok() {
-  local vendor
-  (( ! switch )) && command -v pacman-key >/dev/null || return 1
+  local vendor line
+  (( ! switch )) || return 1
+  line=$(repo_missing_line)
+  if [[ -n $line ]]; then
+    echo "Omarchy's repo path needs tools that are missing (${line%%;*}); building Omarchy's recipe instead."
+    return 1
+  fi
   if ! repo_load; then
     [[ $repo_state == none ]] || echo "Omarchy's repo: $repo_error; building Omarchy's recipe instead."
     return 1
@@ -1049,6 +1070,8 @@ omarchy_repo_ok() {
     echo "Omarchy's repo has $pkg $repo_version, the vendor's feed $vendor; building Omarchy's recipe instead."
     return 1
   fi
+  # The reasons above, said one by one; this is the decision.
+  omarchy_repo_serves "$installed" "$vendor" || return 1
   echo "Omarchy's repo ($repo_server) has $pkg $repo_version, the vendor's newest release: installing its package, nothing to build."
 }
 
@@ -1056,18 +1079,18 @@ omarchy_repo_ok() {
 # set it) as above. With --prepare it says each step and stops before the
 # download.
 repo_install() {
-  local file sig url line msg got now_line now out rc=0
+  local file sig url line msg got now_line now
   file=$PKGDEST/$repo_file sig=$PKGDEST/$repo_file.sig url=$(repo_file_url "$repo_file")
   echo "Package: $url"
   echo "sha256 in the repo's database: $repo_sha256"
   if (( prepare )); then
     echo "Would download: $url to $file, and its signature $url.sig to $sig"
     echo "Would check: sha256sum of $file is $repo_sha256"
-    echo "Would check: pacman-key --verify $sig $file finds a good signature from a key in pacman's keyring"
+    echo "Would check: gpg --verify $sig $file (pacman's keyring) finds a good signature by a key pacman trusts"
     echo "Would check: pacman -Qp $file is $pkg $repo_version, newer than the installed ${installed:-nothing}"
     echo "Would check: every file in $file is owned by root, in group root, tty, ftp or games"
     if replaces_other; then echo "Would check: $pkg or $installed_name declares a conflict with the other, and show their install scripts"; fi
-    stage_and_install "$file" "$pkg $repo_version" sha256 "$repo_sha256"
+    stage_and_install "$file" "$pkg $repo_version" sha256 "$repo_sha256" "$sig"
     prepare_stop "Prepared: stopping before the download."
   fi
   started=1
@@ -1089,15 +1112,14 @@ repo_install() {
     die "sha256 of the download is $got, Omarchy's repo database lists $repo_sha256; removed the file, not installing"
   fi
   echo "sha256 matches."
-  out=$(run_unlocked timeout -k 5 60 pacman-key --verify "$sig" "$file" 2>&1 </dev/null) || rc=$?
-  if (( rc )); then
-    [[ -z $out ]] || term_safe <<<"$out" >&2
+  # Before sudo, so a bad file never asks for a password; the staged copy
+  # is checked again.
+  if ! package_signature_ok "$sig" "$file"; then
     rm -f -- "$file" "$sig"
     started=0
-    die "the signature of $repo_file did not verify (pacman-key --verify exited $rc): it is not a good signature from a key in pacman's keyring. Removed the download, not installing"
+    die "the signature of $repo_file did not verify ($sig_error). Removed the download, not installing"
   fi
-  line=$(grep -m1 'Good signature' <<<"$out" | term_safe) || line=""
-  echo "Signature: ${line:-good}"
+  echo "Signature: good, by $sig_signer"
   line=$(pacman -Qp -- "$file") || die "cannot read $file"
   [[ $line == "$pkg $repo_version" ]] \
     || die "the package is '$line', and Omarchy's repo database names '$pkg $repo_version'; not installing"
@@ -1116,7 +1138,7 @@ repo_install() {
   echo "Package file: $file ($line)"
   show_switch "$file"
   pacman_hint="if pacman stopped on a dependency, run omarchy update: it updates the rest of the system with Omarchy's repo"
-  stage_and_install "$file" "$line" sha256 "$repo_sha256"
+  stage_and_install "$file" "$line" sha256 "$repo_sha256" "$sig"
   pacman_hint=""
   now_line=$(installed_package "$pkg") || die "pacman -Q $pkg finds nothing after the install"
   [[ $now_line == "$pkg $repo_version" ]] || die "pacman -Q says '$now_line', expected '$pkg $repo_version'"
@@ -1271,7 +1293,8 @@ install_main() {
   case $source in
     self) install_self ;;
     # The repo's package when it has the vendor's newest; else the build.
-    omarchy) if omarchy_repo_ok; then repo_install; else install_omarchy; fi ;;
+    # The build tools only for a build: the repo path needs its own.
+    omarchy) if omarchy_repo_ok; then repo_install; else require_omarchy_tools; install_omarchy; fi ;;
     repo) install_repo ;;
     vendor-pkg) install_vendor_pkg ;;
     mise) install_mise ;;

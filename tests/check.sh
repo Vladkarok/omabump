@@ -294,7 +294,7 @@ refuse "run_killable: and the command it ran is stopped" kill -0 "${slept:-0}"
 # pacman-conf (the database in $run_dir/pacman-db; for `--repo omarchy
 # Server` the lines of $OMABUMP_TEST_SERVERS, no such repo when that is
 # empty), curl (every fetch fails, but a file of $OMABUMP_TEST_SERVED named
-# as the URL's last part, when that is set), sudo and pacman-key (only
+# as the URL's last part, when that is set), sudo and gpg (only
 # looked for, never run), git (every call fails) and mise
 # (logs its calls, knows no tool; with $OMABUMP_TEST_HANG set, `mise ls
 # --json` hangs and notes its pid there, with $OMABUMP_TEST_LS_FAIL set it
@@ -337,7 +337,7 @@ for a; do url=$a; done
 exit 7
 EOF
 printf '#!/bin/sh\nexit 1\n' >"$run_dir/bin/sudo"
-printf '#!/bin/sh\nexit 1\n' >"$run_dir/bin/pacman-key"
+printf '#!/bin/sh\nexit 1\n' >"$run_dir/bin/gpg"
 printf '#!/bin/sh\n[ "$1" = config ] || echo "git $*" >>"$OMABUMP_TEST_NET"\nexit 1\n' >"$run_dir/bin/git"
 cat >"$run_dir/bin/mise" <<'EOF'
 #!/bin/sh
@@ -1567,13 +1567,16 @@ repo_db "$rp_served/omarchy.db" 'rp-a 1.2-1' 'rp-b 1.0-1' 'rp-c 3.0-2' 'rp-x 1.0
 
 # --local: omarchy update installed a package from the repo; the row clears
 # without a check. Below the repo's version Update stays; past it, a row the
-# vendor is ahead on is held, its clause once.
+# vendor is ahead on is held, its clause once. A row whose newest version
+# was the repo's (rp-c's pkgrel) is current too, but only a check reads
+# whether the vendor has a newer one: the refresh asks for it.
 rp_run
 loc_pkgs 'rp-a 1.2-1' 'rp-b 1.5-1' 'rp-c 3.0-2' 'rp-x 1.0-1' 'om-a 1.2-1'
 rp_run --local; rc=$?
-same "--local: a repo row omarchy update brought to the newest: current, no check needed, no network" \
-  '0|false|true|false|1.2-1|' "$rc|$(rp_row rp-a '"\(.updateAvailable)|\(.installable)|\(.held)|\(.repoVersion)"')|$(cat "$run_dir/net.log")"
-same "--local: the pkgrel installed: current" 'false|true' "$(rp_row rp-c '"\(.updateAvailable)|\(.installable)"')"
+same "--local: a repo row omarchy update brought to the newest: current, no network" \
+  '80|false|true|false|1.2-1|' "$rc|$(rp_row rp-a '"\(.updateAvailable)|\(.installable)|\(.held)|\(.repoVersion)"')|$(cat "$run_dir/net.log")"
+same "--local: the pkgrel installed: current, and a check is asked for that row alone" \
+  'false|true|1|rp-c reached 3.0-2' "$(rp_row rp-c '"\(.updateAvailable)|\(.installable)"')|$(grep -c 'a full check is needed' "$run_dir/rp.err")|$(grep -o 'rp-[a-z] reached [^,]*' "$run_dir/rp.err")"
 same "--local: past the repo's version, still behind the vendor's: held, the clause once" \
   "true|false|true|Not in Omarchy's repo yet|Not in Omarchy's repo yet" \
   "$(rp_row rp-b '"\(.updateAvailable)|\(.installable)|\(.held)|\(.note)|\(.holdClause)"')"
@@ -1595,8 +1598,13 @@ same "repo: the vendor ahead, the repo ahead of what is installed: Update, to th
   "$(rp_row rp-a '"\(.updateAvailable)|\(.installable)|\(.held)|\(.latest)|\(.repoVersion)"')"
 loc_pkgs 'rp-a 1.2-1' 'rp-b 1.0-1' 'rp-c 3.0-1' 'rp-x 1.0-1' 'om-a 1.0-1'
 rp_run --local; rc=$?
-same "--local: the repo's version installed: current, no check needed" '0|false|true|false' \
+# The vendor's 1.3 is not forgotten: the refresh asks for the check that
+# finds it.
+same "--local: the repo's version installed: current, and a check is asked for" '80|false|true|false' \
   "$rc|$(rp_row rp-a '"\(.updateAvailable)|\(.installable)|\(.held)"')"
+rp_run
+same "repo: that check finds the vendor's 1.3 again, held while the repo lacks it" "true|false|true|1.3|Not in Omarchy's repo yet" \
+  "$(rp_row rp-a '"\(.updateAvailable)|\(.installable)|\(.held)|\(.latest)|\(.holdClause)"')"
 rp_same
 rp_run
 loc_pkgs 'rp-a 1.0-1' 'rp-b 0.9-1' 'rp-c 3.0-1' 'rp-x 1.0-1' 'om-a 1.0-1'
@@ -1630,6 +1638,38 @@ same "no [omarchy] repo: the check ends well, no database fetched" '0||0' \
   "$rc|$(run_status .runError)|$(grep -c 'omarchy\.db' "$run_dir/net.log")"
 same "no [omarchy] repo: no Update, the note says why, no error" 'true|false|false|2.0|feed||No [omarchy] repo in pacman.conf|' \
   "$(rp_row rp-b "$rp_fields")"
+
+# What a repo row announces: only an update its Update can install
+# (repo_update_ok), so not rq-n's, whose package the repo lacks, nor rq-o's,
+# installed as rq-o-bin, which the route does not replace (and the row says
+# so, without Update). It is recorded by the repo's full version: rq-e's
+# 1:1.1-1, the repo's, announced first, does not hide the 1.2 the feed shows
+# next with the repo at 1:1.2-1, which vercmp would rank below 1:1.1-1.
+jq -n '[{pkg: "rq-n", label: "Rq N", feed: "2.0"}, {pkg: "rq-o", label: "Rq O", feed: "2.0", installed: ["rq-o", "rq-o-bin"]},
+  {pkg: "rq-e", label: "Rq E", feed: "1.0"}]
+  | map({pkg, label, source: "repo", feed: {type: "command", command: "echo \(.feed)"}} + (if .installed then {installed} else {} end))' \
+  >"$run_dir/config/omarchy/omabump/apps.json"
+repo_db "$rp_served/omarchy.db" 'rq-o 2.0-1' 'rq-e 1:1.1-1'
+loc_pkgs 'rq-n 1.0-1' 'rq-o-bin 1.0-1' 'rq-e 1:1.0-1'
+rm -f "$run_state/status.json" "$run_state/notified.json"
+rp_notify
+same "repo: no notification for a package the repo lacks, nor for one installed under another name" \
+  'Rq E 1:1.1-1 available|Installed: 1:1.0-1. Open the Omabump panel to update.' "$(grep '^Rq ' "$run_dir/notify.log")"
+same "repo: installed under another name: the update shows, no Update, the reason in the note" \
+  "true|false|false|Installed as rq-o-bin; Update from Omarchy's repo replaces only rq-o itself" \
+  "$(rp_row rq-o '"\(.updateAvailable)|\(.installable)|\(.held)|\(.note)"')"
+same "repo: a package the repo lacks: the update shows, no Update, not announced" "true|false|Omarchy's repo has no rq-n|null" \
+  "$(rp_row rq-n '"\(.updateAvailable)|\(.installable)|\(.note)"')|$(jq -c '."rq-n"' "$run_state/notified.json")"
+same "repo: announced by the repo's full version" '"1:1.1-1"' "$(jq -c '."rq-e"' "$run_state/notified.json")"
+jq '(.[] | select(.pkg == "rq-e") | .feed.command) = "echo 1.2"' "$run_dir/config/omarchy/omabump/apps.json" >"$run_dir/rp.json"
+mv "$run_dir/rp.json" "$run_dir/config/omarchy/omabump/apps.json"
+repo_db "$rp_served/omarchy.db" 'rq-o 2.0-1' 'rq-e 1:1.2-1'
+rp_notify
+same "repo: the feed's 1.2 with the repo at 1:1.2-1, after 1:1.1-1 was announced: announced" \
+  'Rq E 1.2 available|Installed: 1:1.0-1. Open the Omabump panel to update.|"1:1.2-1"' \
+  "$(grep '^Rq ' "$run_dir/notify.log")|$(jq -c '."rq-e"' "$run_state/notified.json")"
+rp_notify
+same "repo: and once only" '' "$(grep '^Rq ' "$run_dir/notify.log")"
 same "repo: the runs leave no scratch files" '' "$(leftovers)"
 rm -rf "$rp_served" "$run_dir/rpnotify" "$run_dir/notify.log" "$run_dir/rp.err" "$run_dir/pkgs" "$run_state/notified.json"
 rm -f "$run_dir/config/omarchy/omabump/apps.json" "$run_state/status.json"

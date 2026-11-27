@@ -26,9 +26,15 @@
 #   curl      serves files from a local directory, by the URL's last part
 #             (an epoch's %3A read as ":")
 #   pacman-conf  $STUB_REPO_SERVER as the [omarchy] repo's Server, or no
-#             such repo when that is unset
-#   pacman-key  --verify <sig> <file>: a good signature when <sig> holds
-#             "signed:" and the file's sha256, else a bad one
+#             such repo when that is unset; GPGDir as $STUB_DB/gnupg/
+#   gpg       --verify <sig> <file> as pacman-key runs it, in pacman's
+#             GPGDir: when <sig> holds "signed:" and the file's sha256, a
+#             good signature by a trusted key (TRUST_FULLY); "untrusted:"
+#             and the sha256, a good one by a key the keyring does not
+#             trust (TRUST_UNDEFINED, and exit 0, as gpg does); anything
+#             else a bad one (exit 1). With $STUB_GPG_CACHE_GOOD set, every
+#             file outside the staging directory reads as signed, as one
+#             swapped for the signed file while it was checked would
 #   makepkg   reads the test recipe's PKGBUILD and "builds" a plain tar,
 #             its files owned by root as under fakeroot, or by
 #             $STUB_MAKEPKG_OWNER ("<uid>:<gid>");
@@ -148,21 +154,38 @@ EOF
 cat >"$istubs/pacman-conf" <<'EOF'
 #!/bin/bash
 echo "pacman-conf $*" >>"$STUB_LOG/calls"
+[[ $* != GPGDir ]] || { echo "$STUB_DB/gnupg/"; exit 0; }
 [[ $* == "--repo omarchy Server" ]] || { echo "pacman-conf stub: unexpected $*" >&2; exit 99; }
 [[ -n ${STUB_REPO_SERVER:-} ]] || { echo "error: repo 'omarchy' not configured" >&2; exit 1; }
 echo "$STUB_REPO_SERVER"
 EOF
-cat >"$istubs/pacman-key" <<'EOF'
+cat >"$istubs/gpg" <<'EOF'
 #!/bin/bash
-echo "pacman-key $*" >>"$STUB_LOG/calls"
-[[ $1 == --verify && $# == 3 ]] || { echo "pacman-key stub: unexpected $*" >&2; exit 99; }
-if [[ -f $2 && -f $3 && $(<"$2") == "signed:$(sha256sum <"$3" | cut -d' ' -f1)" ]]; then
-  echo "==> Checking $2... (detached)"
-  echo 'gpg: Good signature from "Omarchy <pkgs@omarchy.org>" [full]'
-  exit 0
+echo "gpg $*" >>"$STUB_LOG/calls"
+[[ $# == 8 && "${*:1:6}" == "--homedir $STUB_DB/gnupg/ --no-permission-warning --status-fd 1 --verify" ]] \
+  || { echo "gpg stub: unexpected $*" >&2; exit 99; }
+sig=$7 file=$8 sum="" kind=bad
+[[ -f $file ]] && sum=$(sha256sum <"$file" | cut -d' ' -f1)
+[[ -f $sig && -n $sum && $(<"$sig") == "signed:$sum" ]] && kind=good
+[[ -f $sig && -n $sum && $(<"$sig") == "untrusted:$sum" ]] && kind=untrusted
+[[ -z ${STUB_GPG_CACHE_GOOD:-} || $file == "$STUB_STAGING"/* ]] || kind=good
+fpr=40DFB630FF42BCFFB047046CF0134EE680CAC571
+echo '[GNUPG:] NEWSIG'
+if [[ $kind == bad ]]; then
+  echo '[GNUPG:] BADSIG F0134EE680CAC571 Omarchy <pkgs@omarchy.org>'
+  echo 'gpg: BAD signature from "Omarchy <pkgs@omarchy.org>" [full]' >&2
+  exit 1
 fi
-echo "==> ERROR: The signature identified by $2 could not be verified." >&2
-exit 1
+echo '[GNUPG:] GOODSIG F0134EE680CAC571 Omarchy <pkgs@omarchy.org>'
+echo "[GNUPG:] VALIDSIG $fpr 2026-09-07 1788804152 0 4 0 22 10 00 $fpr"
+if [[ $kind == untrusted ]]; then
+  echo 'gpg: Good signature from "Omarchy <pkgs@omarchy.org>" [unknown]' >&2
+  echo 'gpg: WARNING: This key is not certified with a trusted signature!' >&2
+  echo '[GNUPG:] TRUST_UNDEFINED 0 pgp'
+else
+  echo 'gpg: Good signature from "Omarchy <pkgs@omarchy.org>" [full]' >&2
+  echo '[GNUPG:] TRUST_FULLY 0 pgp'
+fi
 EOF
 cat >"$istubs/makepkg" <<'EOF'
 #!/bin/bash
@@ -1329,7 +1352,10 @@ says "install --prepare (repo): the package the database names, not rpapp-debug"
 says "install --prepare (repo): would download the package and its signature" \
   "Would download: $rp_server/$rpf to $rp_cache/$rpf, and its signature $rp_server/$rpf.sig to $rp_cache/$rpf.sig"
 says "install --prepare (repo): would check the sha256 the database lists" "Would check: sha256sum of $rp_cache/$rpf is $(sha256sum <"$iserved/$rpf" | cut -d' ' -f1)"
-says "install --prepare (repo): would verify the signature" "Would check: pacman-key --verify $rp_cache/$rpf.sig $rp_cache/$rpf finds a good signature"
+says "install --prepare (repo): would verify the signature" \
+  "Would check: gpg --verify $rp_cache/$rpf.sig $rp_cache/$rpf (pacman's keyring) finds a good signature by a key pacman trusts"
+says "install --prepare (repo): and again on the staged copy" \
+  "Would check: gpg --verify $rp_cache/$rpf.sig $istaging/$rpf (pacman's keyring) finds a good signature by a key pacman trusts"
 says "install --prepare (repo): would check the name and version" "Would check: pacman -Qp $rp_cache/$rpf is rpapp 2.0.0-1, newer than the installed 1.0.0-1"
 says "install --prepare (repo): then the staging the other routes use" "Would run: sudo pacman -U -- $istaging/$rpf (pacman asks before it installs)"
 calls "install --prepare (repo): reads the database" "curl --proto =https --proto-redir =https --connect-timeout 15 --max-time 30 --max-filesize 8M -fsSL $rp_server/omarchy.db"
@@ -1342,8 +1368,13 @@ shown rpapp 2.0.0 1.0.0-1
 STUB_PACMAN_U=ok rp_inst rpapp
 same "install (repo): a success" 0 "$irc"
 says "install (repo): the sha256 is checked" 'sha256 matches.'
-says "install (repo): the signature is verified, and its signer named" 'Signature: gpg: Good signature from "Omarchy <pkgs@omarchy.org>" [full]'
-calls "install (repo): by pacman-key, on the downloaded file" "pacman-key --verify $rp_cache/$rpf.sig $rp_cache/$rpf"
+says "install (repo): the signature is verified, and its signer named" \
+  'Signature: good, by Omarchy <pkgs@omarchy.org>, key 40DFB630FF42BCFFB047046CF0134EE680CAC571'
+calls "install (repo): by gpg in pacman's keyring, as pacman-key runs it, on the downloaded file" \
+  "gpg --homedir $idb/gnupg/ --no-permission-warning --status-fd 1 --verify $rp_cache/$rpf.sig $rp_cache/$rpf"
+calls "install (repo): and on the staged copy" "gpg --homedir $idb/gnupg/ --no-permission-warning --status-fd 1 --verify $rp_cache/$rpf.sig $istaging/$rpf"
+same "install (repo): the staged copy's signature is checked before pacman -U" 'gpg|pacman -U' \
+  "$(grep -E "^(sudo pacman -U|gpg .*$istaging/)" "$ilog/calls" | sed 's/^gpg .*/gpg/; s/^sudo //; s/ --.*//' | paste -sd'|')"
 says "install (repo): the staged copy is checked" "Staged copy checked: $istaging/$rpf"
 calls "install (repo): installed with sudo pacman -U from the staging directory" "sudo pacman -U -- $istaging/$rpf"
 same "install (repo): pacman has the new version" 'rpapp 2.0.0-1' "$(<"$idb/installed")"
@@ -1368,13 +1399,55 @@ echo 'signed:0000' >"$iserved/$rpf.sig"
 fresh 'rpapp 1.0.0-1'
 STUB_PACMAN_U=ok rp_inst rpapp
 same "install (repo), a bad signature: refused, saying the signature did not verify" \
-  "1|omabump: the signature of $rpf did not verify (pacman-key --verify exited 1): it is not a good signature from a key in pacman's keyring. Removed the download, not installing" \
+  "1|omabump: the signature of $rpf did not verify (gpg exited 1: it is not a good signature from a key in pacman's keyring). Removed the download, not installing" \
   "$irc|$(tail -n1 <<<"$iout")"
-says "install (repo), a bad signature: pacman-key's own words are shown" 'could not be verified'
+says "install (repo), a bad signature: gpg's own words are shown" 'gpg: BAD signature from'
 check "install (repo), a bad signature: the package and its signature are deleted" test ! -e "$rp_cache/$rpf" -a ! -e "$rp_cache/$rpf.sig"
 no_call "install (repo), a bad signature: no sudo" 'sudo '
 same "install (repo), a bad signature: nothing installed" 'rpapp 1.0.0-1' "$(<"$idb/installed")"
+
+# A good signature by a key that is in pacman's keyring but not trusted:
+# gpg exits 0 and pacman-key --verify passes it, but pacman would not
+# install it from the repo. Refused, both files removed, no sudo.
+echo "untrusted:$(sha256sum <"$iserved/$rpf" | cut -d' ' -f1)" >"$iserved/$rpf.sig"
+fresh 'rpapp 1.0.0-1'
+STUB_PACMAN_U=ok rp_inst rpapp
+same "install (repo), a good signature by an untrusted key: refused" \
+  "1|omabump: the signature of $rpf did not verify (the signature is good, but its key is not one pacman's keyring trusts). Removed the download, not installing" \
+  "$irc|$(tail -n1 <<<"$iout")"
+says "install (repo), an untrusted key: gpg's warning is shown" 'This key is not certified with a trusted signature'
+check "install (repo), an untrusted key: the package and its signature are deleted" test ! -e "$rp_cache/$rpf" -a ! -e "$rp_cache/$rpf.sig"
+no_call "install (repo), an untrusted key: no sudo" 'sudo '
+same "install (repo), an untrusted key: nothing installed" 'rpapp 1.0.0-1' "$(<"$idb/installed")"
+
+# An armored signature is refused before gpg, as pacman-key refuses one.
+printf '%s\n' '-----BEGIN PGP SIGNATURE-----' "signed:$(sha256sum <"$iserved/$rpf" | cut -d' ' -f1)" >"$iserved/$rpf.sig"
+fresh 'rpapp 1.0.0-1'
+STUB_PACMAN_U=ok rp_inst rpapp
+same "install (repo), an armored signature: refused, gpg not asked" \
+  "1|omabump: the signature of $rpf did not verify (the signature is armored; pacman takes only a binary one). Removed the download, not installing|" \
+  "$irc|$(tail -n1 <<<"$iout")|$(grep '^gpg ' "$ilog/calls")"
 rp_pkg rpapp 2.0.0-1
+
+# The file in your cache swapped between its checks: the database is not
+# signed, so its sha256 can be the other file's, and here the signature
+# check of the cache's file is answered as for the signed one. The staged
+# copy, root's, is the other file, and its own signature check refuses it:
+# the copy goes, and pacman -U never runs.
+make_pkg "$iserved/$rpf" 'pkgname = rpapp' 'pkgver = 2.0.0-1' 'url = swapped'
+rp_db 'rpapp 2.0.0-1'
+fresh 'rpapp 1.0.0-1'
+STUB_GPG_CACHE_GOOD=1 STUB_PACMAN_U=ok rp_inst rpapp
+same "install (repo), the cache's file swapped after its signature check: refused on the staged copy" \
+  "1|omabump: the staged copy's signature did not verify (gpg exited 1: it is not a good signature from a key in pacman's keyring); removed $istaging/$rpf, not installing" \
+  "$irc|$(grep -F "omabump: the staged copy" <<<"$iout")"
+says "install (repo), swapped: the cache's file had passed" 'Signature: good, by Omarchy'
+no_call "install (repo), swapped: pacman -U never runs" 'pacman -U'
+check "install (repo), swapped: the staged copy is removed" test ! -e "$istaging/$rpf"
+same "install (repo), swapped: nothing installed" 'rpapp 1.0.0-1' "$(<"$idb/installed")"
+rm -f "$rp_cache/$rpf" "$rp_cache/$rpf.sig"
+rp_pkg rpapp 2.0.0-1
+rp_db 'rpapp 2.0.0-1'
 
 # A file whose sha256 is not the database's: refused before the signature.
 rp_db "rpapp 2.0.0-1 $(printf 'b%.0s' {1..64})"
@@ -1461,7 +1534,8 @@ STUB_PACMAN_U=ok rp_inst testpkg
 same "install (omarchy), the repo at the vendor's newest: a success" '0|testpkg 2.0.0-1' "$irc|$(<"$idb/installed")"
 says "install (omarchy), the repo at the vendor's newest: says it installs the repo's package" \
   "Omarchy's repo ($rp_server) has testpkg 2.0.0-1, the vendor's newest release: installing its package, nothing to build."
-calls "install (omarchy), the repo at the vendor's newest: the signature is verified" "pacman-key --verify $rp_cache/$(rp_file testpkg 2.0.0-1).sig"
+calls "install (omarchy), the repo at the vendor's newest: the signature is verified" \
+  "gpg --homedir $idb/gnupg/ --no-permission-warning --status-fd 1 --verify $rp_cache/$(rp_file testpkg 2.0.0-1).sig"
 no_call "install (omarchy), the repo at the vendor's newest: no build" 'makepkg'
 same "install (omarchy), the repo at the vendor's newest: the clone is not touched, nor sync-upstream run" "$pk_head|$pk_status|no" \
   "$(git -C "$pk" rev-parse HEAD)|$(git -C "$pk" status --porcelain)|$([[ -e $pk/.git/test-sync-token ]] && echo ran || echo no)"
@@ -1488,6 +1562,39 @@ rp_inst --prepare testpkg
 says "install --prepare (omarchy), no vendor's version known: the build" \
   "Omarchy's repo has testpkg 2.0.0-1, and the vendor's newest version is not known; building Omarchy's recipe instead."
 says "install --prepare (omarchy), no vendor's version known: up to makepkg" 'Prepared: stopping before makepkg builds.'
+# A build tool missing: the repo's package needs none, so the repo is asked
+# first and the build tools only for a build (omarchy_repo_serves, as the
+# check words the row). A tool the repo path needs missing: the build.
+rp_src() { inst_env+=(STUB_REPO_SERVER="$rp_server"); inst_src "$@"; inst_env=("${inst_env[@]:0:${#inst_env[@]}-1}"); }
+no_make='missing_tools_line() { echo "Missing: makepkg; sudo pacman -S --needed base-devel"; }; '
+fresh 'testpkg 1.0.0-1'
+shown testpkg 2.0.0 1.0.0-1
+# shellcheck disable=SC2016 # expanded by the child bash
+STUB_PACMAN_U=ok rp_src "$no_make"'omabump_install "$@"' testpkg
+same "install (omarchy), a build tool missing, the repo at the vendor's newest: its package, a success" '0|testpkg 2.0.0-1' \
+  "$irc|$(<"$idb/installed")"
+refuse "install (omarchy), a build tool missing, the repo at the vendor's newest: the build tools are not asked for" \
+  grep -qF 'needs tools that are missing' <<<"$iout"
+no_call "install (omarchy), a build tool missing, the repo at the vendor's newest: no build" 'makepkg'
+rp_pkg testpkg 1.5.0-1
+rp_db 'testpkg 1.5.0-1'
+fresh 'testpkg 1.0.0-1'
+shown testpkg 2.0.0 1.0.0-1
+# shellcheck disable=SC2016 # expanded by the child bash
+STUB_PACMAN_U=ok rp_src "$no_make"'omabump_install "$@"' testpkg
+same "install (omarchy), a build tool missing, the repo behind the vendor: refused for the build tools, after the repo was asked" \
+  "1|Omarchy's repo has testpkg 1.5.0-1, the vendor's feed 2.0.0; building Omarchy's recipe instead.|omabump: building Omarchy's recipe needs tools that are missing." \
+  "$irc|$(grep -F "the vendor's feed 2.0.0" <<<"$iout")|$(grep -F 'needs tools that are missing' <<<"$iout")"
+no_call "install (omarchy), a build tool missing, the repo behind the vendor: no build" 'makepkg'
+rp_pkg testpkg 2.0.0-1
+rp_db 'testpkg 2.0.0-1'
+fresh 'testpkg 1.0.0-1'
+shown testpkg 2.0.0 1.0.0-1
+# shellcheck disable=SC2016 # expanded by the child bash
+rp_src 'repo_missing_line() { echo "Missing: gpg; sudo pacman -S --needed gnupg"; }; omabump_install "$@"' --prepare testpkg
+same "install --prepare (omarchy), gpg missing, the repo at the vendor's newest: the build, saying why" \
+  "0|Omarchy's repo path needs tools that are missing (Missing: gpg); building Omarchy's recipe instead.|Prepared: stopping before makepkg builds." \
+  "$irc|$(grep -F "repo path needs" <<<"$iout")|$(grep -F 'Prepared:' <<<"$iout")"
 rm -f "$iserved/omarchy.db" "$iserved"/rpapp-* "$iserved"/rpepoch-* "$iserved"/testpkg-* "$rp_cache"/rp* "$rp_cache"/testpkg-*
 
 # --- Omabump's own update: the fast-forward and its rollback ---------------------------

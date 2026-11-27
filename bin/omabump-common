@@ -1447,7 +1447,9 @@ feed_version() {
 # version, so no recipe is built. The repo's database (omarchy.db) is not
 # signed (pacman.conf says DatabaseOptional), so it is only an index: it
 # names the file and its sha256, and the installer checks every claim on
-# the file itself, the signature with pacman-key above all, before sudo.
+# the file itself, the signature by a key pacman trusts above all
+# (package_signature_ok), before sudo, and the signature again on the
+# root-owned copy pacman -U opens.
 #
 # The database is read once per check, and once per Update, never from
 # status.json. Nothing in it is run: bsdtar streams each package's desc to
@@ -1489,9 +1491,14 @@ repo_server_find() {
 # version, $3 file name, $4 sha256. The file name is exactly the package
 # file pacman's tools name for that name and version, for this machine's
 # architecture or any: a single path component, so it cannot point
-# anywhere but the repo's directory and the packages cache.
+# anywhere but the repo's directory and the packages cache. The name and
+# the full version are at most repo_field_max characters each, and so the
+# file name is bounded too: a pkgrel of 140 KB would otherwise reach jq as
+# one argument and end the check (E2BIG).
+repo_field_max=128
 repo_entry_ok() {
   local name=$1 version=$2 file=$3 sum=$4 rest
+  (( ${#name} <= repo_field_max && ${#version} <= repo_field_max )) || return 1
   pkg_name_ok "$name" && full_version_ok "$version" && [[ $sum =~ ^[0-9a-f]{64}$ ]] || return 1
   [[ $file != */* && $file != *..* ]] || return 1
   rest=${file#"$name-$version-"}
@@ -1585,6 +1592,126 @@ repo_lookup() {
 # of repo_entry_ok's characters, and only an epoch's ":" is percent-encoded,
 # as no server's path needs it raw.
 repo_file_url() { echo "$repo_server/${1//:/%3A}"; }
+
+# What Update from Omarchy's repo needs, as tool:package (as omarchy_tools
+# below): sudo and curl, gpg for the signature, bsdtar for the database,
+# vercmp to compare versions.
+repo_tools=(sudo:base-devel curl:curl gpg:gnupg bsdtar:libarchive vercmp:pacman)
+
+# "Missing: <tools>; sudo pacman -S --needed <packages>" for what the repo
+# path lacks, as missing_tools_line says it for a build. Prints nothing
+# when everything is there. Only command -v, so the check can call it.
+repo_missing_line() {
+  local entry missing=() pkgs=()
+  for entry in "${repo_tools[@]}"; do
+    command -v "${entry%%:*}" >/dev/null && continue
+    missing+=("${entry%%:*}")
+    [[ " ${pkgs[*]} " == *" ${entry#*:} "* ]] || pkgs+=("${entry#*:}")
+  done
+  (( ${#missing[@]} )) || return 0
+  echo "Missing: $(printf '%s, ' "${missing[@]}" | sed 's/, $//'); sudo pacman -S --needed ${pkgs[*]}"
+}
+
+# Exits with that line when something is missing, as require_omarchy_tools
+# does for a build.
+require_repo_tools() {
+  local line
+  line=$(repo_missing_line)
+  [[ -z $line ]] && return 0
+  echo "omabump: Update from Omarchy's repo needs tools that are missing." >&2
+  echo "${line%%;*}" >&2
+  echo "Install them with:${line#*;}" >&2
+  exit 1
+}
+
+# Why a repo row's Update cannot install over what is installed, on stdout,
+# or a failure when it can: the route has no Switch, so it replaces only
+# the package itself, never one installed under another name. $1 the
+# installed name, $2 the row's pkg. The installer refuses with these words,
+# and the check's row says them.
+repo_other_name() {
+  [[ -n $1 && $1 != "$2" ]] || return 1
+  echo "installed as $1; Update from Omarchy's repo replaces only $2 itself"
+}
+
+# True when a repo row's Update has something to install: the repo's
+# package (repo_version, repo_lookup's) is newer than the installed $1, and
+# it is installed as the row's pkg $3 itself ($2 the installed name;
+# repo_other_name). Only then does a repo row notify: an update the repo
+# does not have, or cannot install here, is no news Update can act on.
+repo_update_ok() {
+  [[ -n $repo_version ]] && newer "$repo_version" "$1" && ! repo_other_name "$2" "$3" >/dev/null
+}
+
+# True when an omarchy row's Update installs the repo's package instead of
+# building the recipe: the repo's package (repo_version) is newer than the
+# installed $1 (or nothing is installed), at the vendor's newest release $2
+# (an upstream version, version_ok) or past it, and the tools the repo
+# path needs are there (repo_missing_line). The same package omarchy update
+# installs, signed, so neither the recipe's release-age hold nor the build
+# tools stand in its way. The check words the row with it, and Update
+# (omarchy_repo_ok in bin/omabump-install) takes its path by it.
+omarchy_repo_serves() {
+  [[ -n $repo_version ]] && version_ok "$2" && [[ -z $(repo_missing_line) ]] || return 1
+  [[ -z $1 ]] || newer "$repo_version" "$1" || return 1
+  ! newer "$2" "$(upstream_part "$repo_version")"
+}
+
+# True when the file $2 carries a good signature, the detached binary
+# signature $1, by a key pacman's keyring trusts fully or ultimately, as
+# pacman trusts a package. pacman-key --verify cannot say so: pacman 7.1.0
+# tests the trust in a PIPESTATUS an earlier test has already reset, so a
+# good signature by a key that is in the keyring but not trusted passes.
+# This runs gpg exactly as pacman-key does (its keyring: pacman-conf's
+# GPGDir, /etc/pacman.d/gnupg when it names none), and takes only its
+# status lines: exit 0, a GOODSIG, a VALIDSIG and a TRUST_FULLY or
+# TRUST_ULTIMATE, and no signature by an expired or revoked key, nor one
+# that has expired itself, which gpg may still pass with exit 0 and
+# pacman (gpgme) refuses. An armored signature is refused, as pacman-key
+# refuses one. Sets sig_signer to the signer, its user ID and the primary
+# key's fingerprint, VALIDSIG's last field (terminal-safe), for the run to
+# show; on a failure gpg's own words go to
+# stderr, terminal-safe, and sig_error says why.
+sig_signer="" sig_error=""
+package_signature_ok() {
+  local sig=$1 file=$2 dir="" out err rc=0 uid fpr
+  sig_signer="" sig_error=""
+  read -r dir < <(run_unlocked timeout 10 pacman-conf GPGDir 2>/dev/null </dev/null) || true
+  dir=${dir:-/etc/pacman.d/gnupg}
+  if [[ $dir != /* ]]; then
+    sig_error="pacman-conf names GPGDir '$(term_safe <<<"$dir")', not an absolute path"
+    return 1
+  fi
+  if grep -qF -- 'BEGIN PGP SIGNATURE' "$sig" 2>/dev/null; then
+    sig_error="the signature is armored; pacman takes only a binary one"
+    return 1
+  fi
+  mkdir -p "$cache_dir"
+  err=$(mktemp "${run_tmp:-$cache_dir}/.gpg.XXXXXX")
+  out=$(run_unlocked timeout -k 5 60 gpg --homedir "$dir" --no-permission-warning --status-fd 1 --verify "$sig" "$file" 2>"$err" </dev/null) || rc=$?
+  if (( rc )); then
+    sig_error="gpg exited $rc: it is not a good signature from a key in pacman's keyring"
+  elif grep -qE '^\[GNUPG:\] (EXPSIG|EXPKEYSIG|REVKEYSIG|BADSIG|ERRSIG) ' <<<"$out"; then
+    sig_error="gpg found a signature that has expired, or is by an expired or revoked key"
+  elif ! grep -q '^\[GNUPG:\] GOODSIG ' <<<"$out" || ! grep -q '^\[GNUPG:\] VALIDSIG ' <<<"$out"; then
+    sig_error="gpg found no valid signature"
+  fi
+  if [[ -n $sig_error ]]; then
+    term_safe <"$err" >&2
+    rm -f "$err"
+    return 1
+  fi
+  if ! grep -qE '^\[GNUPG:\] TRUST_(FULLY|ULTIMATE)( .*)?$' <<<"$out"; then
+    term_safe <"$err" >&2
+    rm -f "$err"
+    sig_error="the signature is good, but its key is not one pacman's keyring trusts"
+    return 1
+  fi
+  rm -f "$err"
+  uid=$(sed -n 's/^\[GNUPG:\] GOODSIG [0-9A-Fa-f]* //p' <<<"$out" | head -n1)
+  fpr=$(awk '$1 == "[GNUPG:]" && $2 == "VALIDSIG" { print ($12 != "" ? $12 : $3); exit }' <<<"$out")
+  sig_signer=$(printf '%s' "${uid:+$uid, }key $fpr" | term_safe | tr '\t\n' '  ')
+}
 
 # --- omarchy-pkgs ----------------------------------------------------------
 
@@ -1974,9 +2101,13 @@ row_hold() {
 # say what Update would install is the row's error only when the row shows
 # an update, or knows nothing else: then neither Update nor "Not in the
 # repo yet" could be backed. A machine without the repo, or a repo without
-# the package, has no Update, and the note says why. Reads pkg, installed,
-# latest, from, feed_error and installable; sets repo_version and may set
-# latest, from, stale, feed_error, route_error, installable and note.
+# the package, has no Update, and the note says why; nor has a package
+# installed under another name, which the route does not replace
+# (repo_other_name, the installer's words). None of those notifies: the
+# check announces a repo row's update only when repo_update_ok. Reads pkg,
+# installed_name, installed, latest, from, feed_error and installable;
+# sets repo_version and may set latest, from, stale, feed_error,
+# route_error, installable and note.
 # shellcheck disable=SC2154 # the row's fields, the caller's variables
 repo_row() {
   local feed_new=false repo_new=false why=""
@@ -1989,6 +2120,10 @@ repo_row() {
   fi
   if [[ $repo_new == true ]] && { [[ $feed_new == false ]] || newer "$latest" "$(upstream_part "$repo_version")"; }; then
     latest=$repo_version from=repo
+  fi
+  if why=$(repo_other_name "$installed_name" "$pkg"); then
+    installable=false note="${note:+$note; }${why^}"
+    return 0
   fi
   [[ -z $repo_version ]] || return 0
   case $repo_state in
@@ -2021,6 +2156,32 @@ repo_hold() {
   [[ -n $repo_version ]] || return 0
   held=true hold_clause="Not in Omarchy's repo yet"
   note="$hold_clause${note:+; $note}"
+}
+
+# What Omarchy's repo changes on an omarchy row before row_derive, once its
+# route, its feed and the repo have been read. When the repo's package
+# serves the row (omarchy_repo_serves), Update installs that package, as
+# omarchy_repo_ok decides it there: the recipe's release-age hold does not
+# hold it, and no build tool is needed. Otherwise Update builds, and the
+# build tools are needed: the check's missing_line (missing_tools_line)
+# says which are not there. A hold the last check's row carries (a busy
+# clone keeps it, held) goes too when the repo serves the row: only the
+# recipe holds an omarchy row, and it is Update's alone that the hold took
+# (row_hold), so Update is back unless apps.json turned it off now. Reads
+# installed, latest (the vendor's newest), repo_version, missing_line, held
+# and blocked; may set hold, held, installable and note.
+# shellcheck disable=SC2154 # the row's fields, the caller's variables
+omarchy_repo_row() {
+  if omarchy_repo_serves "$installed" "$latest"; then
+    hold=0
+    if [[ $held == true ]]; then
+      held=false
+      [[ -n $blocked ]] || installable=true
+    fi
+    return 0
+  fi
+  [[ -n $missing_line ]] || return 0
+  installable=false note="$missing_line${note:+; $note}"
 }
 
 # The rest of a check's row once its route and its feed (or mise) have

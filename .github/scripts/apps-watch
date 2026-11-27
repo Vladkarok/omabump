@@ -29,6 +29,10 @@ path=bin/omarchy-install-ai-cli
 plugin_dir=$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)
 apps=${APPS_WATCH_APPS:-$plugin_dir/apps.json}
 [[ -r $apps ]] || { echo "apps-watch: cannot read $apps" >&2; exit 1; }
+# Read below through mapfile, which cannot see jq fail: a file jq could not
+# read would be an empty list, and every package Omarchy installs missing.
+jq -e 'type == "array" and all(.[]; type == "object")' "$apps" >/dev/null 2>&1 \
+  || { echo "apps-watch: $apps is not a JSON array of objects" >&2; exit 1; }
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -60,6 +64,7 @@ if [[ ! -s $work/map ]]; then
 fi
 
 mapfile -t omarchy_pkgs < <(awk '{ print $2 }' "$work/map" | sort -u)
+# shellcheck disable=SC2034 # read through absent's nameref
 mapfile -t have < <(jq -r '.[] | .pkg // empty' "$apps" | sort -u)
 mapfile -t cli < <(jq -r '.[] | select(.section == "cli" and .source != "mise") | .pkg // empty' "$apps" | sort -u)
 

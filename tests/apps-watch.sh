@@ -62,3 +62,20 @@ printf '  claude) package=claude-code ;;\n  x) package=$(touch %s/ran) ;;\n' "$a
 aw_run
 same "apps-watch: a hostile line beside a good one is left out, the rest read, and nothing is missing" '0|' "$aw_rc|$aw_out"
 check "apps-watch: and still did not run" test ! -e "$aw/ran"
+
+# An apps.json jq cannot read, or not a list of entries: an error, never a
+# report of every package missing.
+printf '  claude) package=claude-code ;;\n' >"$aw/source"
+cp "$aw/apps.json" "$aw/apps.good"
+printf '[{"pkg": "claude-code"' >"$aw/apps.json"
+aw_run
+same "apps-watch: a malformed apps.json is an error, said so" "1|apps-watch: $aw/apps.json is not a JSON array of objects" "$aw_rc|$aw_out"
+printf '{"pkg": "claude-code"}' >"$aw/apps.json"
+aw_run
+same "apps-watch: an apps.json that is no list is an error" 1 "$aw_rc"
+printf '["claude-code"]' >"$aw/apps.json"
+aw_run
+same "apps-watch: a list of other than entries is an error" 1 "$aw_rc"
+mv "$aw/apps.good" "$aw/apps.json"
+aw_run
+same "apps-watch: the good file again: no news" '0|' "$aw_rc|$aw_out"
