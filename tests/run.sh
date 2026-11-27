@@ -9,12 +9,12 @@
 #   tests/run.sh --list        the parts
 #
 # unit is this file's tests of bin/omabump-common; model is Model.js under
-# node (tests/model.sh); qml, check, install and pin-watch are
+# node (tests/model.sh); qml, check, install, pin-watch and apps-watch are
 # tests/<part>.sh.
 set -uo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-parts=(unit model qml check install pin-watch)
+parts=(unit model qml check install pin-watch apps-watch)
 
 # Each part runs in a bash of its own, from the setup below and nothing an
 # earlier part left, so one part can run alone. The counts file carries the
@@ -141,6 +141,7 @@ case $part in
   check) source "$root/tests/check.sh"; finish ;;
   install) source "$root/tests/install.sh"; finish ;;
   pin-watch) source "$root/tests/pin-watch.sh"; finish ;;
+  apps-watch) source "$root/tests/apps-watch.sh"; finish ;;
   *) echo "tests/run.sh: no part '$part'" >&2; exit 2 ;;
 esac
 
