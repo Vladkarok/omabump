@@ -514,31 +514,44 @@ same "apps_table: a user entry with source self, an unknown or no source is drop
 # own: entry_ok lists them itself, so a route added to the table and not
 # to it is refused from apps.json, not let through.
 jq -nc --arg routes "${route_names[*]}" '$routes | split(" ") | map({pkg: "r-\(.)", source: .})' >"$user_apps"
-same "apps_table: every route of route_table but self comes from apps.json" "omarchy repo vendor-pkg indicator mise" \
+same "apps_table: every route of route_table but self comes from apps.json" "repo vendor-pkg indicator mise" \
   "$(apps_table 2>/dev/null | jq -r '[.[] | select(.pkg | startswith("r-")) | .source] | join(" ")')"
-rm -f "$user_apps"
+# The omarchy source of 0.1.19 reads as repo with build true, silently; a
+# build the entry gives itself stays. A build that is no boolean is refused.
+printf '%s' '[{"pkg": "o1", "source": "omarchy"}, {"pkg": "o2", "source": "omarchy", "build": false},
+  {"pkg": "o3", "source": "repo", "build": "yes"}, {"pkg": "o4", "source": "repo", "build": true}]' >"$user_apps"
+same "apps_table: source omarchy reads as repo with build true, a build of its own kept, a non-boolean build refused" \
+  'o1 repo true|o2 repo false|o4 repo true|1' \
+  "$(apps_table 2>"$scratch/at.err" | jq -r '[.[] | select(.pkg | test("^o[0-9]$")) | "\(.pkg) \(.source) \(.build)"] | join("|")')|$(grep -c '"o3"' "$scratch/at.err")"
+same "apps_table: the omarchy source says nothing on stderr" '' "$(grep -E '"o[124]"' "$scratch/at.err")"
+load_table 2>/dev/null
+check "build_allowed: a repo entry with build true" build_allowed "$(app_json o4)"
+refuse "build_allowed: not with build false" build_allowed "$(app_json o2)"
+refuse "build_allowed: not on a route that does not build, whatever the entry says" build_allowed '{"source": "vendor-pkg", "build": true}'
+refuse "build_allowed: not without build" build_allowed '{"source": "repo"}'
+app_table=""
+rm -f "$user_apps" "$scratch/at.err"
 
 # --- route ----------------------------------------------------------------------
 
 same "route: the facts of each route, as route_table lists them" \
-  'omarchy vercmp feed pacman yes desktop
-repo vercmp feed pacman no desktop
-vendor-pkg vercmp feed pacman yes desktop
-indicator vercmp feed pacman no desktop
-mise exact mise mise no cli
-self exact feed manifest no plugin' \
+  'repo vercmp repo pacman yes desktop yes
+vendor-pkg vercmp feed pacman yes desktop no
+indicator vercmp feed pacman no desktop no
+mise exact mise mise no cli no
+self exact feed manifest no plugin no' \
   "$(for r in "${route_names[@]}"; do
-      echo "$r ${route_facts[$r.versions]} ${route_facts[$r.newest]} ${route_facts[$r.installed]} ${route_facts[$r.switch]} ${route_facts[$r.section]}"
+      echo "$r ${route_facts[$r.versions]} ${route_facts[$r.newest]} ${route_facts[$r.installed]} ${route_facts[$r.switch]} ${route_facts[$r.section]} ${route_facts[$r.build]}"
     done)"
 refuse "route: a source no route names has no fact" route shell switch yes
 refuse "route: nor an empty one" route "" versions vercmp
 same "route_section: by source, desktop for none or another" 'desktop desktop desktop desktop cli plugin desktop desktop desktop' \
-  "$(jq -r "$jq_routes"' map(route_section) | join(" ")' <<<'[{"source": "omarchy"}, {"source": "repo"}, {"source": "vendor-pkg"},
+  "$(jq -r "$jq_routes"' map(route_section) | join(" ")' <<<'[{"source": "shell"}, {"source": "repo"}, {"source": "vendor-pkg"},
     {"source": "indicator"}, {"source": "mise"}, {"source": "self"}, {"source": "shell"}, {"source": 1}, {}]')"
 same "row_order: desktop apps in table order, then mise tools, then Omabump" 'a b x mise:m self:omabump' \
   "$(jq -r "$jq_status"' .apps | row_order(["a", "b", "mise:m"]) | map(.pkg) | join(" ")' <<<'{"apps": [
     {"pkg": "self:omabump", "source": "self"}, {"pkg": "mise:m", "source": "mise"}, {"pkg": "x", "source": "indicator"},
-    {"pkg": "a", "source": "omarchy"}, {"pkg": "b", "source": "vendor-pkg"}]}')"
+    {"pkg": "a", "source": "repo"}, {"pkg": "b", "source": "vendor-pkg"}]}')"
 
 # --- recipe_version -----------------------------------------------------------
 
@@ -655,6 +668,72 @@ same "seen_since: the same version keeps its first sighting" 1000 "$(seen_since 
 same "seen_since: another row is separate" 5000 "$(seen_since other 1.1 5000)"
 same "seen_since: a newer version starts over" 6000 "$(seen_since app 1.2 6000)"
 rm -f "$seen_file"
+
+# --- a recipe's signing keys: a keyring of their own ---------------------------------
+
+same "pgp_fingerprints: one line, quoted, upper case" 'ABCDEF0123456789ABCDEF0123456789ABCDEF01' \
+  "$(printf "pkgname=x\nvalidpgpkeys=('abcdef0123456789abcdef0123456789abcdef01')\n" | pgp_fingerprints)"
+same "pgp_fingerprints: several lines, comments, unquoted" "$(printf '%s\n' "$(printf 'A%.0s' {1..40})" "$(printf 'B%.0s' {1..40})")" \
+  "$(printf 'validpgpkeys=(\n  "%s" # someone\n  %s\n)\nsource=(x)\n' "$(printf 'A%.0s' {1..40})" "$(printf 'b%.0s' {1..40})" | pgp_fingerprints)"
+same "pgp_fingerprints: none" '' "$(printf 'pkgname=x\n' | pgp_fingerprints)"
+refuse "pgp_fingerprints: a short key ID is refused" pgp_fingerprints <<<"validpgpkeys=('F0134EE680CAC571')"
+# A throwaway key pair made here, its public key shipped as omarchy-pkgs
+# ships one: pkgbuilds/<pkg>/keys/pgp/<FPR>.asc, in a git repo the clone's
+# functions read at a commit.
+if command -v gpg >/dev/null; then
+  pgp_gen=$scratch/pgp-gen
+  mkdir -m 700 "$pgp_gen"
+  pgp_key() {
+    gpg --homedir "$pgp_gen" --batch --passphrase '' --quick-gen-key "$1 <$1@example.invalid>" ed25519 sign never </dev/null >/dev/null 2>&1
+    gpg --homedir "$pgp_gen" --batch --with-colons --list-keys "$1@example.invalid" 2>/dev/null </dev/null | awk -F: '$1 == "fpr" { print $10; exit }'
+  }
+  pgp_good=$(pgp_key good) pgp_other=$(pgp_key other)
+  real_pkgs_dir=$pkgs_dir
+  pkgs_dir=$scratch/pgp-pkgs
+  mkdir -p "$pkgs_dir/pkgbuilds/signed/keys/pgp"
+  gpg --homedir "$pgp_gen" --batch --armor --export "$pgp_good" >"$pkgs_dir/pkgbuilds/signed/keys/pgp/$pgp_good.asc" 2>/dev/null </dev/null
+  # Under the good key's name: the other key, then both together.
+  gpg --homedir "$pgp_gen" --batch --armor --export "$pgp_other" >"$pkgs_dir/pkgbuilds/signed/keys/pgp/WRONG.asc" 2>/dev/null </dev/null
+  gpg --homedir "$pgp_gen" --batch --armor --export "$pgp_good" "$pgp_other" >"$pkgs_dir/pkgbuilds/signed/keys/pgp/BOTH.asc" 2>/dev/null </dev/null
+  tgit init -q "$pkgs_dir" && tgit -C "$pkgs_dir" add -A && tgit -C "$pkgs_dir" commit -qm keys
+  pgp_rev=$(git -C "$pkgs_dir" rev-parse HEAD)
+  # keyring_of <file to ship as the good key's> <fingerprints...>: status, the
+  # keyring's primary keys, the reason.
+  keyring_of() {
+    local f=$1 kr=$scratch/pgp-keyring rc=0 err
+    shift
+    if [[ $f != "$pgp_good.asc" ]]; then
+      cp "$pkgs_dir/pkgbuilds/signed/keys/pgp/$f" "$pkgs_dir/pkgbuilds/signed/keys/pgp/$pgp_good.asc"
+      tgit -C "$pkgs_dir" commit -qam "swap"
+    fi
+    err=$(pgp_keyring "$(git -C "$pkgs_dir" rev-parse HEAD)" signed "$kr" "$@" 2>&1) || rc=$?
+    echo "$rc|$(gpg --homedir "$kr" --batch --with-colons --list-keys 2>/dev/null </dev/null | awk -F: '$1 == "fpr" { print $10 }' | sort -u | tr '\n' ' ')|$err|$(stat -c %a "$kr" 2>/dev/null)"
+    pgp_keyring_drop "$kr"
+    tgit -C "$pkgs_dir" reset -q --hard "$pgp_rev"
+  }
+  same "pgp_keyring: the recipe's key, exactly its fingerprint: a keyring of it alone, mode 700" \
+    "0|$pgp_good ||700" "$(keyring_of "$pgp_good.asc" "$pgp_good")"
+  out=$(keyring_of WRONG.asc "$pgp_good")
+  same "pgp_keyring: a file whose key has another fingerprint: refused" "1|$pgp_other" "$(cut -d'|' -f1 <<<"$out")|$(grep -o "primary key(s) [0-9A-F]*" <<<"$out" | cut -d' ' -f3)"
+  out=$(keyring_of BOTH.asc "$pgp_good")
+  same "pgp_keyring: a file with a second primary key: refused" '1|not exactly' "$(cut -d'|' -f1 <<<"$out")|$(grep -o 'not exactly' <<<"$out")"
+  out=$(keyring_of "$pgp_good.asc" "$pgp_other")
+  same "pgp_keyring: a listed fingerprint without its key file: refused, saying which" \
+    "1|ships no keys/pgp/$pgp_other.asc" "$(cut -d'|' -f1 <<<"$out")|$(grep -o "ships no keys/pgp/$pgp_other.asc" <<<"$out")"
+  same "pgp_keyring: no fingerprints: an empty keyring" '0|||700' "$(keyring_of "$pgp_good.asc")"
+  # The file at the commit, not the work tree: a work tree the sync or a
+  # hook changed is not read.
+  cp "$pkgs_dir/pkgbuilds/signed/keys/pgp/WRONG.asc" "$pkgs_dir/pkgbuilds/signed/keys/pgp/$pgp_good.asc"
+  out=$(pgp_keyring "$pgp_rev" signed "$scratch/pgp-keyring" "$pgp_good" 2>&1); rc=$?
+  same "pgp_keyring: the key file at the commit, whatever the work tree holds" 0 "$rc"
+  pgp_keyring_drop "$scratch/pgp-keyring"
+  check "pgp_keyring_drop: the keyring goes" test ! -e "$scratch/pgp-keyring"
+  pkgs_dir=$real_pkgs_dir
+  gpgconf --homedir "$pgp_gen" --kill all >/dev/null 2>&1 </dev/null || true
+  rm -rf "$pgp_gen" "$scratch/pgp-pkgs"
+else
+  if [[ -n ${CI:-} ]]; then fail "pgp_keyring tests run on CI" "gpg is not installed"; else echo "SKIP - pgp_keyring: gpg is not installed"; fi
+fi
 
 # --- mise: inventory, safe backends, outdated -------------------------------------
 
@@ -775,7 +854,7 @@ same "mise: no safe selected key, no outdated call" 0 "$(grep -c '^outdated' "$m
 cat >"$shipped_apps" <<'EOF2'
 [{"pkg": "mise:e", "source": "mise", "tool": "e"}]
 EOF2
-load_table
+load_table 2>/dev/null
 mise_ls_json=$(jq -nc '[range(3000) | {key: "npm:@pad/tool-\(.)", value: [{version: "1.0.\(.)", installed: true, active: true, install_path: "/home/user/.local/share/mise/installs/pad"}]}]
   | from_entries + {e: [{version: "5.0", installed: true, active: true}]}')
 mise_safe_json='{"e": true}' mise_error=""
@@ -894,6 +973,17 @@ check "skip_over: mise, another newest version" skip_over mise true 1.0.99 1.0.9
 check "skip_over: mise, at the skipped version" skip_over mise false 1.0.99 1.0.99 1.0.99
 refuse "skip_over: mise, the skipped version is the update" skip_over mise true 1.0.99 1.0.99 1.0.0
 refuse "skip_over: no newest version, no answer" skip_over omarchy false '' 0.67.0 0.68.0-1
+# A repo row's newest version can be the repo's full one, a pkgrel or an
+# epoch in it: such a skip holds against the full version installed, and
+# can be stored at all.
+check "skip_version_ok: a full version with an epoch" skip_version_ok 1:2.0-1
+check "skip_version_ok: a full version with a pkgrel" skip_version_ok 1.2-2
+refuse "skip_version_ok: an epoch with no pkgrel is none" skip_version_ok 1:2.0
+check "row_skipped: repo, the skipped pkgrel is the newest" row_skipped repo true 1.2-2 1.2-2
+refuse "skip_over: repo, a skipped pkgrel does not end at once with the release before it installed" skip_over repo true 1.2-2 1.2-2 1.2-1
+check "skip_over: repo, ends once that pkgrel is installed" skip_over repo false 1.2-2 1.2-2 1.2-2
+refuse "skip_over: repo, a skipped epoch version does not end at once" skip_over repo true 1:2.0-1 1:2.0-1 1:1.9-1
+check "skip_over: repo, a newer full version ends it" skip_over repo true 1:2.0-2 1:2.0-1 1:1.9-1
 skipped_json='{"grok-bot": "0.66.0"}'
 same "skip_ended: the skip's version once it is over" '0.66.0|' \
   "$(skip_ended '{"pkg": "grok-bot", "source": "omarchy", "updateAvailable": true, "latest": "0.67", "installed": "0.65-1"}')|$(
@@ -933,12 +1023,12 @@ check "row_past: whole versions when not from a feed" row_past 2:1.2-7 1.2 mise
 # for its 1), which no caller may take for "not off".
 blocked_of() { local out rc=0; out=$(update_blocked "$@" 2>/dev/null) || rc=$?; echo "$rc|$out"; }
 same "update_blocked: the reason apps.json gives" '0|a known problem' \
-  "$(blocked_of '{"pkg": "a", "source": "omarchy", "updateBlocked": "a known problem"}' false)"
+  "$(blocked_of '{"pkg": "a", "source": "repo", "updateBlocked": "a known problem"}' false)"
 same "update_blocked: none for an app that updates itself" '1|' \
-  "$(blocked_of '{"pkg": "a", "source": "omarchy", "updateBlocked": "x"}' true)"
+  "$(blocked_of '{"pkg": "a", "source": "repo", "updateBlocked": "x"}' true)"
 same "update_blocked: none for Omabump's own row" '1|' "$(blocked_of "$self_app" false)"
 same "update_blocked: none without one" '1|' \
-  "$(blocked_of '{"pkg": "a", "source": "omarchy", "updateBlocked": ""}' false)"
+  "$(blocked_of '{"pkg": "a", "source": "repo", "updateBlocked": ""}' false)"
 same "update_blocked: an entry jq cannot parse is unread, not not off" '5|' "$(blocked_of 'not json' false)"
 same "update_blocked: unread when jq is killed, its status kept" '137|' \
   "$( jq() { return 137; }; blocked_of '{"pkg": "a", "updateBlocked": "x"}' false )"
@@ -947,68 +1037,85 @@ same "update_blocked: a jq that fails with 1 is unread too (2)" '2|' \
 same "update_blocked: unread for an app that updates itself as well" '137|' \
   "$( jq() { return 137; }; blocked_of '{"pkg": "a"}' true )"
 
-# derived <source> <installed name> <installed> <latest> <from> <hold s> <seen s ago> [<app>]:
-# a row as a check's route would leave it (installable, the recipe's note),
-# through row_derive and row_json, at 2026-01-01 00:00 UTC, the release
-# first seen (seen.json) that many seconds before. Prints the row.
+# derived <source> <installed name> <installed> <latest> <from> [<app>]:
+# a row as a check's route would leave it (installable, the route's note),
+# through row_derive and row_json. Prints the row.
 derived() {
-  local pkg source installed_name installed latest from hold app label now installable note
-  local mise_update self_updating held unchecked error stale recipe request omarchy_update blocked
+  local pkg source installed_name installed latest from app label installable note
+  local mise_update self_updating held unchecked error stale omarchy_update blocked
   local muted_json='[]' skipped_json='{}' update switchable muted skipped skip_end quiet
   local hold_clause unread=false
-  local TZ=UTC; export TZ
-  local seen_file=$scratch/derived-seen.json
-  pkg=r-app source=$1 installed_name=$2 installed=$3 latest=$4 from=$5 hold=$6
-  app=${8:-'{"pkg": "r-app", "label": "R <App>", "icon": "assets/r.svg"}'}
-  label=$(jq -r '.label // .pkg' <<<"$app") now=1767225600 installable=true note="Recipe from omarchy-pkgs 0123456789ab"
+  pkg=r-app source=$1 installed_name=$2 installed=$3 latest=$4 from=$5
+  app=${6:-'{"pkg": "r-app", "label": "R <App>", "icon": "assets/r.svg"}'}
+  label=$(jq -r '.label // .pkg' <<<"$app") installable=true note="A note of the route"
   mise_update=false self_updating=false held=false unchecked=false
-  error="" stale=false recipe="r-app 1.0-1" request="" omarchy_update=false blocked=""
+  error="" stale=false omarchy_update=false blocked=""
   # A copy that updates itself has no route: nothing installable, no note.
   if self_updating_name "$installed_name"; then self_updating=true installable=false note=""; fi
-  jq -n --arg v "$latest" --argjson at $(( now - $7 )) '{"r-app": {version: $v, at: $at}}' >"$seen_file"
   row_derive
   row_json
 }
 mkdir -p "$state_dir"
 row_fields='"\(.updateAvailable)|\(.installable)|\(.held)|\(.switchable)|\(.unchecked)|\(.note)"'
-same "row: an omarchy row with an update, the whole row" \
-  '{"pkg":"r-app","label":"R ‹App›","source":"omarchy","installedName":"r-app","installed":"1.0-1","latest":"1.2","versionFrom":"feed","updateAvailable":true,"installable":true,"error":"","note":"Recipe from omarchy-pkgs 0123456789ab","stale":false,"switchable":false,"recipe":"r-app 1.0-1","request":"","muted":false,"skipped":false,"skipEnded":"","unchecked":false,"held":false,"omarchyUpdate":false,"blocked":false,"selfUpdating":false,"icon":"assets/r.svg","iconLight":"","holdClause":"","unread":false,"section":"desktop","switchRoute":true,"repoVersion":""}' \
-  "$(derived omarchy r-app 1.0-1 1.2 feed 0 0)"
-same "row: the recipe holds the release: no Update, and the hold's clause first" \
-  'true|false|true|false|false|omarchy-pkgs holds new releases for 24 h, Update from Jan 2 00:00; Recipe from omarchy-pkgs 0123456789ab' \
-  "$(derived omarchy r-app 1.0-1 1.2 feed 86400 0 | jq -r "$row_fields")"
-same "row: and holdClause names the clause, for a local refresh to take off" \
-  'omarchy-pkgs holds new releases for 24 h, Update from Jan 2 00:00' \
-  "$(derived omarchy r-app 1.0-1 1.2 feed 86400 0 | jq -r .holdClause)"
-same "row: a hold counts from when a check first saw the release" \
-  'true|false|true|false|false|omarchy-pkgs holds new releases for 2 h, Update from Jan 1 01:00; Recipe from omarchy-pkgs 0123456789ab' \
-  "$(derived omarchy r-app 1.0-1 1.2 feed 5400 1800 | jq -r "$row_fields")"
-same "row: a hold whose window has passed: Update as usual" \
-  'true|true|false|false|false|Recipe from omarchy-pkgs 0123456789ab' \
-  "$(derived omarchy r-app 1.0-1 1.2 feed 86400 86400 | jq -r "$row_fields")"
+same "row: a vendor row with an update, the whole row" \
+  '{"pkg":"r-app","label":"R ‹App›","source":"vendor-pkg","installedName":"r-app","installed":"1.0-1","latest":"1.2","versionFrom":"feed","updateAvailable":true,"installable":true,"error":"","note":"A note of the route","stale":false,"switchable":false,"skipped":false,"skipEnded":"","unchecked":false,"held":false,"omarchyUpdate":false,"blocked":false,"selfUpdating":false,"icon":"assets/r.svg","iconLight":"","holdClause":"","unread":false,"section":"desktop","switchRoute":true,"repoVersion":"","vendorVersion":"","ahead":false,"buildable":false,"buildNote":""}' \
+  "$(derived vendor-pkg r-app 1.0-1 1.2 feed)"
+same "row: no field nothing reads (muted, request, recipe)" 'false|false|false' \
+  "$(derived vendor-pkg r-app 1.0-1 1.2 feed | jq -r '"\(has("muted"))|\(has("request"))|\(has("recipe"))"')"
 same "row: the feed's version is the installed one's upstream part: no update" \
-  'false|true|false|false|false|Recipe from omarchy-pkgs 0123456789ab' \
-  "$(derived omarchy r-app 2:1.2-3 1.2 feed 86400 0 | jq -r "$row_fields")"
+  'false|true|false|false|false|A note of the route' \
+  "$(derived vendor-pkg r-app 2:1.2-3 1.2 feed | jq -r "$row_fields")"
 same "row: installed under another name at the newest version: Switch" \
-  'false|true|false|true|false|Recipe from omarchy-pkgs 0123456789ab' \
-  "$(derived vendor-pkg r-app-bin 1.2-1 1.2 feed 0 0 | jq -r "$row_fields")"
+  'false|true|false|true|false|A note of the route' \
+  "$(derived vendor-pkg r-app-bin 1.2-1 1.2 feed | jq -r "$row_fields")"
 same "row: under another name and behind: Update replaces it, no Switch" \
-  'true|true|false|false|false|Recipe from omarchy-pkgs 0123456789ab' \
-  "$(derived vendor-pkg r-app-bin 1.1-1 1.2 feed 0 0 | jq -r "$row_fields")"
+  'true|true|false|false|false|A note of the route' \
+  "$(derived vendor-pkg r-app-bin 1.1-1 1.2 feed | jq -r "$row_fields")"
+same "row: under another name, past the newest version: no Switch" \
+  'false|true|false|false|false|A note of the route' \
+  "$(derived vendor-pkg r-app-bin 1.3-1 1.2 feed | jq -r "$row_fields")"
 # shellcheck disable=SC2088 # the path as apps.json writes it
 same "row: a copy that updates itself, compared as it is, its note says how" \
   'true|false|false|false|false|Updates itself: run r update' \
-  "$(derived omarchy '~/.r/app' 1.1 1.2 feed 86400 0 '{"pkg": "r-app", "selfUpdate": "run r update"}' | jq -r "$row_fields")"
+  "$(derived repo '~/.r/app' 1.1 1.2 feed '{"pkg": "r-app", "selfUpdate": "run r update"}' | jq -r "$row_fields")"
 # shellcheck disable=SC2088 # the path as apps.json writes it
 same "row: a copy at a pre-release: unchecked, and why" \
   'false|false|false|false|true|Pre-release build, not compared with the feed'"'"'s stable releases; Updates itself: open r-app to update' \
-  "$(derived omarchy '~/.r/app' 1.3-nightly.1 1.2 feed 0 0 '{"pkg": "r-app"}' | jq -r "$row_fields")"
+  "$(derived repo '~/.r/app' 1.3-nightly.1 1.2 feed '{"pkg": "r-app"}' | jq -r "$row_fields")"
+# shellcheck disable=SC2088 # the path as apps.json writes it
+same "row: a copy is never ahead nor buildable" 'false|false' \
+  "$(derived repo '~/.r/app' 1.1 1.2 feed '{"pkg": "r-app"}' | jq -r '"\(.ahead)|\(.buildable)"')"
+
+# switch_target_ok: the one rule the check and the installer share for
+# whether Switch may install a version over what is installed.
+check "switch_target_ok: at the same upstream version, a pkgrel apart" switch_target_ok 1.2-3 1.2
+check "switch_target_ok: the repo's full version at the installed one" switch_target_ok 1:1.2-1 1:1.2-1
+refuse "switch_target_ok: the installed full version newer than the repo's" switch_target_ok 1.2-2 1.2-1
+refuse "switch_target_ok: no target" switch_target_ok 1.2-1 ""
+
+# build_hold_clause: a recipe's release-age window, from the first check
+# that saw the version, at 2026-01-01 00:00 UTC.
+hold_of() {
+  local TZ=UTC seen_file=$scratch/derived-seen.json now=1767225600
+  export TZ
+  jq -n --arg v 1.2 --argjson at $(( now - $2 )) '{"r-app": {version: $v, at: $at}}' >"$seen_file"
+  build_hold_clause r-app 1.2 "$1" "$now"
+}
+same "build_hold_clause: the recipe holds the release: until when Build now waits" \
+  'omarchy-pkgs holds new releases for 24 h, Build now from Jan 2 00:00' "$(hold_of 86400 0)"
+same "build_hold_clause: counted from when a check first saw it" \
+  'omarchy-pkgs holds new releases for 2 h, Build now from Jan 1 01:00' "$(hold_of 5400 1800)"
+same "build_hold_clause: a window that has passed: nothing" '' "$(hold_of 86400 86400)"
+same "build_hold_clause: no window: nothing" '' "$(hold_of 0 0)"
+same "build_why: in order: no build, Update off, tools, the recipe" \
+  "Not in Omarchy's repo yet|Update off: x|m|held|" \
+  "$(build_why false x m held)|$(build_why true x m held)|$(build_why true '' m held)|$(build_why true '' '' held)|$(build_why true '' '' '')"
 # The settings' mute and skip, for a row with an update.
 # quiet_of <muted> <skipped>: row_quiet's answer for r-app at 1.0-1 with
 # 1.2 out, under those settings, as "muted|skipped|skip_end|quiet".
 quiet_of() {
   local muted_json=$1 skipped_json=$2 muted skipped skip_end quiet
-  row_quiet r-app omarchy true 1.2 1.0-1
+  row_quiet r-app repo true 1.2 1.0-1
   # shellcheck disable=SC2031 # row_quiet set them in this shell, as locals here
   echo "$muted|$skipped|$skip_end|$quiet"
 }
@@ -1191,109 +1298,89 @@ same "package_signature_ok: an armored signature: refused, as pacman-key refuses
   "1||the signature is armored; pacman takes only a binary one|" "$(sig_of "$gpg_good"$'\n[GNUPG:] TRUST_FULLY 0 pgp')"
 rm -rf "$scratch/gpgbin" "$scratch/sig.sig" "$scratch/sig.pkg" "$scratch/gpg-args"
 
-# repo_derived <installed> <feed's latest> <feed error> <repo state> <repo's version> [<installable>] [<installed name>]:
+# repo_derived <installed> <vendor's latest> <feed error> <repo state> <repo's version> [<installable>] [<installed name>] [<build reason>]:
 # a check's repo row, the route's installable as given (true by default),
-# installed as r-app unless <installed name> says otherwise,
-# through repo_row, row_derive and row_json, and its fields
-# "update|installable|held|latest|versionFrom|stale|error|note|holdClause|repoVersion".
+# installed as r-app unless <installed name> says otherwise, the vendor's
+# version as the feed gave it (or, with a feed error, the last check's),
+# through row_derive (repo_derive) and row_json, and its fields
+# "update|installable|held|latest|versionFrom|stale|error|note|holdClause|repoVersion|ahead|buildable|buildNote|switchable".
 repo_derived() {
-  local pkg=r-app source=repo installed_name=${7:-r-app} installed=$1 latest=$2 from=feed feed_error=$3 route_error=""
+  local pkg=r-app source=repo installed_name=${7:-r-app} installed=$1 latest="" from="" vendor_version=$2 feed_error=$3 route_error=""
   # shellcheck disable=SC2034 # repo_sha256 is repo_lookup's, set for it
   local repo_state=$4 repo_error="" repo_version="" repo_file="" repo_sha256="" stale=false installable=${6:-true} note=""
-  local app='{"pkg": "r-app", "label": "R"}' label=R now=1767225600 hold=0 mise_update=false self_updating=false
-  local held=false unchecked=false recipe="" request="" omarchy_update=false blocked="" error line
+  local app='{"pkg": "r-app", "label": "R"}' label=R mise_update=false self_updating=false repo_why="" repo_failed=false
+  local held=false unchecked=false omarchy_update=false blocked="" error line build_reason=${8:-}
   local muted_json='[]' skipped_json='{}' update switchable muted skipped skip_end quiet hold_clause="" unread=false
+  local repo_new ahead buildable build_note route_ok
   local -A repo_entries=()
   [[ -z $5 ]] || repo_entries[r-app]="$5 r-app-$5-any.pkg.tar.zst $sum64"
+  repo_lookup r-app || true
   case $4 in
-    none) repo_error="No [omarchy] repo in pacman.conf" ;;
-    failed) repo_error="could not fetch Omarchy's repo database from https://pkgs.example (curl exit 6)" ;;
+    none) repo_error="No [omarchy] repo in pacman.conf" repo_why=$repo_error ;;
+    failed) repo_error="could not fetch Omarchy's repo database from https://pkgs.example (curl exit 6)" repo_failed=true ;;
+    ready) [[ -n $repo_version ]] || repo_why="Omarchy's repo has no r-app" ;;
   esac
   # A feed that failed leaves the last check's version, as the check does.
   [[ -z $feed_error ]] || stale=true
-  repo_row
+  row_derive
   error=""
   while IFS= read -r line; do [[ -z $line ]] || error+=${error:+; }$line; done <<<"$route_error"$'\n'"$feed_error"
-  row_derive
-  row_json | jq -r '"\(.updateAvailable)|\(.installable)|\(.held)|\(.latest)|\(.versionFrom)|\(.stale)|\(.error)|\(.note)|\(.holdClause)|\(.repoVersion)"'
+  row_json | jq -r '"\(.updateAvailable)|\(.installable)|\(.held)|\(.latest)|\(.versionFrom)|\(.stale)|\(.error)|\(.note)|\(.holdClause)|\(.repoVersion)|\(.ahead)|\(.buildable)|\(.buildNote)|\(.switchable)"'
 }
-same "repo row: the repo has the vendor's newest: Update" 'true|true|false|1.2|feed|false||||1.2-1' \
+same "repo row: the repo has the vendor's newest: Update" 'true|true|false|1.2|feed|false||||1.2-1|false|false||false' \
   "$(repo_derived 1.0-1 1.2 '' ready 1.2-1)"
-same "repo row: the vendor ahead of the repo: the update shows, held, no Update, and the note says so" \
-  "true|false|true|1.2|feed|false||Not in Omarchy's repo yet|Not in Omarchy's repo yet|1.0-1" "$(repo_derived 1.0-1 1.2 '' ready 1.0-1)"
+same "repo row: the vendor ahead of the repo: the update shows, held, no Update, ahead and buildable" \
+  "true|false|true|1.2|feed|false||Not in Omarchy's repo yet|Not in Omarchy's repo yet|1.0-1|true|true||false" "$(repo_derived 1.0-1 1.2 '' ready 1.0-1)"
+same "repo row: ahead, Build now cannot run: not buildable, and why" \
+  "true|false|true|1.2|feed|false||Not in Omarchy's repo yet|Not in Omarchy's repo yet|1.0-1|true|false|Missing: makepkg|false" \
+  "$(repo_derived 1.0-1 1.2 '' ready 1.0-1 true r-app 'Missing: makepkg')"
 same "repo row: a pkgrel the repo has, the feed's version installed: Update, to the repo's full version" \
-  'true|true|false|1.2-2|repo|false||||1.2-2' "$(repo_derived 1.2-1 1.2 '' ready 1.2-2)"
-same "repo row: the repo ahead of the feed: the repo's version is the newest" 'true|true|false|1.3-1|repo|false||||1.3-1' \
+  'true|true|false|1.2-2|repo|false||||1.2-2|false|false||false' "$(repo_derived 1.2-1 1.2 '' ready 1.2-2)"
+same "repo row: the repo ahead of the feed: the repo's version is the newest" 'true|true|false|1.3-1|repo|false||||1.3-1|false|false||false' \
   "$(repo_derived 1.2-1 1.2 '' ready 1.3-1)"
-same "repo row: the feed ahead of the repo, the repo ahead of what is installed: the repo's version, which Update installs" \
-  'true|true|false|1.2-1|repo|false||||1.2-1' "$(repo_derived 1.0-1 1.3 '' ready 1.2-1)"
-same "repo row: current in both" 'false|true|false|1.2|feed|false||||1.2-1' "$(repo_derived 1.2-1 1.2 '' ready 1.2-1)"
-same "repo row: the feed failed, the repo answered: its version, no error, not stale" 'true|true|false|1.2-1|repo|false||||1.2-1' \
+same "repo row: the repo ahead of what is installed, the vendor ahead of the repo: Update to the repo's, and ahead: the vendor's shows" \
+  'true|true|false|1.3|feed|false||||1.2-1|true|true||false' "$(repo_derived 1.0-1 1.3 '' ready 1.2-1)"
+same "repo row: current in both: no Update, nothing ahead" 'false|false|false|1.2|feed|false||||1.2-1|false|false||false' \
+  "$(repo_derived 1.2-1 1.2 '' ready 1.2-1)"
+same "repo row: the feed failed, the repo answered: its version, no error, not stale" 'true|true|false|1.2-1|repo|false||||1.2-1|false|false||false' \
   "$(repo_derived 1.0-1 1.1 'could not fetch the feed' ready 1.2-1)"
-same "repo row: the repo unreadable with an update: an error, no Update" \
-  "true|false|false|1.2|feed|false|could not fetch Omarchy's repo database from https://pkgs.example (curl exit 6)|||" \
+same "repo row: the feed failed, its last version ahead of the repo: ahead still, stale, no error" \
+  "true|false|true|1.3|feed|true||Not in Omarchy's repo yet|Not in Omarchy's repo yet|1.2-1|true|true||false" \
+  "$(repo_derived 1.2-1 1.3 'could not fetch the feed' ready 1.2-1)"
+same "repo row: the repo unreadable with a newer release: an error, no Update, ahead by the feed" \
+  "true|false|false|1.2|feed|false|could not fetch Omarchy's repo database from https://pkgs.example (curl exit 6)||||true|true||false" \
   "$(repo_derived 1.0-1 1.2 '' failed '')"
-same "repo row: the repo unreadable, no update: no error, nothing claimed" 'false|true|false|1.2|feed|false||||' \
+same "repo row: the repo unreadable, no update: no error, nothing claimed" 'false|false|false|1.2|feed|false|||||false|false||false' \
   "$(repo_derived 1.2-1 1.2 '' failed '')"
-same "repo row: both unreadable: both errors" \
-  "false|true|false|1.0|feed|true|could not fetch Omarchy's repo database from https://pkgs.example (curl exit 6); feed down|||" \
+same "repo row: both unreadable: both errors, the last known version" \
+  "false|false|false|1.0|feed|true|could not fetch Omarchy's repo database from https://pkgs.example (curl exit 6); feed down||||false|false||false" \
   "$(repo_derived 1.2-1 1.0 'feed down' failed '')"
-same "repo row: no such repo here: no Update, the note says so, no error" \
-  'true|false|false|1.2|feed|false||No [omarchy] repo in pacman.conf||' "$(repo_derived 1.0-1 1.2 '' none '')"
+same "repo row: no such repo here: no Update, the note says so, no error, ahead" \
+  'true|false|false|1.2|feed|false||No [omarchy] repo in pacman.conf|||true|true||false' "$(repo_derived 1.0-1 1.2 '' none '')"
 same "repo row: a repo without the package: no Update, the note says so" \
-  "true|false|false|1.2|feed|false||Omarchy's repo has no r-app||" "$(repo_derived 1.0-1 1.2 '' ready '')"
+  "true|false|false|1.2|feed|false||Omarchy's repo has no r-app|||true|true||false" "$(repo_derived 1.0-1 1.2 '' ready '')"
 same "repo row: Update off (the route's installable false) and the vendor ahead: no hold, Update is off, not waiting" \
-  'true|false|false|1.2|feed|false||||1.0-1' "$(repo_derived 1.0-1 1.2 '' ready 1.0-1 false)"
-same "repo row: installed under another name: no Update, and the installer's reason in the note" \
-  "true|false|false|1.2|feed|false||Installed as r-app-bin; Update from Omarchy's repo replaces only r-app itself||2.0-1" \
-  "$(repo_derived 1.0-1 1.2 '' ready 2.0-1 true r-app-bin)"
-# What a repo row may announce (repo_update_ok, the installer's rule):
-# "<installed> <installed name> <repo's version>" each, ok or no.
-upd_ok_of() { local repo_version=$3; if repo_update_ok "$1" "$2" r-app; then echo ok; else echo no; fi; }
-same "repo_update_ok: only a package the repo has, newer, over the row's own" 'ok no no no' \
-  "$(upd_ok_of 1.0-1 r-app 1.1-1) $(upd_ok_of 1.0-1 r-app '') $(upd_ok_of 1.1-1 r-app 1.1-1) $(upd_ok_of 1.0-1 r-app-bin 1.1-1)"
-
-# om_derived <installed> <latest> <repo's version> <hold s> <build tools missing> [<repo tools missing>] [<held>]:
-# an omarchy row as its route left it (Update there, the recipe's note)
-# through omarchy_repo_row and row_derive, the release first seen just now:
-# "update|installable|held|note".
-om_derived() {
-  local pkg=r-app source=omarchy installed_name=r-app installed=$1 latest=$2 from=feed repo_version=$3 hold=$4
-  local missing_line=$5 repo_missing=${6:-} app='{"pkg": "r-app", "label": "R"}' label=R now=1767225600
-  local mise_update=false self_updating=false installable=true note="Recipe from omarchy-pkgs 0123456789ab" held=${7:-false}
-  # A hold the last check's row carried, as a busy clone keeps it.
-  [[ $held == false ]] || installable=false
-  local unchecked=false error="" stale=false recipe="" request="" omarchy_update=false blocked="" unread=false
-  local muted_json='[]' skipped_json='{}' update switchable muted skipped skip_end quiet hold_clause=""
-  local seen_file=$scratch/om-seen.json
-  jq -n --arg v "$latest" --argjson at "$now" '{"r-app": {version: $v, at: $at}}' >"$seen_file"
-  ( repo_missing_line() { printf '%s' "$repo_missing"; }
-    omarchy_repo_row
-    row_derive
-    row_json ) | jq -r '"\(.updateAvailable)|\(.installable)|\(.held)|\(.note)"'
-}
-om_hold='omarchy-pkgs holds new releases for 24 h, Update from Jan 2 00:00'
-om_tools='Missing: makepkg; sudo pacman -S --needed base-devel'
-same "omarchy row: the repo at the vendor's newest: Update, the recipe's hold not applied" \
-  'true|true|false|Recipe from omarchy-pkgs 0123456789ab' "$(TZ=UTC om_derived 1.0-1 1.2 1.2-1 86400 '')"
-same "omarchy row: the repo past the vendor's newest: Update too" 'true|true|false|Recipe from omarchy-pkgs 0123456789ab' \
-  "$(TZ=UTC om_derived 1.0-1 1.2 1.3-1 86400 '')"
-same "omarchy row: the repo behind the vendor: the recipe's hold" "true|false|true|$om_hold; Recipe from omarchy-pkgs 0123456789ab" \
-  "$(TZ=UTC om_derived 1.0-1 1.2 1.1-1 86400 '')"
-same "omarchy row: no package in the repo: the recipe's hold" "true|false|true|$om_hold; Recipe from omarchy-pkgs 0123456789ab" \
-  "$(TZ=UTC om_derived 1.0-1 1.2 '' 86400 '')"
-same "omarchy row: a build tool missing, the repo at the vendor's newest: Update, no build tool asked for" \
-  'true|true|false|Recipe from omarchy-pkgs 0123456789ab' "$(TZ=UTC om_derived 1.0-1 1.2 1.2-1 0 "$om_tools")"
-same "omarchy row: a build tool missing, the repo behind the vendor: no Update, the tools named" \
-  "true|false|false|$om_tools; Recipe from omarchy-pkgs 0123456789ab" "$(TZ=UTC om_derived 1.0-1 1.2 1.1-1 0 "$om_tools")"
-same "omarchy row: a tool of the repo path missing, the repo at the vendor's newest: the build's rules, its hold" \
-  "true|false|true|$om_hold; Recipe from omarchy-pkgs 0123456789ab" \
-  "$(TZ=UTC om_derived 1.0-1 1.2 1.2-1 86400 '' 'Missing: gpg; sudo pacman -S --needed gnupg')"
-same "omarchy row: a hold the last check left (a busy clone), the repo at the vendor's newest: gone, Update back" \
-  'true|true|false|Recipe from omarchy-pkgs 0123456789ab' "$(TZ=UTC om_derived 1.0-1 1.2 1.2-1 0 '' '' true)"
-same "omarchy row: that hold with the repo behind the vendor: kept" 'true|false|true|Recipe from omarchy-pkgs 0123456789ab' \
-  "$(TZ=UTC om_derived 1.0-1 1.2 1.1-1 0 '' '' true)"
-rm -f "$scratch/om-seen.json"
+  'true|false|false|1.2|feed|false||||1.0-1|true|true||false' "$(repo_derived 1.0-1 1.2 '' ready 1.0-1 false)"
+same "repo row: installed under another name, the repo newer: Update replaces it" \
+  'true|true|false|2.0-1|repo|false||||2.0-1|false|false||false' "$(repo_derived 1.0-1 1.2 '' ready 2.0-1 true r-app-bin)"
+same "repo row: installed under another name at the repo's version: Switch" \
+  'false|false|false|2.0|feed|false||||2.0-1|false|false||true' "$(repo_derived 2.0-1 2.0 '' ready 2.0-1 true r-app-bin)"
+same "repo row: installed under another name past the repo's full version: no Switch" \
+  'false|false|false|2.0|feed|false||||2.0-1|false|false||false' "$(repo_derived 2.0-2 2.0 '' ready 2.0-1 true r-app-bin)"
+same "repo row: Switch needs the route: not with Update off" \
+  'false|false|false|2.0|feed|false||||2.0-1|false|false||false' "$(repo_derived 2.0-1 2.0 '' ready 2.0-1 false r-app-bin)"
+same "repo row: no feed: the repo's version alone, never ahead" 'true|true|false|1.2-1|repo|false||||1.2-1|false|false||false' \
+  "$(repo_derived 1.0-1 '' '' ready 1.2-1)"
+same "repo row: no feed, current: the repo's version" 'false|false|false|1.2-1|repo|false||||1.2-1|false|false||false' \
+  "$(repo_derived 1.2-1 '' '' ready 1.2-1)"
+# vendor_ahead: the vendor's release newer than what is installed and than
+# the repo's package (by its upstream part), or the repo has none.
+check "vendor_ahead: newer than both" vendor_ahead 1.0-1 1.1-1 1.2
+refuse "vendor_ahead: the repo has it" vendor_ahead 1.0-1 1.2-1 1.2
+refuse "vendor_ahead: installed already" vendor_ahead 1.2-1 1.0-1 1.2
+check "vendor_ahead: the repo has none" vendor_ahead 1.0-1 '' 1.2
+refuse "vendor_ahead: no vendor version" vendor_ahead 1.0-1 '' ''
+check "vendor_ahead: upstream parts compared, as a feed has no epoch" vendor_ahead 1:1.0-1 1:1.0-1 1.2
 
 # --- status.json: written, read and checked in one place -------------------------------
 
@@ -1317,19 +1404,13 @@ same "status_load finished: but is no finished check" no "$(st_load '{"schemaVer
 same "status_row: the row of a pkg" '{"pkg":"a","latest":"1"}' "$(status_row a "$st_ok")"
 same "status_row: none is {}" '{}' "$(status_row c "$st_ok")"
 same "status_row: through a filter" '1|' "$(status_row a "$st_ok" '.latest')|$(status_row b "$st_ok" '.latest // ""')"
-# A row's unread and holdClause, from its fields, or for a row from before
-# them (0.1.17) from its note.
-st_row_state() { jq -r "$jq_status"' "\(row_unread)|\(row_hold_clause)"' <<<"$1"; }
-st_clause='omarchy-pkgs holds new releases for 24 h, Update from Jan 2 00:09'
-same "row_unread, row_hold_clause: the fields" "true|x" "$(st_row_state '{"unread": true, "holdClause": "x", "note": "y"}')"
-same "row_unread, row_hold_clause: a row from before them, by its note" "true|$st_clause" \
-  "$(st_row_state '{"unchecked": true, "note": "Not checked yet"}' | cut -d'|' -f1)|$(st_row_state "{\"note\": \"$st_clause; Recipe\"}" | cut -d'|' -f2)"
-same "row_unread, row_hold_clause: the fields win over the note" "false|" \
-  "$(st_row_state "{\"unread\": false, \"holdClause\": \"\", \"unchecked\": true, \"note\": \"Not checked yet\"}")"
-same "row_hold_clause: an empty holdClause wins over a note that starts with a clause" "false|" \
-  "$(st_row_state "{\"unread\": false, \"holdClause\": \"\", \"note\": \"$st_clause; Recipe from omarchy-pkgs 0123456789ab\"}")"
-same "row_hold_clause: a note that only starts like one is no clause" "false|" \
-  "$(st_row_state "{\"note\": \"$st_clause;Recipe\"}")"
+# A row's unread, from its field, or for a row from before it (0.1.17)
+# from its note.
+st_row_state() { jq -r "$jq_status"' "\(row_unread)"' <<<"$1"; }
+same "row_unread: the field" "true" "$(st_row_state '{"unread": true, "note": "y"}')"
+same "row_unread: a row from before it, by its note" "true" "$(st_row_state '{"unchecked": true, "note": "Not checked yet"}')"
+same "row_unread: the field wins over the note" "false" \
+  "$(st_row_state "{\"unread\": false, \"unchecked\": true, \"note\": \"Not checked yet\"}")"
 st_field() { local status_file=$st_file; printf '%s' "$1" >"$status_file"; status_field "$2" "$3"; }
 same "status_field: a string field, a flag as text" '1|true' \
   "$(st_field '{"schemaVersion": 1, "apps": [{"pkg": "a", "latest": "1", "updateAvailable": true}]}' a latest)|$(
@@ -1576,9 +1657,24 @@ done
 same "apps.json names a section only for the CLI packages" '[]' \
   "$(jq -c '[.[] | select(has("section") and (.section != "cli" or .source == "mise")) | .pkg]' "$root/apps.json")"
 # Update installs each of them from Omarchy's repo, signed, never from a
-# local build: the CLI packages are all on the repo route, and nothing else.
-same "every CLI package of apps.json is on the repo route, and only they are" '20|20' \
+# local build: the CLI packages and the desktop apps Omarchy packages are
+# all on the repo route. Build now may build only the recipes listed here:
+# not opencode (one recipe builds two packages), minimax-code and
+# deepseek-dsh (npm install over the network in package()), kilocode-cli
+# (its version from git ls-remote), cursor-cli and muse-code (composed
+# versions). Those last three, and deepseek-dsh, have no feed: they read
+# omarchy-pkgs' master, which says nothing the repo does not.
+same "every CLI package of apps.json is on the repo route, with the 8 desktop apps Omarchy packages" '20|28' \
   "$(jq -r '"\([.[] | select(.section == "cli" and .source == "repo")] | length)|\([.[] | select(.source == "repo")] | length)"' "$root/apps.json")"
+same "apps.json: the entries Build now may build" \
+  'amp-cli antigravity-cli claude-code claude-desktop crush-bin devin-cli freebuff github-copilot-cli grok-bot grok-cli hermes-desktop kimi-code lmstudio-bin oh-my-pi openai-codex openai-codex-desktop openclaw openrouter-ori perplexity pi-coding-agent qwen-code t3code-bin' \
+  "$(jq -r '[.[] | select(.build == true) | .pkg] | sort | join(" ")' "$root/apps.json")"
+same "apps.json: no entry still on the omarchy route, no build on another route" '[]' \
+  "$(jq -c '[.[] | select(.source == "omarchy" or (.build == true and .source != "repo")) | .pkg]' "$root/apps.json")"
+same "apps.json: the feeds read from omarchy-pkgs' master are gone" '[]' \
+  "$(jq -c '[.[] | select(.pkg | IN("cursor-cli", "muse-code", "deepseek-dsh")) | select(has("feed")) | .pkg]' "$root/apps.json")"
+same "apps.json: no feed reads omarchy-pkgs" '[]' \
+  "$(jq -c '[.[] | select((.feed.url // "" | tostring) | test("omarchy-pkgs")) | .pkg]' "$root/apps.json")"
 # Before it, Omarchy named each agent's mise tool in /etc/mise/conf.d/omarchy-tools.toml;
 # the key mise ls reports is that name, so the table must carry it.
 for t in claude codex crush opencode grok copilot cursor-agent pi amp antigravity-cli qwen muse \

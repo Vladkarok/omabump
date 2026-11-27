@@ -4,16 +4,17 @@
 # and pacman always asks before it installs.
 # Every path runs install knowledge someone else maintains:
 #
-#   omarchy     Omarchy's own recipe from omarchy-pkgs at the commit pinned
-#               in pins.json, checked out detached, moved to the vendor's
-#               newest release by omarchy-pkgs' bin/sync-upstream. The recipe
-#               diff is shown before anything is built. First, though, when
-#               Omarchy's repo already has the vendor's newest version, its
-#               package is installed as on the repo path, and nothing is built.
-#   repo        The package Omarchy's own repo [omarchy] publishes, signed
-#               with Omarchy's key: downloaded, its sha256, signature, name
-#               and version checked, installed with pacman -U. No code from
-#               omarchy-pkgs runs.
+#   repo        Update: the package Omarchy's own repo [omarchy] publishes,
+#               signed with Omarchy's key: downloaded, its sha256,
+#               signature, name and version checked, installed with pacman
+#               -U. It never builds, and no code from omarchy-pkgs runs.
+#               Build now (--build), for a release the vendor has and the
+#               repo not yet, on an entry with "build": true and only while
+#               the buildAhead setting is on: Omarchy's own recipe from
+#               omarchy-pkgs at the commit pinned in pins.json, checked out
+#               detached, moved to the vendor's newest release by
+#               omarchy-pkgs' bin/sync-upstream, built with makepkg. The
+#               recipe diff is shown before anything is built.
 #   vendor-pkg  The Arch package the vendor publishes, at the version the
 #               app's feed advertises, installed with pacman -U.
 #   mise        mise install <tool>@<version>, the version mise outdated
@@ -25,22 +26,22 @@
 # An app installed as a copy that updates itself (apps.json "appImage" or
 # "npmPackage") instead of its package is refused: the app updates itself.
 #
-#   omabump-install [--prepare] [--switch] <pkg>
+#   omabump-install [--prepare] [--switch | --build] <pkg>
 #
 # --switch replaces an app installed under another package name
 # (chatgpt-desktop, z-code-bin) with <pkg> at the same or a newer full
 # version. Update requires a strictly newer one. Either way pacman asks
 # before it removes the old package, and the scripts the new package runs
-# are printed first. On the omarchy path the conflict pacman needs is read
-# from the recipe before the build, and from the built package again after.
+# are printed first. Build now reads the conflict pacman needs from the
+# recipe before the build, and from the built package again after.
 # An Update whose route has nothing newer than what is installed succeeds
 # when the app has already reached the version the panel showed (something
 # else updated it since the last check, or while makepkg built) and fails
 # when the route is behind that version (nothing_newer).
 #
-# --prepare fetches, syncs and prepares the recipe (this runs omarchy-pkgs'
-# sync tool and the recipe's hook, and makepkg reads the PKGBUILD), and stops
-# before makepkg builds. On the vendor path it downloads and checks the
+# --prepare with --build fetches, syncs and prepares the recipe (this runs
+# omarchy-pkgs' sync tool and the recipe's hook, and makepkg reads the
+# PKGBUILD), and stops before makepkg builds. On the vendor path it downloads and checks the
 # package and stops before pacman -U. On the repo path it reads the repo's
 # database and stops before it downloads the package. Nothing is installed and sudo is never
 # called; the staging and install commands are printed instead. On the self
@@ -58,7 +59,8 @@ source "$here/omabump-common"
 # the end when the file runs as a command, is the run.
 #
 # A run's facts are globals, set in this order and read by all that follows:
-#   install_args     prepare switch pkg (as given)
+#   install_args     prepare switch build pkg (as given), action (what the
+#                    messages call the run: Update or Build now)
 #   install_app      app pkg (the table's) label staged_left
 #   installed_facts  source installed_name installed
 # The routes then set target_version and shown, and the bookkeeping on_exit
@@ -71,7 +73,7 @@ source "$here/omabump-common"
 # a run as a command changes none of them: only the tests, which source this
 # file (see the end), set their own afterwards.
 staging_dir=/var/cache/omabump pacman_lock=/var/lib/pacman/db.lck bin_dir=/usr/bin
-prepare=0 switch=0 pkg="" app="" label="" staged_left=""
+prepare=0 switch=0 build=0 action=Update pkg="" app="" label="" staged_left=""
 source="" installed_name="" installed="" target_version=""
 
 die() { echo "omabump: $*" >&2; exit 1; }
@@ -91,14 +93,15 @@ refuse() {
   die "$1"
 }
 
-# The arguments: --prepare, --switch, then the package.
+# The arguments: --prepare, --switch or --build, then the package.
 install_args() {
-  local usage="usage: omabump-install [--prepare] [--switch] <pkg>"
-  prepare=0 switch=0
+  local usage="usage: omabump-install [--prepare] [--switch | --build] <pkg>"
+  prepare=0 switch=0 build=0 action=Update
   while [[ ${1:-} == --* ]]; do
     case $1 in
       --prepare) prepare=1 ;;
       --switch) switch=1 ;;
+      --build) build=1 action="Build now" ;;
       *) echo "$usage" >&2; exit 2 ;;
     esac
     shift
@@ -163,9 +166,11 @@ installed_facts() {
 #          problem in what it would install. Not for a copy that updates
 #          itself: copy refuses that.
 #   route  installed_facts read: --switch on a row it does not work for, or
-#          with nothing to switch; an indicator row; Omabump run from a
-#          local checkout. The run has not written a file of its own yet,
-#          nor asked the network anything.
+#          with nothing to switch; --build on a row Build now may not build,
+#          beside --switch, or while the buildAhead setting is off (read
+#          once, with the other settings, by load_quiet); an indicator row;
+#          Omabump run from a local checkout. The run has not written a
+#          file of its own yet, nor asked the network anything.
 # The rules that need the synced recipe (a hold, its version, its
 # conflicts), the feed (nothing newer, no https package or published
 # checksum for the release, a mise request or backend) or the package (its
@@ -183,10 +188,16 @@ rule_refusal() {
       blocked=$(update_blocked "$app" false) || return $(( $? == 1 ? 1 : 2 ))
       echo "Update of $label is off in Omabump: $(term_safe <<<"$blocked" | tr '\t\n' '  ' | sed 's/ *$//')" ;;
     route)
-      if (( switch )) && [[ $source != omarchy && $source != vendor-pkg ]]; then
-        echo "--switch works for omarchy and vendor rows only"
+      if (( switch )) && ! route "$source" switch yes; then
+        echo "--switch works for rows from Omarchy's repo and vendor rows only"
+      elif (( switch && build )); then
+        echo "--switch and --build do not go together: Build now replaces a package installed under another name itself, as Update does"
       elif (( switch )) && [[ -z $installed_name || $installed_name == "$pkg" ]]; then
         echo "$label is not installed under another name; nothing to switch"
+      elif (( build )) && ! build_allowed "$app"; then
+        echo "Build now is not available for $label: Omabump does not build its recipe (its apps.json entry has no \"build\": true). Update installs it once Omarchy's repo has it"
+      elif (( build )) && [[ $setting_build_ahead != true ]]; then
+        echo "Build now is off. It builds $label on this machine from Omarchy's own recipe, before Omarchy's repo has the release: it takes minutes, runs Omarchy's build recipe as you, and the package is not signed by Omarchy. Turn it on with: omarchy bar set $self_plugin_id buildAhead true --json (or in the Omabump panel's settings)"
       elif [[ $source == indicator ]]; then
         echo "$label has no Update here: omarchy update updates it when pacman or the AUR has its package, else update it the way you installed it"
       elif [[ $source == self ]] && ! self_git_managed; then
@@ -265,6 +276,8 @@ install_setup() {
   local why copy left_copies
   install_args "$@"
   install_app
+  # The widget's settings, once: only buildAhead matters here.
+  load_quiet 2>/dev/null
 
   # One update per app at a time; the clone lock serialises Omarchy builds.
   mkdir -p "$cache_dir/locks"
@@ -369,9 +382,10 @@ mkpkg() { run_unlocked makepkg --config "$cache_dir/makepkg.conf" "$@"; }
 # and the message names it and the command that removes it. The removal
 # and the record come first and the message last: with the terminal gone,
 # a failed write would end on_exit.
-restore_clone=0 started=0 self_before="" self_stop=0 staged_copy="" staging_running=0 pacman_running=0
+restore_clone=0 started=0 self_before="" self_stop=0 staged_copy="" staging_running=0 pacman_running=0 build_keyring=""
 on_exit() {
   local left="" later=""
+  pgp_keyring_drop "$build_keyring"
   if [[ -n $staged_copy && -e $staged_copy ]]; then
     if (( pacman_running )); then
       left=$staged_copy
@@ -403,20 +417,30 @@ on_exit() {
 # install, so this one runs after it rather than not at all.
 refresh_panel() { "$here/omabump-check" --no-notify --wait || true; }
 
-# Fails unless the full version $1 (epoch:pkgver-pkgrel) is newer than what
-# pacman has installed under the app's installed name right now, or with
-# --switch at least as new.
+# Fails, with the reason on stdout, unless the full version $1
+# (epoch:pkgver-pkgrel) is newer than what pacman has installed under the
+# app's installed name right now, or with --switch at least as new. A run
+# that replaces a package installed under another name reads both names:
+# an update elsewhere may have put the canonical package in meanwhile, at
+# the target or past it, and the run would then take it back down. Asked
+# before the download or build and again right before the staging
+# (stage_and_install).
 guard_version() {
-  local now_line
-  now_line=$(installed_package "$installed_name") || return 0
-  if (( switch )); then
-    newer "${now_line#* }" "$1" || return 0
-    echo "$1 is older than the installed $now_line"
-  else
-    newer "$1" "${now_line#* }" && return 0
-    echo "$1 is not newer than the installed $now_line"
+  local now_line other
+  if now_line=$(installed_package "$installed_name"); then
+    if (( switch )) && newer "${now_line#* }" "$1"; then
+      echo "$1 is older than the installed $now_line"
+      return 1
+    elif (( ! switch )) && ! newer "$1" "${now_line#* }"; then
+      echo "$1 is not newer than the installed $now_line"
+      return 1
+    fi
   fi
-  return 1
+  if replaces_other && other=$(installed_package "$pkg") && ! newer "$1" "${other#* }"; then
+    echo "$pkg is installed now, at ${other#* }, which $1 is not newer than"
+    return 1
+  fi
+  return 0
 }
 
 # The field $1 of this app's row in the last check's status.json, which the
@@ -479,7 +503,7 @@ already_installed() {
 # way the run ends here.
 nothing_newer() {
   panel_reached "$1" && already_installed "$1"
-  refuse "$2, not the $shown $3; Update cannot install it yet.${4:+ $4}"
+  refuse "$2, not the $shown $3; $action cannot install it yet.${4:+ $4}"
 }
 
 # pacman -Qi wraps long fields to COLUMNS when it is set, which would hide
@@ -602,15 +626,14 @@ check_target() {
   [[ $name == "$want" ]] || die "recipe builds '$name', expected '$want'"
   echo "Recipe builds $name $target_version"
   msg=$(guard_version "$target_version") && return 0
-  if (( ! switch )); then
-    now=$(installed_package "$installed_name") || now=" $installed"
-    now=${now#* }
-    # nothing_newer, unless the recipe reaches the version the panel showed
-    # and the app has not: then an epoch installed, or a pkgrel above the
-    # recipe's, is what stops Update, and guard_version's message names it.
-    if panel_reached "$now" || row_newer "$shown" "$target_version" feed; then
-      nothing_newer "$now" "omarchy-pkgs' recipe reaches $target_version" "the vendor's feed shows"
-    fi
+  # Build now never runs with --switch (rule_refusal).
+  now=$(installed_package "$installed_name") || now=" $installed"
+  now=${now#* }
+  # nothing_newer, unless the recipe reaches the version the panel showed
+  # and the app has not: then an epoch installed, or a pkgrel above the
+  # recipe's, is what stops the build, and guard_version's message names it.
+  if panel_reached "$now" || row_newer "$shown" "$target_version" feed; then
+    nothing_newer "$now" "omarchy-pkgs' recipe reaches $target_version" "the vendor's feed shows"
   fi
   refuse "$msg; nothing to do"
 }
@@ -695,7 +718,10 @@ stage_and_install() {
     echo "Would run: sudo rm -f -- $staged (whether pacman installed it or not)"
     return 0
   fi
-  [[ ! -e $pacman_lock ]] || die "$locked. Not staging $staged; run Update again once no pacman runs (if none does, the lock file is stale: sudo rm $pacman_lock)"
+  [[ ! -e $pacman_lock ]] || die "$locked. Not staging $staged; run $action again once no pacman runs (if none does, the lock file is stale: sudo rm $pacman_lock)"
+  # What is installed may have moved since the file was checked (a build
+  # takes minutes, sudo may wait for a password): both names again.
+  got=$(guard_version "${expect#* }") || die "$got; not installing"
   # The file is opened here, as you, and root only writes what it reads: a
   # symlink swapped in for it cannot make root copy a file you cannot read
   # (/etc/shadow) into a world-readable place. The check is on the open file
@@ -731,6 +757,7 @@ stage_and_install() {
   pacman_running=0
   if (( rc == 0 )); then
     unstage "$staged"
+    confirm_replaced "$expect"
     return 0
   fi
   # pacman fails when you answer n, and also when a hook or install script
@@ -741,10 +768,21 @@ stage_and_install() {
   unstage "$staged"
   if [[ $now == "$expect" ]]; then
     echo "omabump: warning: pacman reported an error, but $expect is installed; read pacman's output above for the hook or install script that failed" >&2
+    confirm_replaced "$expect"
     return 0
   fi
   [[ -z $pacman_hint ]] || echo "omabump: $pacman_hint" >&2
   die "pacman did not install $expect (you answered no, or it failed above). The verified package stays in $file for a retry"
+}
+
+# After pacman installed $1 ("<name> <full version>") in place of a package
+# installed under another name: the old one must be gone. A conflict that
+# names a version range (old<2) lets pacman keep both, which is no switch.
+confirm_replaced() {
+  local still
+  replaces_other || return 0
+  still=$(installed_package "$installed_name") || return 0
+  die "pacman installed $1, but $still is still installed beside it (its conflict does not cover this version); remove it with: sudo pacman -R $installed_name"
 }
 
 # Removes the staged copy. One that cannot go is named, not fatal: by then
@@ -768,7 +806,7 @@ build_and_install() {
     if replaces_other; then show_switch "$(recipe_install "$want")" "$PWD"; fi
     echo "After the build:"
     stage_and_install "$match" "$want $target_version" sha256 "the one taken of $match right after the build"
-    # install_omarchy puts the clone back; install_main ends the run.
+    # build_recipe puts the clone back; install_main ends the run.
     echo "Prepared: stopping before makepkg builds."
     return 0
   fi
@@ -778,8 +816,9 @@ build_and_install() {
 
   started=1
   # -s installs missing build dependencies with sudo pacman -S --asdeps;
-  # without --noconfirm pacman asks for those too.
-  mkpkg -sfC
+  # without --noconfirm pacman asks for those too. Signed sources are
+  # verified against the recipe's own keys alone (build_keyring).
+  GNUPGHOME=$build_keyring mkpkg -sfC
   [[ -f $match ]] || die "makepkg did not produce $match"
   # The digest of the file makepkg wrote, before anything else reads it: the
   # staged copy must match it, not only its name and version.
@@ -792,7 +831,7 @@ build_and_install() {
     # repo). Once that reached the version the panel showed, the build has
     # nothing left to install and goes with its files, as after an install.
     now=$(installed_package "$installed_name") || now=" $installed"
-    if (( ! switch )) && panel_reached "${now#* }"; then
+    if panel_reached "${now#* }"; then
       rm -f -- "${files[@]}"
       clean_build_tree
       clean_sources
@@ -844,8 +883,10 @@ clean_sources() {
   (( n == 0 )) || echo "Removed $n downloaded source file(s) from $SRCDEST."
 }
 
-install_omarchy() {
-  local blocker commit
+# Build now's build: Omarchy's recipe at the pinned commit, synced to the
+# vendor's newest release, built, checked and installed (build_and_install).
+build_recipe() {
+  local blocker commit text list why fprs=()
   echo "Waiting for the omarchy-pkgs clone..."
   pkgs_take_lock 600 || die "the omarchy-pkgs clone stayed locked"
   commit=$(pkgs_fetch) || die "could not fetch omarchy-pkgs"
@@ -860,6 +901,18 @@ install_omarchy() {
 
   blocker=$(recipe_blocker "$pkgs_base" "$pkg") || die "could not read the $pkg recipe at ${pkgs_base:0:12}"
   [[ -z $blocker ]] || refuse "$blocker; wait for the [omarchy] repo"
+  # The keys the recipe verifies its sources with, from the pinned commit,
+  # before any of its code runs (pgp_keyring).
+  text=$(recipe_file "$pkgs_base" "$pkg" PKGBUILD) || die "could not read the $pkg recipe at ${pkgs_base:0:12}"
+  list=$(pgp_fingerprints <<<"$text" 2>&1) || refuse "the $pkg recipe at ${pkgs_base:0:12}: $list; not building"
+  [[ -z $list ]] || mapfile -t fprs <<<"$list"
+  mkdir -p "$cache_dir"
+  build_keyring=$(mktemp -u "$cache_dir/gnupg.XXXXXX")
+  why=$(pgp_keyring "$pkgs_base" "$pkg" "$build_keyring" "${fprs[@]}" 2>&1 >/dev/null) \
+    || refuse "${why:-could not make the keyring for the $pkg recipe; not building}"
+  if (( ${#fprs[@]} )); then
+    echo "Signed sources are verified with the recipe's own keys only: ${fprs[*]}"
+  fi
 
   # The first fetched code that runs: omarchy-pkgs' sync tool and the
   # recipe's upstream hook, as you, after you pressed Update. Its curl calls
@@ -874,6 +927,7 @@ install_omarchy() {
      timeout -k 10 900 bin/sync-upstream "$pkg") </dev/null || die "bin/sync-upstream $pkg failed"
 
   echo
+  echo "Build now: building $label on this machine from Omarchy's recipe. The package is not signed by Omarchy."
   echo "Changes to Omarchy's $pkg recipe against omarchy-pkgs ${pkgs_base:0:12}:"
   pgit add -A -- "pkgbuilds/$pkg"
   if pgit diff --cached --quiet HEAD -- "pkgbuilds/$pkg"; then
@@ -891,6 +945,8 @@ install_omarchy() {
   pkgs_restore "$pkg"
   restore_clone=0
   exec 8>&-
+  pgp_keyring_drop "$build_keyring"
+  build_keyring=""
 }
 
 # A vendor package's install script can link $bin_dir/<pkg> to its binary
@@ -939,7 +995,7 @@ install_vendor_pkg() {
   rm -f "$feed_file"
   read -r algo want <<<"$sum"
   echo "Published $algo: $want"
-  if (( switch )) && [[ -n $installed ]] && row_past "$installed" "$latest" feed; then
+  if (( switch )) && [[ -n $installed ]] && ! switch_target_ok "$installed" "$latest"; then
     refuse "$latest is older than the installed $installed_name $installed; nothing to do"
   fi
   file=$PKGDEST/${url##*/}
@@ -1004,9 +1060,13 @@ install_vendor_pkg() {
 # A repo row's Update: refuses when this machine has no such repo or the
 # repo no such package, and ends as under nothing_newer when the repo's
 # version is not newer than the installed one (the vendor is ahead of the
-# repo, or something else installed it).
+# repo, or something else installed it). It never builds: Build now
+# (install_build) is the other action. With --switch it installs the
+# repo's package over one installed under another name, at the same or a
+# newer version (switch_target_ok, the check's rule too), the conflict
+# read from the downloaded, verified package (show_switch).
 install_repo() {
-  local said hint why
+  local said hint
   require_repo_tools
   echo "Reading Omarchy's repo database..."
   if ! repo_load; then
@@ -1015,64 +1075,45 @@ install_repo() {
   fi
   repo_lookup "$pkg" || refuse "Omarchy's repo has no $pkg package"
   echo "Omarchy's repo ($repo_server) has $pkg $repo_version"
-  # The route has no Switch: it installs the repo's package over itself only.
-  if why=$(repo_other_name "$installed_name" "$pkg"); then
-    refuse "$label is $why, so remove $installed_name or install $pkg with pacman"
-  fi
-  if [[ -n $installed ]] && ! newer "$repo_version" "$installed"; then
+  if (( switch )); then
+    [[ -z $installed ]] || switch_target_ok "$installed" "$repo_version" \
+      || refuse "$repo_version is older than the installed $installed_name $installed; nothing to do"
+  elif [[ -n $installed ]] && ! newer "$repo_version" "$installed"; then
     # The vendor ahead of the repo, which usually catches up soon; or a
     # repo version the last check saw that the repo no longer has.
     said="the vendor's feed shows" hint="It usually follows within the hour."
     if [[ $(panel_row versionFrom) == repo ]]; then said="the repo had at the last check" hint=""; fi
+    if build_allowed "$app"; then hint="${hint:+$hint }Build now (b in the panel) builds it from Omarchy's recipe meanwhile."; fi
     nothing_newer "$installed" "Omarchy's repo has $repo_version" "$said" "$hint"
   fi
   repo_install
 }
 
-# Whether an omarchy row's Update takes the repo's package instead of a
-# build: when the repo has a package newer than what is installed, at the
-# vendor's newest release or past it (its feed's now, else the one the
-# panel showed), and the tools the repo path needs are there:
-# omarchy_repo_serves, by which the check words the row too. The same
-# package omarchy update installs, signed, and no recipe to build, so it
-# is asked before the build tools are. Anything else (no repo, no such
-# package, the repo behind the vendor, a --switch, no version of the
-# vendor's to compare with, a tool missing) builds the recipe as before,
-# and says why when the repo was read. Leaves repo_version, repo_file and
-# repo_sha256 for repo_install.
-omarchy_repo_ok() {
-  local vendor line
-  (( ! switch )) || return 1
-  line=$(repo_missing_line)
-  if [[ -n $line ]]; then
-    echo "Omarchy's repo path needs tools that are missing (${line%%;*}); building Omarchy's recipe instead."
-    return 1
-  fi
-  if ! repo_load; then
-    [[ $repo_state == none ]] || echo "Omarchy's repo: $repo_error; building Omarchy's recipe instead."
-    return 1
-  fi
-  if ! repo_lookup "$pkg"; then
-    echo "Omarchy's repo has no $pkg package; building Omarchy's recipe instead."
-    return 1
-  fi
-  if [[ -n $installed ]] && ! newer "$repo_version" "$installed"; then
-    echo "Omarchy's repo has $pkg $repo_version, not newer than the installed $installed; building Omarchy's recipe instead."
-    return 1
-  fi
-  vendor=$(feed_version "$app" 2>/dev/null) || vendor=$(panel_row latest)
+# Build now: Omarchy's recipe, built here, for a release the vendor has and
+# Omarchy's repo not yet. rule_refusal has already refused an entry Build
+# now may not build and a run while the buildAhead setting is off. The
+# vendor's newest release is read again (its feed, else the one the panel
+# showed), and, when it is known, must be ahead of what is installed and
+# of the repo's package (vendor_ahead, the check's rule): once the repo has
+# it, Update installs its signed package instead, and Build now says so. A
+# repo that cannot be read stops nothing here: the build needs none of it.
+install_build() {
+  local vendor
+  require_omarchy_tools
+  vendor=$(feed_version "$app" 2>/dev/null) || vendor=$(panel_row vendorVersion)
   version_ok "$vendor" || vendor=""
-  if [[ -z $vendor ]]; then
-    echo "Omarchy's repo has $pkg $repo_version, and the vendor's newest version is not known; building Omarchy's recipe instead."
-    return 1
+  echo "The vendor's newest release: ${vendor:-not known}"
+  repo_version=""
+  if repo_load && repo_lookup "$pkg"; then echo "Omarchy's repo ($repo_server) has $pkg $repo_version"; fi
+  if [[ -n $repo_version ]] && newer "$repo_version" "$installed" && ! vendor_ahead "$installed" "$repo_version" "$vendor"; then
+    refuse "Omarchy's repo has $pkg $repo_version, the vendor's newest release; use Update instead, which installs its signed package"
   fi
-  if newer "$vendor" "$(upstream_part "$repo_version")"; then
-    echo "Omarchy's repo has $pkg $repo_version, the vendor's feed $vendor; building Omarchy's recipe instead."
-    return 1
+  # Without a vendor's version to go by, the recipe's sync says what the
+  # newest is, and check_target whether it is newer than what is installed.
+  if [[ -n $vendor && -n $installed ]] && ! vendor_ahead "$installed" "$repo_version" "$vendor"; then
+    nothing_newer "$installed" "the vendor's feed gives $vendor now" "it gave at the last check"
   fi
-  # The reasons above, said one by one; this is the decision.
-  omarchy_repo_serves "$installed" "$vendor" || return 1
-  echo "Omarchy's repo ($repo_server) has $pkg $repo_version, the vendor's newest release: installing its package, nothing to build."
+  build_recipe
 }
 
 # Downloads, checks and installs the repo's package repo_file (repo_lookup
@@ -1292,10 +1333,9 @@ install_self() {
 install_main() {
   case $source in
     self) install_self ;;
-    # The repo's package when it has the vendor's newest; else the build.
-    # The build tools only for a build: the repo path needs its own.
-    omarchy) if omarchy_repo_ok; then repo_install; else require_omarchy_tools; install_omarchy; fi ;;
-    repo) install_repo ;;
+    # Update takes the repo's signed package and never builds; Build now
+    # (--build) builds Omarchy's recipe. Decided here, once.
+    repo) if (( build )); then install_build; else install_repo; fi ;;
     vendor-pkg) install_vendor_pkg ;;
     mise) install_mise ;;
     # An indicator row has no route: install_setup refused it (rule_refusal).
@@ -1303,7 +1343,7 @@ install_main() {
   esac
 
   # A --prepare run ends here once the route stopped and cleaned up: the
-  # omarchy route returns, having put the clone back; the others have ended
+  # build returns, having put the clone back; the others have ended
   # the run where they stop.
   prepare_stop
   refresh_panel

@@ -174,10 +174,15 @@ mise_user_backends=""
 
 # --- notify and showMise from shell.json ---------------------------------------------
 
-settings_of() { printf '{"plugins": [{"id": "io.github.vladkarok.omabump"%s}]}' "$1" >"$shell_json"; load_quiet 2>/dev/null; echo "$setting_notify|$setting_show_mise"; }
-same "load_quiet: booleans" 'true|false' "$(settings_of ', "notify": true, "showMise": false')"
-same "load_quiet: the strings omarchy bar set stores, in any case" 'false|true' "$(settings_of ', "notify": " False ", "showMise": "TRUE"')"
-same "load_quiet: anything else is unset" '|' "$(settings_of ', "notify": "maybe", "showMise": 1')"
+settings_of() { printf '{"plugins": [{"id": "io.github.vladkarok.omabump"%s}]}' "$1" >"$shell_json"; load_quiet 2>/dev/null; echo "$setting_notify|$setting_show_cli"; }
+same "load_quiet: booleans" 'true|false' "$(settings_of ', "notify": true, "showCli": false')"
+same "load_quiet: the strings omarchy bar set stores, in any case" 'false|true' "$(settings_of ', "notify": " False ", "showCli": "TRUE"')"
+same "load_quiet: anything else is unset" '|' "$(settings_of ', "notify": "maybe", "showCli": 1')"
+same "load_quiet: showMise, the old name, while showCli is absent" 'true|false|true' \
+  "$(settings_of ', "notify": true, "showMise": false')|$(settings_of ', "showMise": false, "showCli": true' | cut -d'|' -f2)"
+ba_of() { printf '{"plugins": [{"id": "io.github.vladkarok.omabump"%s}]}' "$1" >"$shell_json"; load_quiet 2>/dev/null; echo "$setting_build_ahead"; }
+same "load_quiet: buildAhead, unset unless it says" '|true|false' \
+  "$(ba_of '')|$(ba_of ', "buildAhead": "true"')|$(ba_of ', "buildAhead": false')"
 same "load_quiet: no settings, unset" '|' "$(settings_of '')"
 rm -f "$shell_json"
 load_quiet
@@ -338,7 +343,16 @@ exit 7
 EOF
 printf '#!/bin/sh\nexit 1\n' >"$run_dir/bin/sudo"
 printf '#!/bin/sh\nexit 1\n' >"$run_dir/bin/gpg"
-printf '#!/bin/sh\n[ "$1" = config ] || echo "git $*" >>"$OMABUMP_TEST_NET"\nexit 1\n' >"$run_dir/bin/git"
+# git fails every call, or with $OMABUMP_TEST_GIT set runs that git for
+# any call but one that would reach a remote (fetch, clone, ls-remote,
+# pull, push), on a local clone the test made.
+cat >"$run_dir/bin/git" <<'EOF'
+#!/bin/sh
+[ "$1" = config ] || echo "git $*" >>"$OMABUMP_TEST_NET"
+[ -n "${OMABUMP_TEST_GIT:-}" ] || exit 1
+for a; do case $a in fetch|clone|ls-remote|pull|push) exit 1 ;; esac; done
+exec "$OMABUMP_TEST_GIT" "$@"
+EOF
 cat >"$run_dir/bin/mise" <<'EOF'
 #!/bin/sh
 echo "${MISE_OFFLINE:+MISE_OFFLINE=$MISE_OFFLINE }$*" >>"$OMABUMP_TEST_MISE"
@@ -610,9 +624,9 @@ rm -rf "$run_cache"/.mise.New123 "$run_cache"/.feed.New123 "$run_cache"/.mise-se
 # here over the rest of a row as a check writes it.
 run_settings ''
 cat >"$run_dir/config/omarchy/omabump/apps.json" <<'JSON'
-[{"pkg": "loc-a", "label": "Loc A", "source": "omarchy", "feed": {"type": "github-release", "repo": "o/a"}},
+[{"pkg": "loc-a", "label": "Loc A", "source": "vendor-pkg", "feed": {"type": "github-release", "repo": "o/a"}},
  {"pkg": "loc-b", "label": "Loc B", "source": "vendor-pkg", "installed": ["loc-b", "loc-b-old"], "feed": {"type": "github-release", "repo": "o/b"}},
- {"pkg": "loc-held", "label": "Loc Held", "source": "omarchy", "feed": {"type": "github-release", "repo": "o/h"}},
+ {"pkg": "loc-held", "label": "Loc Held", "source": "vendor-pkg", "feed": {"type": "github-release", "repo": "o/h"}},
  {"pkg": "loc-gone", "label": "Loc Gone", "source": "indicator", "feed": {"type": "github-release", "repo": "o/g"}},
  {"pkg": "loc-new", "label": "Loc New", "source": "indicator", "icon": "assets/new.svg", "feed": {"type": "github-release", "repo": "o/n"}},
  {"pkg": "mise:t", "label": "T", "source": "mise", "tool": "t"},
@@ -625,19 +639,18 @@ loc_status() {
   jq -c --arg self "$self_version" '.apps += [{pkg: "self:omabump", label: "Omabump", source: "self", installedName: "omabump",
     installed: $self, latest: $self}]
     | .apps |= map({label: "", installedName: "", installed: "", latest: "", versionFrom: "feed", updateAvailable: false,
-    installable: true, error: "", note: "", stale: false, switchable: false, recipe: "", request: "",
-    muted: false, skipped: false, skipEnded: "", unchecked: false, held: false, omarchyUpdate: false, blocked: false, selfUpdating: false,
+    installable: true, error: "", note: "", stale: false, switchable: false,
+    skipped: false, skipEnded: "", unchecked: false, held: false, omarchyUpdate: false, blocked: false, selfUpdating: false,
     icon: "", iconLight: "", holdClause: "", unread: false} + .)' \
     >"$run_dir/fixture.json" <<'JSON'
 {"schemaVersion": 1, "checkedAt": "2026-01-01T00:10:00+00:00", "checking": false, "startedAt": "2026-01-01T00:09:00+00:00",
  "inventoryAt": "2026-01-01T00:09:00+00:00", "runError": "", "omarchyPkgs": {"commit": "", "following": false, "error": "", "note": ""},
  "miseError": "", "apps": [
-  {"pkg": "loc-a", "source": "omarchy", "installedName": "loc-a", "installed": "1.0-1", "latest": "1.2", "updateAvailable": true,
+  {"pkg": "loc-a", "source": "vendor-pkg", "installedName": "loc-a", "installed": "1.0-1", "latest": "1.2", "updateAvailable": true,
    "skipped": true, "note": "Recipe from omarchy-pkgs 0123456789ab"},
   {"pkg": "loc-b", "source": "vendor-pkg", "installedName": "loc-b", "installed": "2.0-1", "latest": "2.0"},
-  {"pkg": "loc-held", "source": "omarchy", "installedName": "loc-held", "installed": "1.0-1", "latest": "1.1", "updateAvailable": true,
-   "installable": false, "held": true, "holdClause": "omarchy-pkgs holds new releases for 24 h, Update from Jan 2 00:09",
-   "note": "omarchy-pkgs holds new releases for 24 h, Update from Jan 2 00:09; Recipe from omarchy-pkgs 0123456789ab"},
+  {"pkg": "loc-held", "source": "vendor-pkg", "installedName": "loc-held", "installed": "1.0-1", "latest": "1.1", "updateAvailable": true,
+   "installable": false, "note": "No published checksum for the vendor package"},
   {"pkg": "loc-gone", "source": "indicator", "installedName": "loc-gone", "installed": "3.0-1", "latest": "3.0", "installable": false,
    "note": "No supported install path"},
   {"pkg": "mise:t", "source": "mise", "installedName": "t", "installed": "1.0", "latest": "1.1", "versionFrom": "mise", "updateAvailable": true},
@@ -682,14 +695,8 @@ loc_pkgs 'loc-a 1.2-1' 'loc-b 2.0-1' 'loc-held 1.1-1'
 local_run; rc=$?
 same "--local: installed at the newest known version: no update, no skip, and no check needed" \
   '0|1.2-1|false|false|Recipe from omarchy-pkgs 0123456789ab' "$rc|$(loc_row loc-a '"\(.installed)|\(.updateAvailable)|\(.skipped)|\(.note)"')"
-same "--local: a held release once installed: no hold, Update back, the hold's clause gone" \
-  'false|false|true|Recipe from omarchy-pkgs 0123456789ab' "$(loc_row loc-held '"\(.updateAvailable)|\(.held)|\(.installable)|\(.note)"')"
-same "--local: and its holdClause with it" '' "$(loc_row loc-held .holdClause)"
-# A held row 0.1.17 wrote has no holdClause: its note says the clause.
-jq '.apps |= map(if .pkg == "loc-held" then del(.holdClause, .unread) else . end)' "$run_dir/fixture.json" >"$run_state/status.json"
-local_run
-same "--local: a held row from before holdClause, its release installed: the clause goes all the same" \
-  'false|true|Recipe from omarchy-pkgs 0123456789ab|' "$(loc_row loc-held '"\(.held)|\(.installable)|\(.note)|\(.holdClause)"')"
+same "--local: a row without Update at its newest: current, its route and note kept" \
+  'false|false|false|No published checksum for the vendor package' "$(loc_row loc-held '"\(.updateAvailable)|\(.held)|\(.installable)|\(.note)"')"
 same "--local: an app no longer installed loses its row" '' "$(loc_row loc-gone .pkg)"
 same "--local: a row that did not move stays as it was" "$(loc_was loc-b)" "$(loc_row loc-b 'tojson')"
 # The panel drops a skip from the settings only on skipEnded.
@@ -716,14 +723,13 @@ same "--local: the next refresh, nothing moved: the row stays unread, no second 
 same "--local: and makes no notified.json or seen.json" '' \
   "$(find "$run_state" -maxdepth 1 \( -name notified.json -o -name seen.json \) -printf '%f\n')"
 
-# A newer version of a held release, still below the held one: the hold
-# and its note stay, and so does the row's Update, still not installable.
+# A newer version, still below the newest: the update and its note stay.
 loc_status
 loc_pkgs 'loc-a 1.0-1' 'loc-b 2.0-1' 'loc-held 1.0.5-1' 'loc-gone 3.0-1'
 local_run; rc=$?
-same "--local: a held app moved, still below the held release: the hold stays, no check needed" \
-  "0|1.0.5-1|true|true|false|$(loc_was loc-held | jq -r .note)" \
-  "$rc|$(loc_row loc-held '"\(.installed)|\(.updateAvailable)|\(.held)|\(.installable)|\(.note)"')"
+same "--local: an app moved, still below the newest: the update stays, no check needed" \
+  "0|1.0.5-1|true|false|$(loc_was loc-held | jq -r .note)" \
+  "$rc|$(loc_row loc-held '"\(.installed)|\(.updateAvailable)|\(.installable)|\(.note)"')"
 
 # A row that names another source than the app table (the user moved the
 # app to another route): only a check can say what it is now.
@@ -749,9 +755,11 @@ same "--local: and it is unread, until a check reads it" true "$(loc_row loc-new
 same "--local: the new row in table order" 'loc-a loc-b loc-held loc-gone loc-new mise:t mise:u mise:k self:omabump' \
   "$(run_status '[.apps[].pkg] | join(" ")')"
 # The fixture's rows are a 0.1.17 check's, without the route's section and
-# switchRoute, and without repoVersion; a row this release writes has them too.
+# switchRoute, and without repoVersion and 0.2.0's fields; a row this
+# release writes has them too.
 same "--local: the new row has every field a check writes" \
-  "$(jq -c '.apps[0] | keys + ["section", "switchRoute", "repoVersion"] | sort' "$run_dir/fixture.json")" "$(loc_row loc-new 'keys | tojson')"
+  "$(jq -c '.apps[0] | keys + ["section", "switchRoute", "repoVersion", "vendorVersion", "ahead", "buildable", "buildNote"] | sort' \
+    "$run_dir/fixture.json")" "$(loc_row loc-new 'keys | tojson')"
 same "--local: and its route's section and switch (indicator)" "desktop false" "$(loc_row loc-new '"\(.section) \(.switchRoute)"')"
 
 # Icons updated in apps.json (a plugin update, a user override) land on
@@ -1274,7 +1282,7 @@ jq -cn '[{pkg: "t3code-bin", section: "cli", feed: {type: "command", command: "e
   >"$run_dir/config/omarchy/omabump/apps.json"
 run_settings ''
 ai_run
-same "an entry's section is its row's, whatever its route, and the CLI rows come after the desktop ones" 'omarchy|cli|true' \
+same "an entry's section is its row's, whatever its route, and the CLI rows come after the desktop ones" 'repo|cli|true' \
   "$(ai_row '"\(.source)|\(.section)"')|$(run_status '[.apps[] | select(.section != "plugin") | .pkg] | last == "t3code-bin"')"
 ai_run --no-mise
 same "--no-mise leaves a CLI row of any route out of the check" '' "$(ai_row .pkg)"
@@ -1354,12 +1362,12 @@ same "AppImage: updateBlocked does not mark a self-updating row" "false|$ai_note
 loc_pkgs 't3code-bin 0.1.1-1'
 ai_run
 same "AppImage: it marks the package's" true "$(ai_row .blocked)"
-jq '.apps |= map(if .pkg == "t3code-bin" then .recipe = "t3code-bin 0.1.1-1" else . end)' \
+jq '.apps |= map(if .pkg == "t3code-bin" then .ahead = true | .buildable = true | .buildNote = "x" else . end)' \
   "$run_state/status.json" >"$run_dir/edited.json" && mv "$run_dir/edited.json" "$run_state/status.json"
 loc_pkgs ''
 ai_run --local; rc=$?
-same "--local: to the AppImage: no updateBlocked mark, no recipe" "$local_full|true|false|" \
-  "$rc|$(ai_row '"\(.selfUpdating)|\(.blocked)|\(.recipe)"')"
+same "--local: to the AppImage: no updateBlocked mark, no Build now" "$local_full|true|false|false|false|" \
+  "$rc|$(ai_row '"\(.selfUpdating)|\(.blocked)|\(.ahead)|\(.buildable)|\(.buildNote)"')"
 loc_pkgs 't3code-bin 0.1.1-1'
 ai_run --local; rc=$?
 same "--local: back to the package: the updateBlocked mark again" "$local_full|false|true" \
@@ -1543,14 +1551,16 @@ same "repo: the vendor ahead of the repo: the update shows, held, no Update, and
   "true|false|true|2.0|feed||Not in Omarchy's repo yet|1.0-1" "$(rp_row rp-b "$rp_fields")"
 same "repo: and holdClause is that note's" "Not in Omarchy's repo yet" "$(rp_row rp-b .holdClause)"
 same "repo: a pkgrel only the repo has: Update, to its full version" 'true|true|false|3.0-2|repo|||3.0-2' "$(rp_row rp-c "$rp_fields")"
-same "repo: rp-x-debug is not taken for rp-x" 'false|true|false|1.0|feed|||1.0-1' "$(rp_row rp-x "$rp_fields")"
-same "repo: an omarchy row says what the repo has, and is no repo row" '1.2-1|true|false' \
-  "$(rp_row om-a '"\(.repoVersion)|\(.switchRoute)|\(.held)"')"
-same "repo: no Switch on a repo row, in the desktop section unless apps.json says cli" 'false|desktop' \
+same "repo: rp-x-debug is not taken for rp-x" 'false|false|false|1.0|feed|||1.0-1' "$(rp_row rp-x "$rp_fields")"
+same "repo: an omarchy entry of 0.1.19 is a repo row, which Build now may build" '1.2-1|true|false|repo' \
+  "$(rp_row om-a '"\(.repoVersion)|\(.switchRoute)|\(.held)|\(.source)"')"
+same "repo: Switch on a repo row, in the desktop section unless apps.json says cli" 'true|desktop' \
   "$(rp_row rp-a '"\(.switchRoute)|\(.section)"')"
+same "repo: the vendor ahead: ahead, vendorVersion the feed's; not buildable without build in apps.json, and why" \
+  "true|2.0|false|Not in Omarchy's repo yet" "$(rp_row rp-b '"\(.ahead)|\(.vendorVersion)|\(.buildable)|\(.buildNote)"')"
+same "repo: with buildAhead off the check never clones or fetches omarchy-pkgs" '' "$(grep '^git' "$run_dir/net.log")"
 same "repo: the database is fetched once, from the repo's server, for every row" \
   '1|https://pkgs.example/edge/x86_64/omarchy.db' "$(grep -c 'omarchy\.db' "$run_dir/net.log")|$(grep -o 'https://[^ ]*omarchy\.db' "$run_dir/net.log" | sort -u)"
-om_error=$(rp_row om-a .error)
 
 # Notifications: once the repo has the release, and not while it does not.
 rp_notify
@@ -1568,40 +1578,40 @@ repo_db "$rp_served/omarchy.db" 'rp-a 1.2-1' 'rp-b 1.0-1' 'rp-c 3.0-2' 'rp-x 1.0
 # --local: omarchy update installed a package from the repo; the row clears
 # without a check. Below the repo's version Update stays; past it, a row the
 # vendor is ahead on is held, its clause once. A row whose newest version
-# was the repo's (rp-c's pkgrel) is current too, but only a check reads
-# whether the vendor has a newer one: the refresh asks for it.
+# was the repo's (rp-c's pkgrel) is current too: the vendor's newest is
+# kept beside it (vendorVersion), so no check is needed.
 rp_run
 loc_pkgs 'rp-a 1.2-1' 'rp-b 1.5-1' 'rp-c 3.0-2' 'rp-x 1.0-1' 'om-a 1.2-1'
 rp_run --local; rc=$?
-same "--local: a repo row omarchy update brought to the newest: current, no network" \
-  '80|false|true|false|1.2-1|' "$rc|$(rp_row rp-a '"\(.updateAvailable)|\(.installable)|\(.held)|\(.repoVersion)"')|$(cat "$run_dir/net.log")"
-same "--local: the pkgrel installed: current, and a check is asked for that row alone" \
-  'false|true|1|rp-c reached 3.0-2' "$(rp_row rp-c '"\(.updateAvailable)|\(.installable)"')|$(grep -c 'a full check is needed' "$run_dir/rp.err")|$(grep -o 'rp-[a-z] reached [^,]*' "$run_dir/rp.err")"
+same "--local: a repo row omarchy update brought to the newest: current, no network, no check" \
+  '0|false|false|false|1.2-1|' "$rc|$(rp_row rp-a '"\(.updateAvailable)|\(.installable)|\(.held)|\(.repoVersion)"')|$(cat "$run_dir/net.log")"
+same "--local: the pkgrel installed: current, no check asked for" \
+  'false|false|0' "$(rp_row rp-c '"\(.updateAvailable)|\(.installable)"')|$(grep -c 'a full check is needed' "$run_dir/rp.err")"
 same "--local: past the repo's version, still behind the vendor's: held, the clause once" \
   "true|false|true|Not in Omarchy's repo yet|Not in Omarchy's repo yet" \
   "$(rp_row rp-b '"\(.updateAvailable)|\(.installable)|\(.held)|\(.note)|\(.holdClause)"')"
 loc_pkgs 'rp-a 1.1-1' 'rp-b 2.0-1' 'rp-c 3.0-1' 'rp-x 1.0-1' 'om-a 1.2-1'
 rp_run --local; rc=$?
-same "--local: a held row at the vendor's release: current, the hold and its clause gone" \
-  '0|false|true|false||' "$rc|$(rp_row rp-b '"\(.updateAvailable)|\(.installable)|\(.held)|\(.note)|\(.holdClause)"')"
+same "--local: a held row at the vendor's release: current, the hold and its clause gone, no longer ahead" \
+  '0|false|false|false|||false' "$rc|$(rp_row rp-b '"\(.updateAvailable)|\(.installable)|\(.held)|\(.note)|\(.holdClause)|\(.ahead)"')"
 same "--local: below the repo's version: Update" 'true|true|false' "$(rp_row rp-a '"\(.updateAvailable)|\(.installable)|\(.held)"')"
 same "--local: back below the repo's pkgrel: Update again" 'true|true' "$(rp_row rp-c '"\(.updateAvailable)|\(.installable)"')"
-# The vendor at 1.3, the repo at 1.2-1: the check offers the repo's 1.2-1,
-# what Update installs. Once that is installed the row is current, until a
-# check finds the vendor's 1.3 (held while the repo lacks it). A held row
-# that goes back below the repo's version (a downgrade) has Update again.
+# The vendor at 1.3, the repo at 1.2-1: Update installs the repo's 1.2-1,
+# and the row is ahead too, showing the vendor's 1.3. Once 1.2-1 is
+# installed the row is held, ahead still, without a check (held while the
+# repo lacks it). A held row that goes back below the repo's version (a
+# downgrade) has Update again.
 jq '(.[] | select(.pkg == "rp-a") | .feed.command) = "echo 1.3"' "$run_dir/config/omarchy/omabump/apps.json" >"$run_dir/rp.json"
 mv "$run_dir/rp.json" "$run_dir/config/omarchy/omabump/apps.json"
 rp_same
 rp_run
-same "repo: the vendor ahead, the repo ahead of what is installed: Update, to the repo's, which the row names" 'true|true|false|1.2-1|1.2-1' \
-  "$(rp_row rp-a '"\(.updateAvailable)|\(.installable)|\(.held)|\(.latest)|\(.repoVersion)"')"
+same "repo: the vendor ahead, the repo ahead of what is installed: Update to the repo's, ahead to the vendor's" 'true|true|false|1.3|1.2-1|true' \
+  "$(rp_row rp-a '"\(.updateAvailable)|\(.installable)|\(.held)|\(.latest)|\(.repoVersion)|\(.ahead)"')"
 loc_pkgs 'rp-a 1.2-1' 'rp-b 1.0-1' 'rp-c 3.0-1' 'rp-x 1.0-1' 'om-a 1.0-1'
 rp_run --local; rc=$?
-# The vendor's 1.3 is not forgotten: the refresh asks for the check that
-# finds it.
-same "--local: the repo's version installed: current, and a check is asked for" '80|false|true|false' \
-  "$rc|$(rp_row rp-a '"\(.updateAvailable)|\(.installable)|\(.held)"')"
+# The vendor's 1.3 is not forgotten: the refresh keeps it (vendorVersion).
+same "--local: the repo's version installed: held while the vendor is ahead, no check" "0|true|false|true|Not in Omarchy's repo yet" \
+  "$rc|$(rp_row rp-a '"\(.updateAvailable)|\(.installable)|\(.held)|\(.holdClause)"')"
 rp_run
 same "repo: that check finds the vendor's 1.3 again, held while the repo lacks it" "true|false|true|1.3|Not in Omarchy's repo yet" \
   "$(rp_row rp-a '"\(.updateAvailable)|\(.installable)|\(.held)|\(.latest)|\(.holdClause)"')"
@@ -1624,13 +1634,15 @@ same "repo unreachable: a row with an update fails, without Update" \
   "true|false|false|1.2|feed|could not fetch Omarchy's repo database from https://pkgs.example/edge/x86_64 (curl exit 7)||" \
   "$(rp_row rp-a "$rp_fields")"
 same "repo unreachable: a current row has no error" 'false||' "$(rp_row rp-x '"\(.updateAvailable)|\(.error)|\(.repoVersion)"')"
-same "repo unreachable: an omarchy row keeps its own error, and no repoVersion" "$om_error|" "$(rp_row om-a '"\(.error)|\(.repoVersion)"')"
+same "repo unreachable: an entry of the omarchy route fails as a repo row, no repoVersion" \
+  "could not fetch Omarchy's repo database from https://pkgs.example/edge/x86_64 (curl exit 7)|" "$(rp_row om-a '"\(.error)|\(.repoVersion)"')"
 # The feed failing too, the repo still answering: the repo's version is the
 # newest, and nothing failed.
 jq '(.[] | select(.pkg == "rp-a") | .feed.command) = "exit 1"' "$run_dir/config/omarchy/omabump/apps.json" >"$run_dir/rp.json"
 mv "$run_dir/rp.json" "$run_dir/config/omarchy/omabump/apps.json"
 rp_run
-same "repo: the feed failed, the repo answered: its version, no error" 'true|true|false|1.2-1|repo|||1.2-1' "$(rp_row rp-a "$rp_fields")"
+same "repo: the feed failed, the repo answered: its last version beside the repo's, no error" 'true|true|false|1.2|feed|||1.2-1|false' \
+  "$(rp_row rp-a "$rp_fields")|$(rp_row rp-a .stale)"
 # No [omarchy] repo on this machine: no Update, the note says so, nothing
 # failed, nothing fetched.
 rp_servers='' rp_run; rc=$?
@@ -1640,9 +1652,9 @@ same "no [omarchy] repo: no Update, the note says why, no error" 'true|false|fal
   "$(rp_row rp-b "$rp_fields")"
 
 # What a repo row announces: only an update its Update can install
-# (repo_update_ok), so not rq-n's, whose package the repo lacks, nor rq-o's,
-# installed as rq-o-bin, which the route does not replace (and the row says
-# so, without Update). It is recorded by the repo's full version: rq-e's
+# (repo_new), so not rq-n's, whose package the repo lacks; rq-o's,
+# installed as rq-o-bin, is announced: Update replaces it, as Switch
+# would at the same version. It is recorded by the repo's full version: rq-e's
 # 1:1.1-1, the repo's, announced first, does not hide the 1.2 the feed shows
 # next with the repo at 1:1.2-1, which vercmp would rank below 1:1.1-1.
 jq -n '[{pkg: "rq-n", label: "Rq N", feed: "2.0"}, {pkg: "rq-o", label: "Rq O", feed: "2.0", installed: ["rq-o", "rq-o-bin"]},
@@ -1653,10 +1665,10 @@ repo_db "$rp_served/omarchy.db" 'rq-o 2.0-1' 'rq-e 1:1.1-1'
 loc_pkgs 'rq-n 1.0-1' 'rq-o-bin 1.0-1' 'rq-e 1:1.0-1'
 rm -f "$run_state/status.json" "$run_state/notified.json"
 rp_notify
-same "repo: no notification for a package the repo lacks, nor for one installed under another name" \
-  'Rq E 1:1.1-1 available|Installed: 1:1.0-1. Open the Omabump panel to update.' "$(grep '^Rq ' "$run_dir/notify.log")"
-same "repo: installed under another name: the update shows, no Update, the reason in the note" \
-  "true|false|false|Installed as rq-o-bin; Update from Omarchy's repo replaces only rq-o itself" \
+same "repo: no notification for a package the repo lacks; one installed under another name is announced" \
+  "$(printf '%s\n' 'Rq O 2.0 available|Installed: 1.0-1. Open the Omabump panel to update.' \
+    'Rq E 1:1.1-1 available|Installed: 1:1.0-1. Open the Omabump panel to update.')" "$(grep '^Rq ' "$run_dir/notify.log")"
+same "repo: installed under another name: Update replaces it" "true|true|false|" \
   "$(rp_row rq-o '"\(.updateAvailable)|\(.installable)|\(.held)|\(.note)"')"
 same "repo: a package the repo lacks: the update shows, no Update, not announced" "true|false|Omarchy's repo has no rq-n|null" \
   "$(rp_row rq-n '"\(.updateAvailable)|\(.installable)|\(.note)"')|$(jq -c '."rq-n"' "$run_state/notified.json")"
@@ -1670,6 +1682,89 @@ same "repo: the feed's 1.2 with the repo at 1:1.2-1, after 1:1.1-1 was announced
   "$(grep '^Rq ' "$run_dir/notify.log")|$(jq -c '."rq-e"' "$run_state/notified.json")"
 rp_notify
 same "repo: and once only" '' "$(grep '^Rq ' "$run_dir/notify.log")"
+
+# --- Build now: a release only the vendor has -------------------------------------------
+
+# bn-a may be built (build true), bn-n may not; the vendor is at 2.0, the
+# repo at 1.0-1, both installed at 1.0-1. With buildAhead on, the check
+# reads bn-a's recipe from a local omarchy-pkgs clone at the pin a user
+# pins.json names (git runs on it, never against a remote).
+jq -n '[{pkg: "bn-a", label: "Bn A", build: true}, {pkg: "bn-n", label: "Bn N"}]
+  | map(. + {source: "repo", feed: {type: "command", command: "echo 2.0"}})' >"$run_dir/config/omarchy/omabump/apps.json"
+repo_db "$rp_served/omarchy.db" 'bn-a 1.0-1' 'bn-n 1.0-1'
+loc_pkgs 'bn-a 1.0-1' 'bn-n 1.0-1'
+bn_clone=$run_dir/cache/omabump/omarchy-pkgs
+mkdir -p "$bn_clone/pkgbuilds/bn-a/.omarchy"
+printf 'pkgname=bn-a\npkgver=1.0\npkgrel=1\n' >"$bn_clone/pkgbuilds/bn-a/PKGBUILD"
+echo '{"upstream": {"watch": {"regex": "https://example.invalid/v", "pattern": "(?P<version>.*)"}}}' >"$bn_clone/pkgbuilds/bn-a/.omarchy/package.json"
+tgit init -q "$bn_clone" && tgit -C "$bn_clone" remote add origin https://github.com/omacom/omarchy-pkgs.git \
+  && tgit -C "$bn_clone" add -A && tgit -C "$bn_clone" commit -qm recipe
+bn_pin=$(git -C "$bn_clone" rev-parse HEAD)
+jq -n --arg c "$bn_pin" '{omarchyPkgs: {commit: $c}}' >"$run_dir/config/omarchy/omabump/pins.json"
+bn_fields='"\(.ahead)|\(.buildable)|\(.buildNote)|\(.updateAvailable)|\(.installable)"'
+# The notify-send of rpnotify, with the options before the summary kept.
+cat >"$run_dir/rpnotify/notify-send" <<'EOF'
+#!/bin/sh
+[ "$1 $2" = "-a Omabump" ] || exit 7
+shift 2
+opts=""
+while [ "$1" = -u ]; do opts="$opts$1 $2 "; shift 2; done
+printf '%s%s|%s\n' "$opts" "$1" "$2" >>"$OMABUMP_TEST_NOTIFY"
+EOF
+rm -f "$run_state/status.json" "$run_state/notified.json"
+run_settings ', "showCli": false'
+rp_notify
+same "Build now off: an ahead row of a build entry is buildable, one of another entry is not, and why" \
+  "true|true||true|false|true|false|Not in Omarchy's repo yet|true|false" "$(rp_row bn-a "$bn_fields")|$(rp_row bn-n "$bn_fields")"
+same "Build now off: no ahead row notifies" '' "$(cat "$run_dir/notify.log")"
+same "Build now off: the check neither clones nor fetches omarchy-pkgs" '' "$(grep '^git' "$run_dir/net.log")"
+run_settings ', "showCli": false, "buildAhead": true'
+OMABUMP_TEST_GIT=$(command -v git) rp_notify
+same "Build now on: the recipe read at the pin, the row buildable" 'true|true||true|false' "$(rp_row bn-a "$bn_fields")"
+same "Build now on: a recipe only for the row Build now may build" 0 "$(grep -c 'bn-n' "$run_dir/net.log")"
+same "Build now on: the ahead release is announced once, low, apart from updates" \
+  "-u low Bn A 2.0 released|Not in Omarchy's repo yet. Build now is available.|\"2.0\"|null" \
+  "$(cat "$run_dir/notify.log")|$(jq -c '."ahead:bn-a"' "$run_state/notified.json")|$(jq -c '."bn-a"' "$run_state/notified.json")"
+OMABUMP_TEST_GIT=$(command -v git) rp_notify
+same "Build now on: and once only" '' "$(cat "$run_dir/notify.log")"
+# The repo has the release now: the update Update installs is announced,
+# the ahead one having hidden nothing.
+repo_db "$rp_served/omarchy.db" 'bn-a 2.0-1' 'bn-n 1.0-1'
+OMABUMP_TEST_GIT=$(command -v git) rp_notify
+same "Build now on: once the repo has that release, the update notifies as usual" \
+  'Bn A 2.0 available|Installed: 1.0-1. Open the Omabump panel to update.|false|true' \
+  "$(grep '^Bn A' "$run_dir/notify.log")|$(rp_row bn-a '"\(.ahead)|\(.installable)"')"
+# The recipe holds new releases for a day: no Build now until then, the
+# note says from when, and nothing is announced.
+repo_db "$rp_served/omarchy.db" 'bn-a 1.0-1' 'bn-n 1.0-1'
+jq '(.[] | select(.pkg == "bn-a") | .feed.command) = "echo 2.1"' "$run_dir/config/omarchy/omabump/apps.json" >"$run_dir/rp.json"
+mv "$run_dir/rp.json" "$run_dir/config/omarchy/omabump/apps.json"
+echo '{"min_release_age": "24h", "upstream": {"watch": {"regex": "https://example.invalid/v"}}}' >"$bn_clone/pkgbuilds/bn-a/.omarchy/package.json"
+tgit -C "$bn_clone" commit -qam hold
+jq -n --arg c "$(git -C "$bn_clone" rev-parse HEAD)" '{omarchyPkgs: {commit: $c}}' >"$run_dir/config/omarchy/omabump/pins.json"
+OMABUMP_TEST_GIT=$(command -v git) rp_notify
+same "Build now on: the recipe's release-age hold: not buildable, from when, not announced" \
+  "true|false|omarchy-pkgs holds new releases for 24 h, Build now from|" \
+  "$(rp_row bn-a '"\(.ahead)|\(.buildable)|\(.buildNote | sub(" [A-Z][a-z]+ [0-9]+ [0-9:]+$"; ""))"')|$(cat "$run_dir/notify.log")"
+# A clone that cannot be read (no such commit, no network): Build now
+# says why, and the check reports it while an ahead row is not muted.
+jq -n '{omarchyPkgs: {commit: ("0" * 40)}}' >"$run_dir/config/omarchy/omabump/pins.json"
+OMABUMP_TEST_GIT=$(command -v git) rp_run
+same "Build now on: omarchy-pkgs unreachable: not buildable, the reason in buildNote and in omarchyPkgs.error" \
+  'false|Could not fetch omarchy-pkgs: pinned omarchy-pkgs commit 000000000000 is unreachable|true' \
+  "$(rp_row bn-a '"\(.buildable)|\(.buildNote)"')|$(run_status '.omarchyPkgs.error | startswith("Could not fetch omarchy-pkgs")')"
+# The local refresh: Build now's install of the vendor's release clears the
+# row without a check, and so would the repo's package.
+loc_pkgs 'bn-a 2.1-1' 'bn-n 1.0-1'
+rp_run --local; rc=$?
+same "--local: the vendor's release built and installed: current, no longer ahead, no check" '0|false|false|false|false' \
+  "$rc|$(rp_row bn-a '"\(.updateAvailable)|\(.ahead)|\(.buildable)|\(.installable)"')"
+loc_pkgs 'bn-a 1.0-1' 'bn-n 1.0-1'
+rp_run --local
+same "--local: back below it: ahead again, buildable as apps.json says, the recipe unread until a check" 'true|true|' \
+  "$(rp_row bn-a '"\(.ahead)|\(.buildable)|\(.buildNote)"')"
+rm -rf "$bn_clone" "$run_dir/config/omarchy/omabump/pins.json" "$run_state/seen.json"
+run_settings ', "showMise": "false"'
 same "repo: the runs leave no scratch files" '' "$(leftovers)"
 rm -rf "$rp_served" "$run_dir/rpnotify" "$run_dir/notify.log" "$run_dir/rp.err" "$run_dir/pkgs" "$run_state/notified.json"
 rm -f "$run_dir/config/omarchy/omabump/apps.json" "$run_state/status.json"

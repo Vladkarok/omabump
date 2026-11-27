@@ -2,7 +2,8 @@
   {
     "pkg": "claude-desktop",
     "label": "Claude Desktop",
-    "source": "omarchy",
+    "source": "repo",
+    "build": true,
     "feed": {
       "type": "apt-index",
       "url": "https://downloads.claude.ai/claude-desktop/apt/stable/dists/stable/main/binary-amd64/Packages",
@@ -13,7 +14,8 @@
   {
     "pkg": "openai-codex-desktop",
     "label": "Codex",
-    "source": "omarchy",
+    "source": "repo",
+    "build": true,
     "installed": [
       "openai-codex-desktop",
       "chatgpt-desktop"
@@ -30,7 +32,8 @@
   {
     "pkg": "t3code-bin",
     "label": "T3 Code",
-    "source": "omarchy",
+    "source": "repo",
+    "build": true,
     "feed": {
       "type": "github-release",
       "repo": "pingdotgg/t3code"
@@ -42,7 +45,8 @@
   {
     "pkg": "hermes-desktop",
     "label": "Hermes",
-    "source": "omarchy",
+    "source": "repo",
+    "build": true,
     "feed": {
       "type": "github-release",
       "repo": "NousResearch/hermes-agent"
@@ -53,7 +57,8 @@
   {
     "pkg": "grok-bot",
     "label": "Grok",
-    "source": "omarchy",
+    "source": "repo",
+    "build": true,
     "feed": {
       "type": "json",
       "url": {
@@ -68,7 +73,8 @@
   {
     "pkg": "lmstudio-bin",
     "label": "LM Studio",
-    "source": "omarchy",
+    "source": "repo",
+    "build": true,
     "feed": {
       "type": "regex",
       "url": "https://lmstudio.ai/download",
@@ -80,7 +86,8 @@
   {
     "pkg": "openclaw",
     "label": "OpenClaw",
-    "source": "omarchy",
+    "source": "repo",
+    "build": true,
     "feed": {
       "type": "json",
       "url": "https://registry.npmjs.org/openclaw/latest",
@@ -95,7 +102,8 @@
   {
     "pkg": "perplexity",
     "label": "Perplexity",
-    "source": "omarchy",
+    "source": "repo",
+    "build": true,
     "feed": {
       "type": "apt-index",
       "url": "https://packages.perplexity.ai/deb/dists/stable/main/binary-amd64/Packages",
@@ -180,6 +188,7 @@
     "pkg": "claude-code",
     "label": "Claude Code",
     "source": "repo",
+    "build": true,
     "section": "cli",
     "feed": {
       "type": "regex",
@@ -192,6 +201,7 @@
     "pkg": "openai-codex",
     "label": "Codex CLI",
     "source": "repo",
+    "build": true,
     "section": "cli",
     "feed": {
       "type": "json",
@@ -205,6 +215,7 @@
     "pkg": "grok-cli",
     "label": "Grok CLI",
     "source": "repo",
+    "build": true,
     "section": "cli",
     "feed": {
       "type": "regex",
@@ -231,6 +242,7 @@
     "pkg": "github-copilot-cli",
     "label": "Copilot CLI",
     "source": "repo",
+    "build": true,
     "section": "cli",
     "feed": {
       "type": "json",
@@ -244,6 +256,7 @@
     "pkg": "crush-bin",
     "label": "Crush",
     "source": "repo",
+    "build": true,
     "section": "cli",
     "feed": {
       "type": "github-release",
@@ -257,11 +270,6 @@
     "label": "Cursor CLI",
     "source": "repo",
     "section": "cli",
-    "feed": {
-      "type": "regex",
-      "url": "https://raw.githubusercontent.com/omacom/omarchy-pkgs/master/pkgbuilds/cursor-cli/PKGBUILD",
-      "pattern": "(?m)^pkgver=([0-9A-Za-z._+~]+)\\s*$"
-    },
     "icon": "assets/cursor.svg",
     "iconLight": "assets/cursor-light.svg"
   },
@@ -269,6 +277,7 @@
     "pkg": "antigravity-cli",
     "label": "Antigravity CLI",
     "source": "repo",
+    "build": true,
     "section": "cli",
     "feed": {
       "type": "github-release",
@@ -282,11 +291,6 @@
     "label": "Muse Code",
     "source": "repo",
     "section": "cli",
-    "feed": {
-      "type": "regex",
-      "url": "https://raw.githubusercontent.com/omacom/omarchy-pkgs/master/pkgbuilds/muse-code/PKGBUILD",
-      "pattern": "(?m)^pkgver=([0-9A-Za-z._+~]+)\\s*$"
-    },
     "icon": "assets/muse.svg",
     "iconLight": "assets/muse-light.svg"
   },
@@ -294,6 +298,7 @@
     "pkg": "oh-my-pi",
     "label": "Oh My Pi",
     "source": "repo",
+    "build": true,
     "section": "cli",
     "feed": {
       "type": "github-release",
@@ -306,6 +311,7 @@
     "pkg": "openrouter-ori",
     "label": "Ori",
     "source": "repo",
+    "build": true,
     "section": "cli",
     "feed": {
       "type": "regex",
@@ -319,6 +325,7 @@
     "pkg": "kimi-code",
     "label": "Kimi CLI",
     "source": "repo",
+    "build": true,
     "section": "cli",
     "feed": {
       "type": "json",
@@ -332,6 +339,7 @@
     "pkg": "qwen-code",
     "label": "Qwen Code",
     "source": "repo",
+    "build": true,
     "section": "cli",
     "feed": {
       "type": "json",
@@ -345,11 +353,6 @@
     "label": "DeepSeek Harness",
     "source": "repo",
     "section": "cli",
-    "feed": {
-      "type": "regex",
-      "url": "https://raw.githubusercontent.com/omacom/omarchy-pkgs/master/pkgbuilds/deepseek-dsh/PKGBUILD",
-      "pattern": "(?m)^pkgver=([0-9A-Za-z._+~]+)\\s*$"
-    },
     "icon": "assets/deepseek.svg"
   },
   {
@@ -369,6 +372,7 @@
     "pkg": "freebuff",
     "label": "Freebuff",
     "source": "repo",
+    "build": true,
     "section": "cli",
     "feed": {
       "type": "json",
@@ -395,6 +399,7 @@
     "pkg": "devin-cli",
     "label": "Devin CLI",
     "source": "repo",
+    "build": true,
     "section": "cli",
     "feed": {
       "type": "json",
@@ -408,6 +413,7 @@
     "pkg": "amp-cli",
     "label": "Amp",
     "source": "repo",
+    "build": true,
     "section": "cli",
     "feed": {
       "type": "regex",
@@ -421,6 +427,7 @@
     "pkg": "pi-coding-agent",
     "label": "Pi",
     "source": "repo",
+    "build": true,
     "section": "cli",
     "feed": {
       "type": "github-release",
