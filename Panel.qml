@@ -17,6 +17,14 @@ Panel {
 
   readonly property color foreground: bar ? bar.foreground : Commons.Color.foreground
   readonly property color urgent: bar ? bar.urgent : Commons.Color.urgent
+  // A release only the vendor has: a caution short of urgent.
+  // A shell before the warning role (Omarchy's Color.qml of mid-November
+  // 2026 and earlier) has none, and an undefined colour paints black: its
+  // own default for the role then.
+  readonly property color warning: Commons.Color.warning !== undefined ? Commons.Color.warning : "#c4a35a"
+  // The bar icon's colour by Model.barIconLevel.
+  readonly property string iconLevel: Model.barIconLevel(checker.summary)
+  readonly property color iconColor: iconLevel === "warning" ? warning : urgent
   // Part way from the foreground to the card's background, so it is dimmer
   // on light themes too (Qt.darker turns dark text darker still). Flattened
   // rather than Util.alpha(foreground, …): buttons that take dim as their
@@ -60,9 +68,12 @@ Panel {
   // (Model.cursorIndex): the cursor follows that app when the list changes.
   property string cursorPkg: ""
   property bool cursorMoved: false
-  // Why the last Skip did nothing, by pkg, shown as the row's second line
-  // until the panel closes.
+  // Why the last Skip did nothing, or what Build now does while it is off,
+  // by pkg, shown as the row's second line until the panel closes.
   property var actionNotes: ({})
+  // The row whose Build now was explained while the setting is off: its
+  // next b turns the setting on (Model.buildStep).
+  property string buildExplained: ""
 
   // The settings view swaps in for the app list. Its rows are the check
   // interval dropdown, then the toggles in settingRows. The dropdown comes
@@ -71,9 +82,11 @@ Panel {
   property bool settingsOpen: false
   property int settingIndex: 0
   readonly property var settingRows: [
-    { key: "showMise", fallback: true, label: "Show CLI tools", description: "Coding agents and other CLI tools, below the desktop apps" },
+    { key: "showCli", fallback: true, label: "Show CLI tools", description: "Coding agents and other CLI tools, below the desktop apps" },
     { key: "barIconOnlyWithUpdates", fallback: false, label: "Bar icon only when updates exist", description: "It also shows while a check fails" },
-    { key: "notify", fallback: true, label: "Notify on new releases", description: "" }
+    { key: "notify", fallback: true, label: "Notify on new releases", description: "" },
+    { key: "buildAhead", fallback: false, label: "Build now",
+      description: "Build Omarchy's recipe here before its repo has a release: minutes, not signed by Omarchy" }
   ]
   readonly property string quietText: Model.quietText(apps, checker.mutedApps, checker.skippedVersions)
   // Which row is which: the interval, the toggles, then the "Muted: …" line
@@ -229,7 +242,7 @@ Panel {
     setSettings(changes)
   }
 
-  function settingOn(row) { return Model.boolSetting(root.settings, row.key, row.fallback) }
+  function settingOn(row) { return Model.settingValue(root.settings, row.key, row.fallback) }
 
   function activateSetting() {
     if (settingIndex === settingsLayout.intervalRow) {
@@ -281,6 +294,25 @@ Panel {
     root.close()
   }
 
+  // Build now (b, or the row's button), as Model.buildStep says: in a
+  // terminal while the setting is on; else first what it does, then the
+  // setting turned on.
+  function buildApp(app) {
+    var step = Model.buildStep(app, checker.buildAhead, buildExplained)
+    if (step === "explain") {
+      buildExplained = app.pkg
+      setActionNote(app.pkg, Model.buildOffNote(app))
+    } else if (step === "enable") {
+      setActionNote(app.pkg, "")
+      buildExplained = ""
+      setSetting("buildAhead", true)
+    } else if (step === "build" && root.bar) {
+      var inner = Util.shellQuote(checker.installScript) + " --build " + Util.shellQuote(app.pkg)
+      root.bar.run("omarchy-launch-floating-terminal-with-presentation " + Util.shellQuote(inner))
+      root.close()
+    }
+  }
+
   function setActionNote(pkg, text) {
     var notes = {}
     for (var key in actionNotes) notes[key] = actionNotes[key]
@@ -306,6 +338,7 @@ Panel {
 
   onOpenedChanged: if (opened) {
     actionNotes = {}
+    buildExplained = ""
     settingsOpen = false
     if (panelFlick) panelFlick.contentY = 0
     resetCursor()
@@ -370,7 +403,8 @@ Panel {
     anchors.fill: parent
     bar: root.bar
     text: root.glyph
-    active: root.updateCount > 0
+    active: root.iconLevel !== ""
+    activeColor: root.iconColor
     tooltipText: Model.tooltipText(checker.summary)
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.MiddleButton || buttonCode === Qt.RightButton) root.refreshNow()
@@ -418,12 +452,13 @@ Panel {
         var action = Model.keyAction(t, modifiers, root.settingsOpen, root.cursorActive)
         // A row's own action keeps the cursor on that row, though muting or
         // skipping it takes its action away (Model.cursorIndex).
-        if (["switch", "mute", "skip"].indexOf(action) >= 0) root.cursorMoved = true
+        if (["switch", "mute", "skip", "build"].indexOf(action) >= 0) root.cursorMoved = true
         if (action === "down" || action === "up") root.cursorKey(action === "down" ? 1 : -1)
         else if (action === "settings") root.showSettings(!root.settingsOpen, true)
         else if (action === "back") root.showSettings(false, false)
         else if (action === "refresh") root.refreshNow()
         else if (action === "switch") root.switchApp(root.selectedApp())
+        else if (action === "build") root.buildApp(root.selectedApp())
         else if (action === "mute") root.toggleMute(root.selectedApp())
         else if (action === "skip") root.toggleSkip(root.selectedApp())
       }
@@ -497,7 +532,7 @@ Panel {
               Text {
                 textFormat: Text.PlainText
                 text: root.glyph
-                color: root.updateCount > 0 ? root.urgent : root.foreground
+                color: root.iconLevel !== "" ? root.iconColor : root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.display
               }
@@ -827,7 +862,8 @@ Panel {
             textFormat: Text.PlainText
             width: parent.width
             text: Model.hintText(root.settingsOpen, root.cursorActive ? root.selectedApp() : null, root.orderedApps.length,
-              checker.mutedApps, checker.skippedVersions)
+              checker.mutedApps, checker.skippedVersions,
+              root.cursorActive ? Model.buildStep(root.selectedApp(), checker.buildAhead, root.buildExplained) : "")
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -862,11 +898,13 @@ Panel {
     readonly property bool hasUpdate: !!app && app.updateAvailable === true
     readonly property bool updatable: Model.updatable(app)
     readonly property bool switchable: Model.switchable(app) && !updatable
-    readonly property bool showAction: hasCursor && (updatable || switchable)
+    readonly property string buildStep: Model.buildStep(app, checker.buildAhead, root.buildExplained)
+    readonly property bool showAction: hasCursor && (updatable || switchable || buildStep !== "")
     readonly property bool muted: Model.isMuted(checker.mutedApps, app)
     readonly property bool quiet: Model.isQuiet(checker.mutedApps, checker.skippedVersions, app)
     readonly property bool skipped: Model.isSkipped(checker.skippedVersions, app)
-    readonly property string extra: Model.extraLine(app, app ? root.actionNotes[app.pkg] : "")
+    readonly property string actionNote: app ? String(root.actionNotes[app.pkg] || "") : ""
+    readonly property string extra: Model.extraLine(app, actionNote)
     property bool actionHovered: false
     onShowActionChanged: if (!showAction) actionHovered = false
 
@@ -964,6 +1002,9 @@ Panel {
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
+          // An action's note (what Build now does) is read whole.
+          wrapMode: appRow.actionNote !== "" ? Text.WordWrap : Text.NoWrap
+          maximumLineCount: appRow.actionNote !== "" ? 5 : 1
           elide: Text.ElideRight
         }
       }
@@ -986,12 +1027,14 @@ Panel {
           visible: appRow.hasUpdate
           text: appRow.app ? "→ " + appRow.app.latest : ""
           // Red and bold for a release Update installs from here, which is
-          // what the header and the bar icon count. A newer one it does
-          // not install (held, updated elsewhere, no install path) is plain.
-          color: appRow.quiet ? root.dim : appRow.updatable ? root.urgent : root.foreground
+          // what the header and the bar icon count; the warning colour for
+          // one only the vendor has (Model.latestTone). A newer one Omabump
+          // does not install (updated elsewhere, no install path) is plain.
+          readonly property string tone: Model.latestTone(appRow.app, appRow.quiet)
+          color: tone === "dim" ? root.dim : tone === "urgent" ? root.urgent : tone === "warning" ? root.warning : root.foreground
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
-          font.bold: appRow.updatable && !appRow.quiet
+          font.bold: tone === "urgent"
         }
 
         Text {
@@ -1016,6 +1059,20 @@ Panel {
         tooltipText: appRow.app ? Model.installedText(appRow.app) + " → " + appRow.app.latest + ", in a terminal  Enter" : ""
         onHovered: function(on) { appRow.actionHovered = on }
         onClicked: root.updateApp(appRow.app)
+      }
+
+      // Build now: secondary to Update, in the warning tone.
+      Button {
+        visible: appRow.showAction && appRow.buildStep !== ""
+        Layout.alignment: Qt.AlignVCenter
+        text: Model.buildButtonText(appRow.buildStep)
+        bordered: true
+        foreground: root.warning
+        fontFamily: root.fontFamily
+        fontSize: Style.font.bodySmall
+        tooltipText: Model.buildTooltip(appRow.app, appRow.buildStep)
+        onHovered: function(on) { appRow.actionHovered = on }
+        onClicked: root.buildApp(appRow.app)
       }
 
       Button {

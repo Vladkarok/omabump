@@ -89,7 +89,7 @@ PACMAN
   flock_waits() { sed -n "s/^-w \([0-9]*\) $1\$/\1/p" "$proto/flock.log" | sort -u | paste -sd' '; }
   # outcome <function> <exit> [waited]: what Model.js makes of the exit.
   outcome() { model_call "$1" <<<"[$2${3:+, $3}]" | jq -r .; }
-  timer_opts='{"wait": false, "ifDue": true, "intervalSec": 3600, "notify": false, "showMise": false}'
+  timer_opts='{"wait": false, "ifDue": true, "intervalSec": 3600, "notify": false, "showCli": false}'
 
   # Waits up to 5 s for a file to appear.
   until_exists() { local _; for _ in {1..250}; do [[ -e $1 ]] && return; sleep 0.02; done; }
@@ -212,10 +212,10 @@ fi
 # the command lines above, and reads the words they say, these read it.
 # shellcheck disable=SC2016 # the literal text of the QML
 same "Main.qml runs its checks by Model.checkCommand, with the wait, the due run and the settings as they are" \
-  'checkProcess.command = Model.checkCommand(checkScript, lockPath, { wait: wait, ifDue: !!ifDue, intervalSec: refreshIntervalSec, notify: notify, showMise: showMise })' \
+  'checkProcess.command = Model.checkCommand(checkScript, lockPath, { wait: wait, ifDue: !!ifDue, intervalSec: refreshIntervalSec, notify: notify, showCli: showCli })' \
   "$(grep -A1 '^    checkProcess.command = ' "$root/Main.qml" | sed 's/^ *//' | paste -sd' ')"
 check "Main.qml runs its local refresh by Model.localCommand" \
-  grep -qx '    localProcess.command = Model.localCommand(checkScript, showMise)' "$root/Main.qml"
+  grep -qx '    localProcess.command = Model.localCommand(checkScript, showCli)' "$root/Main.qml"
 check "Main.qml ends a run's wait on Model.startedWord" \
   grep -qx '        if (line === Model.startedWord) root.runWaiting = false' "$root/Main.qml"
 # Until the checker says a check is due, that run shows as none.
@@ -228,20 +228,23 @@ check "and shows none before" grep -qx '  readonly property bool checking: check
 # tests/check.sh reads the fields the checker writes and tests/model.test.mjs
 # feeds Model.js rows with them, so only these say both use one name. The
 # rows are the checker's own: row_derive and row_json, which build every
-# row a check writes, run here on an omarchy row.
+# row a check writes, run here on a repo row the vendor is ahead on (the
+# repo has 1.0-1).
 # qml_row <installed> <latest> <hold seconds> <jq filter>: that row, with
 # a skip of 1.2 in the settings, through the filter; the release first
-# seen now.
+# seen now, the recipe holding it that long.
 # shellcheck disable=SC2034 # the row's fields, read by row_derive and row_json
 qml_row() {
-  local pkg=qml-app source=omarchy app='{"pkg": "qml-app", "label": "Qml App"}' label="Qml App"
-  local installed_name=qml-app installed=$1 latest=$2 from=feed mise_update=false self_updating=false
-  local hold=$3 now=1767225600 installable=true note="" held=false unchecked=false
-  local error="" stale=false recipe="" request="" omarchy_update=false blocked=""
+  local pkg=qml-app source=repo app='{"pkg": "qml-app", "label": "Qml App"}' label="Qml App"
+  local installed_name=qml-app installed=$1 latest="" from="" vendor_version=$2 mise_update=false self_updating=false
+  local now=1767225600 installable=true note="" held=false unchecked=false repo_version=1.0-1 repo_why="" repo_failed=false
+  local error="" stale=false omarchy_update=false blocked="" feed_error="" route_error=""
   local muted_json='[]' skipped_json='{"qml-app": "1.2"}' seen_file=$scratch/qml-seen.json
-  local update switchable muted skipped skip_end quiet hold_clause unread=false
+  local update switchable muted skipped skip_end quiet hold_clause unread=false build_reason build_from
+  local repo_new ahead buildable build_note build_note_from route_ok
   mkdir -p "$state_dir"
   rm -f "$seen_file"
+  build_why true "" "" "$(build_hold_clause "$pkg" "$vendor_version" "$3" "$now")"
   row_derive
   row_json | jq -r "$4"
 }
@@ -254,9 +257,9 @@ same "the rows a check writes (row_json) carry skipEnded" '1.2|' \
   "$(qml_row 1.0-1 1.3 0 .skipEnded)|$(qml_row 1.0-1 1.2 0 .skipEnded)"
 # A row shortens the release-age hold clause by its words (Model.holdNote).
 qml_hold_re=$(sed -n 's|^var holdNote = /\(.*\)/$|\1|p' "$root/Model.js")
-qml_held=$(qml_row 1.0-1 1.3 86400 .note)
+qml_held=$(qml_row 1.0-1 1.3 86400 .buildNote)
 # shellcheck disable=SC2016 # expanded by the child bash
-check "a check (row_hold) words the hold clause as Model.holdNote reads it" \
+check "a check (build_hold_clause) words the hold clause as Model.holdNote reads it" \
   bash -c '[[ -n $1 && $2 =~ $1 ]]' _ "$qml_hold_re" "$qml_held"
 same "Model.js caps the quiet settings where load_quiet does" "$quiet_max" \
   "$(sed -n 's/^var quietMax = \([0-9]*\)$/\1/p' "$root/Model.js")"

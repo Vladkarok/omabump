@@ -29,6 +29,25 @@ function boolSetting(settings, name, fallback) {
   return fallback
 }
 
+// Settings renamed since an earlier release, new name to old: the old key
+// counts while the new one is absent, as load_quiet in bin/omabump-common
+// reads it, and the next settings write stores the new one
+// (settingsEntry). showCli was showMise until 0.1.19; the shim can go once
+// no shell.json written before 0.2.0 is left to read.
+var legacyKeys = { showCli: "showMise" }
+
+// A boolean setting by its current name, the old one standing in.
+function settingValue(settings, name, fallback) {
+  var old = legacyKeys[name]
+  if (old !== undefined && setting(settings, name, undefined) === undefined)
+    return boolSetting(settings, old, fallback)
+  return boolSetting(settings, name, fallback)
+}
+
+// Show CLI tools (default on) and Build now (default off).
+function showCli(settings) { return settingValue(settings, "showCli", true) }
+function buildAhead(settings) { return settingValue(settings, "buildAhead", false) }
+
 // Between five minutes and a day, whatever shell.json holds: a check asks
 // every feed, and nothing they say changes faster than that.
 function refreshIntervalSec(settings) {
@@ -37,12 +56,22 @@ function refreshIntervalSec(settings) {
 
 // --- mute and skip settings ----------------------------------------------------
 
-// A version as mise or a feed prints it: skip_version_ok in
-// bin/omabump-common, which load_quiet applies to every skip it reads.
-// skippedVersions drops one it refuses and skipToggled refuses to store
-// one: the panel would show that skip while the checker never applies it.
+// A version as mise or a feed prints it, or a full pacman version with its
+// epoch (a repo row's 1:2.0-1): skip_version_ok in bin/omabump-common,
+// which load_quiet applies to every skip it reads. skippedVersions drops
+// one it refuses and skipToggled refuses to store one: the panel would
+// show that skip while the checker never applies it.
+function versionOk(v) {
+  return v.length <= 64 && /^[0-9A-Za-z][A-Za-z0-9._+~]*$/.test(v) && v.indexOf("..") === -1
+}
+// full_version_ok: [epoch:]pkgver-pkgrel.
+function fullVersionOk(v) {
+  var m = /^(?:([0-9]{1,9}):)?(.*)-([0-9]+(?:\.[0-9]+)?)$/.exec(v)
+  return !!m && versionOk(m[2])
+}
 function skipVersionOk(v) {
-  return typeof v === "string" && v.length <= 64 && /^[0-9A-Za-z][A-Za-z0-9._+~-]*$/.test(v) && v.indexOf("..") === -1
+  if (typeof v !== "string") return false
+  return v.length <= 64 && /^[0-9A-Za-z][A-Za-z0-9._+~-]*$/.test(v) && v.indexOf("..") === -1 || fullVersionOk(v)
 }
 
 // load_quiet reads only the first quietMax strings of each setting, and
@@ -150,7 +179,7 @@ function liveSkips(apps, skips) {
 
 // Whether every listed row from source is muted (and there is one). A
 // self-updating app takes no route of its source, so a failure of that
-// route (the omarchy-pkgs fetch) is none of its business.
+// route (mise's inventory) is none of its business.
 function allMuted(apps, muted, source) {
   var any = false
   for (var i = 0; i < apps.length; i++) {
@@ -218,6 +247,13 @@ function quietCleared(apps, muted, skipped) {
 function settingsEntry(id, settings, changes, apps, skipped) {
   var entry = { id: id }
   for (var existing in settings) if (existing !== "id") entry[existing] = settings[existing]
+  // A renamed setting goes under its new name (legacyKeys).
+  for (var name in legacyKeys) {
+    var old = legacyKeys[name]
+    if (entry[old] === undefined) continue
+    if (entry[name] === undefined) entry[name] = entry[old]
+    delete entry[old]
+  }
   for (var key in changes) entry[key] = changes[key]
   var skips = liveSkips(apps, changes.skippedVersions !== undefined ? changes.skippedVersions : skipped)
   if (Object.keys(skips).length > 0 || entry.skippedVersions !== undefined) entry.skippedVersions = skips
@@ -238,11 +274,20 @@ function updateCount(apps, muted, skipped) {
   return count(apps, function(app) { return updatable(app) && !isQuiet(muted, skipped, app) })
 }
 
-// Newer upstream releases with no install path (no recipe watch, or an
-// indicator-only app).
+// The vendor's releases Omarchy's repo does not have yet, on rows with no
+// Update to offer meanwhile: the second level, apart from updateCount, in
+// the theme's warning colour. A row whose Update installs the repo's
+// package counts as an update, ahead or not.
+function aheadCount(apps, muted, skipped) {
+  return count(apps, function(app) { return aheadOnly(app) && !isQuiet(muted, skipped, app) })
+}
+
+// Newer upstream releases with no install path (an indicator-only app, a
+// feed that failed with a newer version known). Not a release only the
+// vendor has: aheadCount counts those.
 function waitingCount(apps, muted, skipped) {
   return count(apps, function(app) {
-    return app.updateAvailable === true && app.installable !== true && !isQuiet(muted, skipped, app)
+    return app.updateAvailable === true && app.installable !== true && !ahead(app) && !isQuiet(muted, skipped, app)
   })
 }
 
@@ -281,17 +326,26 @@ function staleCount(apps, muted) {
 // summary. Like the system update icon, it can stay out of the bar until
 // there is something to install (onlyWithUpdates). A failed check shows it
 // too, or a broken check would be invisible (a muted row's failure does
-// not, as mute promises). While the panel is open (IPC open/toggle) it
-// shows, so the panel has an anchor.
+// does not, as mute promises). A release only the vendor has shows it too.
+// While the panel is open (IPC open/toggle) it shows, so the panel has an
+// anchor.
 function barIconShown(s, onlyWithUpdates, panelOpen) {
-  return !onlyWithUpdates || s.updateCount > 0 || s.checkFailed || s.errorCount > 0 || !!panelOpen
+  return !onlyWithUpdates || s.updateCount > 0 || s.aheadCount > 0 || s.checkFailed || s.errorCount > 0 || !!panelOpen
+}
+
+// The bar icon's colour, by level: "urgent" while an update exists,
+// "warning" while only releases the repo does not have yet do, else "" (the
+// bar's foreground). Panel.qml maps the level to the theme's colours.
+function barIconLevel(s) {
+  if (s.updateCount > 0) return "urgent"
+  return s.aheadCount > 0 ? "warning" : ""
 }
 
 // --- status.json -----------------------------------------------------------------
 
 // status.json as the widget reads it, or null while it is empty. Throws on
 // text that is not JSON.
-function parseStatus(text, showMise) {
+function parseStatus(text, showCli) {
   if (String(text || "").trim() === "") return null
   var parsed = JSON.parse(String(text))
   var file = parsed && typeof parsed === "object" ? parsed : {}
@@ -299,7 +353,7 @@ function parseStatus(text, showMise) {
   // The rows status_apps in bin/omabump-common lists, but for an array
   // row, which no checker writes (tests/model.sh).
   var apps = (Array.isArray(file.apps) ? file.apps : []).filter(function(app) {
-    return !!app && typeof app === "object" && (showMise || rowSection(app) !== "cli")
+    return !!app && typeof app === "object" && (showCli || rowSection(app) !== "cli")
   })
   var started = file.startedAt ? new Date(file.startedAt).getTime() : NaN
   // When the installed versions were last read, by a check or a local
@@ -317,7 +371,7 @@ function parseStatus(text, showMise) {
     pkgsFollowing: pkgs.following === true,
     pkgsError: String(pkgs.error || ""),
     pkgsNote: String(pkgs.note || ""),
-    miseError: showMise ? String(file.miseError || "") : "",
+    miseError: showCli ? String(file.miseError || "") : "",
     runError: String(file.runError || "")
   }
 }
@@ -390,11 +444,11 @@ var waitScript = "flock -E " + lockBusyExit + ' -w "$2" "$1" true 2>/dev/null; (
 // deadline. o.wait: wait for a check that holds lockPath first
 // (waitScript), instead of leaving at once on it; the checker itself never
 // gets --wait. o.ifDue: run only when a check is due, by o.intervalSec
-// (--if-due). o.notify and o.showMise false pass --no-notify and --no-mise.
+// (--if-due). o.notify and o.showCli false pass --no-notify and --no-cli.
 function checkCommand(checkScript, lockPath, o) {
   var command = ["timeout", "-k", String(killAfterSec), String(checkDeadlineSec), checkScript]
   if (!o.notify) command.push("--no-notify")
-  if (!o.showMise) command.push("--no-mise")
+  if (!o.showCli) command.push("--no-cli")
   if (o.ifDue) command.push("--if-due", "--interval", String(o.intervalSec))
   if (o.wait) command = ["bash", "-c", waitScript, "omabump-wait", lockPath, String(lockWaitSec)].concat(command)
   return command
@@ -444,26 +498,27 @@ function answersError(status, afterMs) {
   return !!status && !status.checking && status.runError === "" && status.startedMs > afterMs
 }
 
-// What a change of Show CLI tools starts (Main.qml's onShowMiseChanged):
+// What a change of Show CLI tools starts (Main.qml's onShowCliChanged):
 // "" before the timer's first tick, which reads the setting as it is then;
 // "queue" behind this shell's own check; else "wait", a run that waits for
 // any check holding the lock and starts after it.
-function showMiseRun(settingsReady, timerTicked, running) {
+function showCliRun(settingsReady, timerTicked, running) {
   if (!settingsReady || !timerTicked) return ""
   return running ? "queue" : "wait"
 }
 
 // Why no summary may read as up to date, or "": the checker itself failed,
 // omarchy-pkgs could not be fetched, or mise could not list its tools. A
-// failure only muted rows share (the omarchy-pkgs fetch with every omarchy
-// row muted) signals nothing, like their own failures. f holds checkError,
+// failure only muted rows share (every mise row muted; the omarchy-pkgs
+// fetch, which a check makes only for a row the vendor is ahead on, with
+// no such row left unmuted) signals nothing, like their own failures. f holds checkError,
 // runError, pkgsError and miseError. With errorCount, the rule the checker
 // retries a failed check by (check_failed in bin/omabump-common), save
 // this shell's own checkError: tests/model.sh sets the two side by side.
 function failureText(f, apps, muted) {
   if (f.checkError !== "") return f.checkError
   if (f.runError !== "") return f.runError
-  if (f.pkgsError !== "" && !allMuted(apps, muted, "omarchy")) return f.pkgsError
+  if (f.pkgsError !== "" && apps.some(function(app) { return app.ahead === true && !isMuted(muted, app) })) return f.pkgsError
   if (f.miseError !== "" && !allMuted(apps, muted, "mise")) return f.miseError
   return ""
 }
@@ -486,9 +541,9 @@ var localRetryExit = 82
 var localDeadlineSec = 120
 
 // The command line of a local refresh (Main.qml's localRefresh).
-function localCommand(checkScript, showMise) {
+function localCommand(checkScript, showCli) {
   var command = ["timeout", "-k", String(killAfterSec), String(localDeadlineSec), checkScript, "--local"]
-  if (!showMise) command.push("--no-mise")
+  if (!showCli) command.push("--no-cli")
   return command
 }
 
@@ -539,15 +594,68 @@ function selfUpdating(app) { return !!app && app.selfUpdating === true }
 
 function updatable(app) { return !!app && app.updateAvailable === true && app.installable === true && !selfUpdating(app) }
 
+// The vendor has a release Omarchy's repo does not have yet (the checker's
+// ahead, from repo_derive in bin/omabump-common).
+function ahead(app) { return !!app && app.ahead === true && !selfUpdating(app) }
+
+// Ahead, with no Update meanwhile: the warning level (aheadCount).
+function aheadOnly(app) { return ahead(app) && !updatable(app) }
+
+// Build now could run for the row (the checker's buildable): it builds
+// Omarchy's own recipe at the vendor's version. Whether the buildAhead
+// setting lets it run is buildStep's to say.
+function buildable(app) { return ahead(app) && app.buildable === true }
+
+// What b, or the row's Build now button, does: "" on a row Build now
+// cannot build; "build", in a terminal, while the buildAhead setting is on;
+// with it off, "explain" first, which says in the row what Build now does
+// and that it is off (buildOffNote), then, once explained (explainedPkg is
+// the pkg of the row it was explained on), "enable", which turns the
+// setting on: the next press builds.
+function buildStep(app, buildAheadOn, explainedPkg) {
+  if (!buildable(app)) return ""
+  if (buildAheadOn) return "build"
+  return explainedPkg === app.pkg ? "enable" : "explain"
+}
+
+// The row's note while Build now is off and was asked for.
+function buildOffNote(app) {
+  // Short: the row has five narrow lines beside the button. The button's
+  // tooltip says the rest (buildTooltip).
+  return app ? "Builds it here from Omarchy's recipe: minutes, not signed by Omarchy. Off; b turns it on." : ""
+}
+
+// The Build now button's text and tooltip, by buildStep.
+function buildButtonText(step) { return step === "enable" ? "Turn on" : "Build now" }
+function buildTooltip(app, step) {
+  if (!app || step === "") return ""
+  if (step === "enable") return "Turn on Build now: it builds " + String(app.label || app.pkg) + " " + String(app.latest || "")
+    + " on this machine from Omarchy's own recipe, before Omarchy's repo has it. It takes minutes, runs the recipe as you,"
+    + " and the package is not signed by Omarchy  b"
+  if (step === "explain") return "What Build now does; it is off  b"
+  return "Build " + app.latest + " from Omarchy's recipe in a terminal; not signed by Omarchy  b"
+}
+
+// How the row's "→ newest" reads: "dim" on a quiet row, "urgent" for an
+// update Update installs, "warning" for a release only the vendor has,
+// else "plain". Panel.qml maps it to the theme's colours.
+function latestTone(app, quiet) {
+  if (quiet) return "dim"
+  if (updatable(app)) return "urgent"
+  return aheadOnly(app) ? "warning" : "plain"
+}
+
 // Whether the row's route installs a package by the row's pkg, and so can
 // replace one installed under another name: the checker's switchRoute
 // (route_table in bin/omabump-common). A row a checker of 0.1.17 or
 // earlier wrote has no such field; the routes of then that could are
-// omarchy and vendor-pkg.
+// omarchy and vendor-pkg (and repo, as route_table has it now, which no
+// such row names). A shim for such a status.json, which the next check
+// replaces: it can go once no 0.1.17 is expected to be upgraded from.
 function switchRoute(app) {
   if (!app) return false
   if (typeof app.switchRoute === "boolean") return app.switchRoute
-  return app.source === "omarchy" || app.source === "vendor-pkg"
+  return app.source === "omarchy" || app.source === "repo" || app.source === "vendor-pkg"
 }
 
 // Installed under another package name at a version the canonical package
@@ -565,14 +673,14 @@ function switchable(app) { return !!app && app.switchable === true && !selfUpdat
 // check it asked for says. Such a row has no action; its second line says
 // why (extraLine).
 function noRoute(app) {
-  if (!app || app.installable === true || app.source === "self" || app.held === true
+  if (!app || app.installable === true || app.source === "self" || app.held === true || ahead(app)
     || app.omarchyUpdate === true || app.blocked === true || app.unchecked === true || selfUpdating(app)) return false
   if (app.updateAvailable === true) return true
   return app.source === "mise" && String(app.error || "") === ""
     && String(app.latest || "") !== "" && app.latest !== app.installed
 }
 
-function hasAction(app) { return updatable(app) || switchable(app) }
+function hasAction(app) { return updatable(app) || switchable(app) || buildable(app) }
 
 // What Enter does: "update" when the plugin can install the row, else
 // nothing.
@@ -605,11 +713,11 @@ function cursorIndex(rows, pkg, moved, muted, skipped) {
 // exists, Switch does it at the same one. The checker writes the fields
 // and the widget says it (status.json schemaVersion 1).
 function switchClause(app) {
-  if (!app || !switchRoute(app) || app.installable !== true) return ""
+  if (!app || !switchRoute(app)) return ""
   var name = String(app.installedName || "")
   if (name === "" || name === app.pkg) return ""
-  if (app.updateAvailable === true) return "Installed as " + name + ", Update switches to " + app.pkg
-  if (app.switchable === true) return "Installed as " + name + ", switch to " + app.pkg
+  if (updatable(app)) return "Installed as " + name + ", Update switches to " + app.pkg
+  if (switchable(app)) return "Installed as " + name + ", switch to " + app.pkg
   return ""
 }
 
@@ -641,18 +749,22 @@ function installedText(app) {
   return app.updateAvailable === true && short === String(app.latest || "") ? full : short
 }
 
-// bin/omabump-check's release-age hold clause. The row says it short, so
-// the date fits; the tooltip keeps the whole note.
-var holdNote = /^omarchy-pkgs holds new releases for [0-9]+ h, Update from /
+// A recipe's release-age hold on Build now (build_hold_clause in
+// bin/omabump-common). The row says it short, so the date fits; the
+// tooltip keeps it whole.
+var holdNote = /^omarchy-pkgs holds new releases for [0-9]+ h, Build now from /
 
 // The second line of a row: exceptions only. actionNote is why the last
-// Skip did nothing (skipToggled's note).
+// Skip did nothing (skipToggled's note), or what Build now does while it
+// is off (buildOffNote). A release only the vendor has says why Build now
+// cannot run for it, when it cannot (buildNote), else the note.
 function extraLine(app, actionNote) {
   if (!app) return ""
   if (app.checking === true) return "Checking…"
   if (actionNote) return actionNote
   if (String(app.error || "") !== "") return "Check failed: " + app.error
-  var note = shortNote(app).replace(holdNote, "Held until ")
+  var build = aheadOnly(app) && !buildable(app) ? String(app.buildNote || "") : ""
+  var note = (build !== "" ? build : shortNote(app)).replace(holdNote, "Build now from ")
   if (note !== "") return note
   if (noRoute(app)) return "No install route"
   if (app.stale === true) return "Last known version"
@@ -671,8 +783,9 @@ function sourceLabel(app) {
 // Update says so, with the reason its second line gives, instead of a
 // route it cannot take. A self-updating app's says which copy updates
 // itself (its installedName, the path apps.json gives), then the note. A
-// repo row with an update names the version of Omarchy's repo Update
-// installs (the checker's repoVersion).
+// row from Omarchy's repo with an update names the version Update
+// installs (the checker's repoVersion), and one the vendor is ahead on says
+// so, and what Build now can do about it.
 function rowTooltip(app, muted, skipped, pkgsCommit) {
   if (!app) return ""
   var lines = []
@@ -695,15 +808,17 @@ function rowTooltip(app, muted, skipped, pkgsCommit) {
     lines.push((app.held === true ? "No Update yet" : "No Update here") + (why !== "" ? ": " + why : ""))
     if (why === note) note = ""
   } else if (app.source === "mise") lines.push("Updates with mise up")
-  else if (app.source === "omarchy") {
-    var commit = String(pkgsCommit || "")
-    lines.push("Updates through Omarchy's recipe"
-      + (String(app.recipe || "") !== "" ? " " + app.recipe : "")
-      + (commit !== "" ? " at " + commit.substring(0, 7) : ""))
-  } else if (app.source === "repo") {
+  else if (app.source === "repo") {
     var repo = String(app.repoVersion || "")
     lines.push("Updates from Omarchy's repo" + (repo !== "" && app.updateAvailable === true && app.held !== true ? " to " + repo : ""))
   } else if (app.source === "vendor-pkg") lines.push("Updates with the vendor's Arch package")
+  if (ahead(app)) {
+    var commit = String(pkgsCommit || "")
+    lines.push(String(app.vendorVersion || app.latest) + " released, not in Omarchy's repo yet")
+    lines.push(buildable(app)
+      ? "Build now (b) builds it from Omarchy's recipe" + (commit !== "" ? " at " + commit.substring(0, 7) : "") + ", not signed by Omarchy"
+      : "No Build now" + (String(app.buildNote || "") !== "" ? ": " + app.buildNote : ""))
+  }
   if (note !== "") lines.push(note)
   if (String(app.error || "") !== "") lines.push("Check failed: " + app.error)
   if (isMuted(muted, app)) lines.push("Muted: no badge, no notification")
@@ -809,7 +924,8 @@ var shiftModifier = 0x02000000
 // onTextKey), or "". k moves the cursor up (PanelKeyCatcher), so skip is
 // Shift+K, a settings write. With CapsLock on, j and k arrive as J and K
 // without Shift and move the cursor as j and k do. A shell whose catcher
-// passes no modifiers keeps K as skip.
+// passes no modifiers keeps K as skip. b is Build now (buildStep says what
+// it does on the row).
 function keyAction(text, modifiers, settingsOpen, cursorActive) {
   var shifted = modifiers === undefined || modifiers === null || (modifiers & shiftModifier) !== 0
   if ((text === "J" || text === "K") && !shifted) return text === "J" ? "down" : "up"
@@ -819,16 +935,21 @@ function keyAction(text, modifiers, settingsOpen, cursorActive) {
   if (text === "r" || text === "R") return "refresh"
   if (!cursorActive) return ""
   if (text === "w" || text === "W") return "switch"
+  if (text === "b" || text === "B") return "build"
   if (text === "m" || text === "M") return "mute"
   return text === "K" ? "skip" : ""
 }
 
-function hintText(settingsOpen, app, rowCount, muted, skipped) {
+// The footer's keys for the cursor's row. buildStepNow is buildStep's
+// answer for it: b is listed only on a row that offers Build now.
+function hintText(settingsOpen, app, rowCount, muted, skipped, buildStepNow) {
   if (settingsOpen) return "Space change · Esc back"
   var mute = app ? (isMuted(muted, app) ? " · m unmute" : " · m mute") : ""
   if (app && app.updateAvailable === true) mute = (isSkipped(skipped, app) ? " · K unskip" : " · K skip") + mute
-  if (updatable(app)) return "Enter update" + mute + " · Esc close"
-  if (switchable(app)) return "w switch package" + mute + " · Esc close"
+  var build = !buildStepNow ? "" : buildStepNow === "enable" ? " · b turn on Build now" : " · b build now"
+  if (updatable(app)) return "Enter update" + build + mute + " · Esc close"
+  if (switchable(app)) return "w switch package" + build + mute + " · Esc close"
+  if (build !== "") return build.substring(3) + mute + " · Esc close"
   return (rowCount > 0 ? "↑↓ select · " : "") + "r refresh · s settings" + mute
 }
 
@@ -863,8 +984,11 @@ function intervalOptions(choices, current) {
 
 // The summaries below read s, the checker's state (Main.qml's summary):
 // checking, checkFailed, checkedAt, appCount, the counts above by name
-// (updateCount, waitingCount, quietCount, errorCount, mutedErrorCount,
-// uncheckedCount, staleCount) and pkgsFollowing.
+// (updateCount, aheadCount, waitingCount, quietCount, errorCount,
+// mutedErrorCount, uncheckedCount, staleCount) and pkgsFollowing.
+
+// "1 ahead of the repo": the releases only the vendor has (aheadCount).
+function aheadText(s) { return s.aheadCount > 0 ? s.aheadCount + " ahead of the repo" : "" }
 
 // What quiet rows hold back, in one wording for the header, the tooltip
 // and IPC status: " (+N muted/skipped)" for their updates. The tooltip and
@@ -885,7 +1009,9 @@ function quietNote(s, withFailures) {
 // only when there is no update to say first.
 function heroState(s, checked) {
   if (s.checkFailed) return "Check failed"
-  if (s.updateCount > 0) return s.updateCount + (s.updateCount === 1 ? " update" : " updates")
+  var ahead = aheadText(s)
+  if (s.updateCount > 0) return s.updateCount + (s.updateCount === 1 ? " update" : " updates") + (ahead !== "" ? " · " + ahead : "")
+  if (ahead !== "") return ahead
   if (s.waitingCount > 0) return s.waitingCount + " newer, no Update here"
   if (s.staleCount > 0) return "Last known, " + checked
   if (s.errorCount > 0) return "Check failed"
@@ -907,6 +1033,7 @@ function heroMeta(s, settingsOpen, checked) {
 function summaryText(s) {
   var parts = []
   if (s.updateCount > 0) parts.push(s.updateCount + (s.updateCount === 1 ? " update" : " updates"))
+  if (s.aheadCount > 0) parts.push(aheadText(s))
   if (s.waitingCount > 0) parts.push(s.waitingCount + " newer without an install path")
   var failed = s.errorCount
   if (s.checkFailed) parts.push("check failed")

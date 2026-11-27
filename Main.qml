@@ -33,10 +33,13 @@ Item {
 
   readonly property int refreshIntervalSec: Model.refreshIntervalSec(settings)
   readonly property bool notify: Model.boolSetting(settings, "notify", true)
-  readonly property bool showMise: Model.boolSetting(settings, "showMise", true)
+  readonly property bool showCli: Model.showCli(settings)
+  // Build now runs only while this is on (Model.buildStep); the checker
+  // and the installer read it from shell.json themselves.
+  readonly property bool buildAhead: Model.buildAhead(settings)
   // A check that started before the change runs with the old setting: this
   // shell's own, and one from a terminal or the installer too, since
-  // bin/omabump-check reads showMise from shell.json itself. Turned on,
+  // bin/omabump-check reads showCli from shell.json itself. Turned on,
   // such a run lists no CLI rows, so one more must start after it: behind
   // this shell's own check it is queued (runQueued); otherwise it waits for
   // the lock (runCheck(true, false)). Each monitor's copy of the widget
@@ -50,10 +53,10 @@ Item {
   // which a killed run leaves behind. Turned off, the run keeps
   // status.json free of CLI rows; parse() filters them out meanwhile.
   // Before the timer's first tick (the bar is still handing the settings
-  // over), that tick reads the setting as it is then (Model.showMiseRun).
-  onShowMiseChanged: {
+  // over), that tick reads the setting as it is then (Model.showCliRun).
+  onShowCliChanged: {
     parse(statusFile.text())
-    var run = Model.showMiseRun(settingsReady, timerTicked, checkProcess.running)
+    var run = Model.showCliRun(settingsReady, timerTicked, checkProcess.running)
     if (run === "queue") checkQueued = true
     else if (run === "wait") runCheck(true, false)
   }
@@ -148,6 +151,7 @@ Item {
     pkgsError: pkgsError, miseError: miseError }, apps, mutedApps)
   readonly property bool checkFailed: failureText !== ""
   readonly property int updateCount: Model.updateCount(apps, mutedApps, skippedVersions)
+  readonly property int aheadCount: Model.aheadCount(apps, mutedApps, skippedVersions)
   readonly property int waitingCount: Model.waitingCount(apps, mutedApps, skippedVersions)
   readonly property int quietCount: Model.quietCount(apps, mutedApps, skippedVersions)
   readonly property int errorCount: Model.errorCount(apps, mutedApps)
@@ -158,7 +162,7 @@ Item {
   // Model.tooltipText).
   readonly property var summary: ({
     checking: checking, checkFailed: checkFailed, checkedAt: checkedAt, appCount: apps.length,
-    updateCount: updateCount, waitingCount: waitingCount, quietCount: quietCount,
+    updateCount: updateCount, aheadCount: aheadCount, waitingCount: waitingCount, quietCount: quietCount,
     errorCount: errorCount, mutedErrorCount: mutedErrorCount, uncheckedCount: uncheckedCount,
     staleCount: staleCount, pkgsFollowing: pkgsFollowing
   })
@@ -212,7 +216,7 @@ Item {
     runAskedMs = Date.now()
     // Under the deadline, after the wait for the lock (Model.checkCommand).
     checkProcess.command = Model.checkCommand(checkScript, lockPath, { wait: wait, ifDue: !!ifDue,
-      intervalSec: refreshIntervalSec, notify: notify, showMise: showMise })
+      intervalSec: refreshIntervalSec, notify: notify, showCli: showCli })
     checkProcess.running = true
   }
 
@@ -259,7 +263,7 @@ Item {
       localAfterDue = true
       return
     }
-    localProcess.command = Model.localCommand(checkScript, showMise)
+    localProcess.command = Model.localCommand(checkScript, showCli)
     localProcess.running = true
   }
 
@@ -283,7 +287,7 @@ Item {
 
   function parse(content) {
     try {
-      var status = Model.parseStatus(content, showMise)
+      var status = Model.parseStatus(content, showCli)
       if (!status) return
       // A check rewrites the file once per row, and the file watch and the
       // end of the check both read it. A new array re-runs everything bound
@@ -439,13 +443,13 @@ Item {
   }
 
   // Each bar's local refresh, between the checks (localTick), only while
-  // the bar counts an update: that is what a refresh can take back when the
+  // the bar counts an update or a release ahead of the repo: that is what a refresh can take back when the
   // app was updated elsewhere. With none, the icon has nothing to get
   // wrong, and no process starts until the next check or until the panel
   // opens (panelOpened).
   Timer {
     interval: Model.localIntervalSec * 1000
-    running: root.settingsReady && root.statusRead && root.updateCount > 0
+    running: root.settingsReady && root.statusRead && (root.updateCount > 0 || root.aheadCount > 0)
     repeat: true
     onTriggered: root.localTick()
   }

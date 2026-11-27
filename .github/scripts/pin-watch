@@ -7,10 +7,12 @@
 #     under bin/ and helpers/ that it or a shipped app's hook names
 #     (update_code); the rest of helpers/ is omarchy-pkgs' own build and
 #     publish tooling, so its changes are listed but are not news;
-#   - the recipes of the omarchy apps in apps.json, less pkgver, pkgrel and
-#     checksum arrays, which sync-upstream rewrites itself on every Update,
-#     and less what the recipe's own hook rewrites (hook_writes), so a
-#     routine "sync upstream releases" commit is not news.
+#   - the recipes of the apps in apps.json Build now may build ("build":
+#     true, or the "omarchy" source of 0.1.19 and before), less pkgver,
+#     pkgrel and checksum arrays, which sync-upstream rewrites itself on
+#     every build, less what the recipe's own hook rewrites (hook_writes),
+#     and less the variables its upstream watch rewrites (watch_names), so
+#     a routine "sync upstream releases" commit is not news.
 #
 # Prints nothing and exits 0 when none of that changed. Exits 3 with the
 # report on stdout when something did. Anything else is an error. Used by
@@ -40,7 +42,7 @@ pin=$(jq -r '.omarchyPkgs.commit // ""' "$plugin_dir/pins.json")
 ref=$(jq -r '.omarchyPkgs.ref // "refs/heads/master"' "$plugin_dir/pins.json")
 [[ $ref =~ ^refs/heads/[A-Za-z0-9._/-]+$ && $ref != *..* ]] || { echo "pin-watch: bad ref '$ref' in pins.json" >&2; exit 1; }
 branch=${ref#refs/heads/}
-mapfile -t apps < <(jq -r '.[] | select(.source == "omarchy") | .pkg' "$plugin_dir/apps.json")
+mapfile -t apps < <(jq -r '.[] | select(.build == true or .source == "omarchy") | .pkg' "$plugin_dir/apps.json")
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -105,9 +107,40 @@ hook_names() {
   echo "${out[*]}"
 }
 
+# The PKGBUILD variables $1's upstream watch rewrites on every sync, on one
+# line: the names under .upstream.watch.variables in its
+# .omarchy/package.json at the pin (openrouter-ori's _build and _hash,
+# amp-cli's, deepseek-dsh's _npmver), which bin/sync-upstream fills from
+# the vendor's answer as it fills pkgver. The pin's, not master's: a watch
+# that starts rewriting another variable on master shows in the report.
+watch_names() {
+  local meta out
+  meta=$(blob_at "$pin" "pkgbuilds/$1/.omarchy/package.json") || exit 1
+  [[ -n $meta ]] || return 0
+  out=$(jq -r '.upstream?.watch?.variables? | objects | keys[]' <<<"$meta" 2>/dev/null) \
+    || { echo "pin-watch: cannot read the upstream watch of $1 at ${pin:0:12}" >&2; exit 1; }
+  local name names=()
+  while IFS= read -r name; do
+    [[ -n $name ]] || continue
+    [[ $name =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || { echo "pin-watch: $1's watch names an odd variable '$name'" >&2; exit 1; }
+    names+=("$name")
+  done <<<"$out"
+  echo "${names[*]}"
+}
+
+# Every assignment of $1's PKGBUILD a sync rewrites besides pkgver, pkgrel
+# and checksums, on one line: its hook's (hook_names) and its watch's
+# (watch_names).
+sync_names() {
+  local hook watch
+  hook=$(hook_names "$1") || exit 1
+  watch=$(watch_names "$1") || exit 1
+  echo "$hook${hook:+${watch:+ }}$watch"
+}
+
 # A recipe file as sync-upstream would leave it alone: no pkgver or pkgrel
 # line, no checksum array, however many lines the array spans, and none of
-# the assignments named in $@ (hook_names).
+# the assignments named in $@ (hook_names, watch_names).
 routine_free() {
   local extra
   extra=$(printf '%s|' "$@")
@@ -122,7 +155,7 @@ routine_free() {
 # Files of $1's recipe that changed beyond what a sync rewrites.
 recipe_changes() {
   local app=$1 file before after list names
-  list=$(hook_names "$app") || exit 1
+  list=$(sync_names "$app") || exit 1
   read -ra names <<<"$list"
   while IFS= read -r file; do
     if [[ ${file##*/} == PKGBUILD ]]; then
@@ -160,7 +193,7 @@ recipe_diff() {
   for file; do
     if [[ ${file##*/} == PKGBUILD ]]; then
       app=${file#pkgbuilds/} app=${app%%/*}
-      list=$(hook_names "$app") || exit 1
+      list=$(sync_names "$app") || exit 1
       read -ra names <<<"$list"
       mkdir -p "$work/old/${file%/*}" "$work/new/${file%/*}"
       blob_at "$pin" "$file" | routine_free "${names[@]}" >"$work/old/$file" || exit 1
@@ -272,12 +305,12 @@ printf 'pins.json pins omarchy-pkgs %s (%s). %s is %s (%s), %d commits ahead' \
 if [[ -n $web ]]; then printf ': [compare](%s/compare/%s...%s).\n\n' "$web" "$pin" "$tip"; else printf '.\n\n'; fi
 hooked=()
 for app in "${apps[@]}"; do
-  list=$(hook_names "$app")
+  list=$(sync_names "$app") || exit 1
   read -ra names <<<"$list"
   (( ${#names[@]} )) && hooked+=("$(printf '`%s` ' "${names[@]}")of $app")
 done
-printf 'Routine syncs are left out: a recipe'"'"'s pkgver, pkgrel and checksums, which sync-upstream rewrites on every Update anyway'
-if (( ${#hooked[@]} )); then printf ', and what the recipe'"'"'s own hook rewrites (%s)' "$(printf '%s, ' "${hooked[@]}" | sed 's/ *, $//')"; fi
+printf 'Routine syncs are left out: a recipe'"'"'s pkgver, pkgrel and checksums, which sync-upstream rewrites on every build anyway'
+if (( ${#hooked[@]} )); then printf ', and what the recipe'"'"'s own hook or upstream watch rewrites (%s)' "$(printf '%s, ' "${hooked[@]}" | sed 's/ *, $//')"; fi
 printf '.\n'
 if [[ -n $unrun ]]; then
   # shellcheck disable=SC2086 # one path per line, none with blanks

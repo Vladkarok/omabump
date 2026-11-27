@@ -51,6 +51,14 @@ printf '{"upstream": {"github": "o/app"}}\n' >"$pw/up/pkgbuilds/app/.omarchy/pac
 printf 'pkgname=pinned\npkgver=1\n' >"$pw/up/pkgbuilds/pinned/PKGBUILD"
 printf '{"sync": false}\n' >"$pw/up/pkgbuilds/pinned/.omarchy/package.json"
 printf 'pkgname=other\n' >"$pw/up/pkgbuilds/other/PKGBUILD"
+# watched (build true) has an upstream watch that rewrites _build and _hash
+# on every sync, as openrouter-ori's and amp-cli's do; nobuild is a repo
+# entry Build now may not build, whose recipe is none of the report's.
+mkdir -p "$pw/up/pkgbuilds/watched/.omarchy" "$pw/up/pkgbuilds/nobuild"
+printf 'pkgname=watched\npkgver=1\n_build=b1\n_hash=h1\ndepends=(a)\n' >"$pw/up/pkgbuilds/watched/PKGBUILD"
+printf '{"upstream": {"watch": {"regex": "https://example.invalid", "variables": {"_build": "{build}", "_hash": "{hash}"}}}}\n' \
+  >"$pw/up/pkgbuilds/watched/.omarchy/package.json"
+printf 'pkgname=nobuild\ndepends=(a)\n' >"$pw/up/pkgbuilds/nobuild/PKGBUILD"
 pw_commit 10 base
 pw_pin=$(git -C "$pw/up" rev-parse HEAD)
 printf '{"omarchyPkgs": {"commit": "%s", "ref": "refs/heads/master"}}\n' "$pw_pin" >"$pw/plugin/pins.json"
@@ -59,6 +67,8 @@ cat >"$pw/plugin/apps.json" <<'EOF'
   {"pkg": "app", "source": "omarchy"},
   {"pkg": "pinned", "source": "omarchy"},
   {"pkg": "hooked", "source": "omarchy"},
+  {"pkg": "watched", "source": "repo", "build": true},
+  {"pkg": "nobuild", "source": "repo"},
   {"pkg": "mise:x", "source": "mise", "tool": "x"}
 ]
 EOF
@@ -79,9 +89,12 @@ sed -i 's/^pkgver=1$/pkgver=2/; s/^_commit=aaaa/_commit=bbbb/' "$pw/up/pkgbuilds
 printf 'echo release v2\n' >"$pw/up/bin/auto-release"
 printf 'publish() { echo v2; }\n' >"$pw/up/helpers/ci.sh"
 printf 'pkgname=other\ndepends=(x)\n' >"$pw/up/pkgbuilds/other/PKGBUILD"
+sed -i 's/^pkgver=1$/pkgver=2/; s/^_build=b1/_build=b2/; s/^_hash=h1/_hash=h2/' "$pw/up/pkgbuilds/watched/PKGBUILD"
+printf 'pkgname=nobuild\ndepends=(b)\n' >"$pw/up/pkgbuilds/nobuild/PKGBUILD"
 pw_commit 8 "chore: sync upstream releases"
 pw_run
-same "pin-watch: a routine sync, a hook's own rewrite and code nothing Update runs names are no news" '0|' "$pw_rc|$pw_out"
+same "pin-watch: a routine sync, a hook's or a watch's own rewrite, a recipe Build now may not build and code nothing Update runs names are no news" \
+  '0|' "$pw_rc|$pw_out"
 
 sed -i "s/^depends=('glibc')/depends=('glibc' 'gtk3')/" "$pw/up/pkgbuilds/app/PKGBUILD"
 pw_commit 6 "app: needs gtk3"
@@ -90,7 +103,9 @@ same "pin-watch: a recipe change beyond the sync is news" 3 "$pw_rc"
 check "pin-watch: the report names the recipe and shows the change" grep -q "^+depends=('glibc' 'gtk3')" <<<"$pw_out"
 refuse "pin-watch: the report leaves out the routine lines" grep -q '^+pkgver=1.1' <<<"$pw_out"
 refuse "pin-watch: and the code Update never runs" grep -q 'auto-release' <<<"$pw_out"
-check "pin-watch: and names what a hook rewrites" grep -qF 'what the recipe'"'"'s own hook rewrites (`_commit` of hooked)' <<<"$pw_out"
+check "pin-watch: and names what a hook or a watch rewrites" \
+  grep -qF 'what the recipe'"'"'s own hook or upstream watch rewrites (`_commit` of hooked, `_build` `_hash` of watched)' <<<"$pw_out"
+refuse "pin-watch: the recipe of an entry Build now may not build is left out" grep -q 'nobuild' <<<"$pw_out"
 check "pin-watch: and the helpers left out" grep -qF "that nothing Update runs names, omarchy-pkgs' own build and publish tooling: \`helpers/ci.sh\`." <<<"$pw_out"
 refuse "pin-watch: without their diff" grep -q '^+publish' <<<"$pw_out"
 check "pin-watch: the report suggests a commit at least 3 days old" grep -q "\"commit\": \"$(git -C "$pw/up" rev-parse HEAD)\"" <<<"$pw_out"
@@ -111,6 +126,27 @@ pw_run
 check "pin-watch: without a hook_writes entry the line shows" grep -q '^+_commit=cccc' <<<"$pw_out"
 refuse "pin-watch: and no hook is named as rewriting it" grep -qF 'own hook rewrites' <<<"$pw_out"
 pw_hook_writes '"hooked _commit"'
+
+# The watched recipe beyond its watch's rewrite: news, shown without the
+# lines the watch writes. A variable master's watch names but the pin's
+# does not is news, line and all.
+sed -i 's/^_build=b2/_build=b3/; s/^depends=(a)/depends=(a c)/' "$pw/up/pkgbuilds/watched/PKGBUILD"
+pw_commit 5 "watched: needs c"
+pw_run
+same "pin-watch: a watched recipe changed beyond its watch's rewrite is news" 3 "$pw_rc"
+check "pin-watch: the change is shown" grep -q '^+depends=(a c)' <<<"$pw_out"
+refuse "pin-watch: the variable the watch writes is not" grep -q '^[-+]_build=' <<<"$pw_out"
+printf '_extra=e1\n' >>"$pw/up/pkgbuilds/watched/PKGBUILD"
+printf '{"upstream": {"watch": {"regex": "https://example.invalid", "variables": {"_build": "{build}", "_hash": "{hash}", "_extra": "{x}"}}}}\n' \
+  >"$pw/up/pkgbuilds/watched/.omarchy/package.json"
+pw_commit 5 "watched: a new variable"
+pw_run
+check "pin-watch: a variable only master's watch names shows" grep -q '^+_extra=e1' <<<"$pw_out"
+git -C "$pw/up" reset -q --hard HEAD~2
+sed -i 's/^_build=b2/_build=b3/' "$pw/up/pkgbuilds/watched/PKGBUILD"
+pw_commit 5 "chore: sync upstream releases"
+pw_run
+refuse "pin-watch: a watch's rewrite alone is no news of its recipe" grep -q 'watched' <<<"$(sed -n '/### Recipes of the shipped apps/,$p' <<<"$pw_out")"
 
 # Code Update runs: what sync-upstream names, through the files named (a.sh,
 # then watch.py, then the util.py it imports), and what a hook names.

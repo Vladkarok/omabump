@@ -5,7 +5,7 @@
   "version": "0.1.19",
   "author": "vladkarok",
   "license": "MIT",
-  "description": "Agent desktop apps and CLIs at the version the vendor shipped, ahead of the Omarchy repo.",
+  "description": "Updates for your AI apps and coding-agent CLIs: see what is newer in Omarchy's repo, at the vendor or in mise, and update that one app.",
   "kinds": [
     "bar-widget"
   ],
@@ -14,17 +14,18 @@
   },
   "barWidget": {
     "displayName": "Omabump",
-    "description": "Shows when a vendor has released a newer version of an installed agent desktop app or CLI, and updates it in a terminal through Omarchy's recipe, the vendor's Arch package or mise when you press Update.",
+    "description": "Shows when Omarchy's repo, a vendor or mise has a newer version of an installed AI app or coding-agent CLI, and updates that one app in a terminal when you press Update: from Omarchy's signed package, the vendor's Arch package or mise. Build now, once you turn it on, builds Omarchy's own recipe for a release its repo does not have yet.",
     "category": "AI",
     "allowMultiple": false,
     "defaultSection": "right",
     "defaults": {
       "refreshIntervalSec": 3600,
       "notify": true,
-      "showMise": true,
+      "showCli": true,
       "barIconOnlyWithUpdates": false,
       "mutedApps": [],
-      "skippedVersions": {}
+      "skippedVersions": {},
+      "buildAhead": false
     },
     "schema": [
       {
@@ -41,10 +42,10 @@
         "type": "boolean",
         "label": "Notify on new releases",
         "defaultValue": true,
-        "description": "Send a desktop notification when a vendor publishes a version newer than the installed one."
+        "description": "Send a desktop notification when a newer version of an installed app is out."
       },
       {
-        "key": "showMise",
+        "key": "showCli",
         "type": "boolean",
         "label": "Show CLI tools",
         "defaultValue": true,
@@ -55,7 +56,14 @@
         "type": "boolean",
         "label": "Bar icon only when updates exist",
         "defaultValue": false,
-        "description": "Show the bar icon only when an installable update exists or a check failed. IPC open and toggle still open the panel."
+        "description": "Show the bar icon only when an installable update exists, a vendor has a release Omarchy's repo does not have yet, or a check failed. IPC open and toggle still open the panel."
+      },
+      {
+        "key": "buildAhead",
+        "type": "boolean",
+        "label": "Build now",
+        "defaultValue": false,
+        "description": "Offer Build now for an app whose vendor released a version Omarchy's repo does not have yet: it builds Omarchy's own recipe on this machine, takes minutes, and the package is not signed by Omarchy."
       }
     ]
   }

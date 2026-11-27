@@ -5,7 +5,9 @@
 # directory instead of /var/cache/omabump, with these first on PATH:
 #   pacman    -Q and -Qi from a fixture database, -Qqo from its file
 #             owners, -Qp and -Qip from the package's .PKGINFO (-Qp fails on a staged copy with
-#             $STUB_QP_FAIL set), -U as $STUB_PACMAN_U says (ok, no,
+#             $STUB_QP_FAIL set, and says $STUB_QP_STAGED of one when that
+#             is set), -U as $STUB_PACMAN_U says (ok, no, with
+#             $STUB_PACMAN_KEEP set leaving the packages it conflicts with,
 #             hookfail, or HUP or TERM: that signal to the installer at
 #             the prompt, after which pacman goes on until the installer
 #             has ended and records whether the package was still there)
@@ -78,6 +80,7 @@ case $1 in
   -Qqo) awk -F'\t' -v p="$last" '$1 == p { print $2; found = 1 } END { exit !found }' "$STUB_DB/files" \
     || { echo "error: No package owns $last" >&2; exit 1; } ;;
   -Qp) [[ -z ${STUB_QP_FAIL:-} || $last != "$STUB_STAGING"/* ]] || { echo "error: cannot read $last" >&2; exit 1; }
+    [[ -z ${STUB_QP_STAGED:-} || $last != "$STUB_STAGING"/* ]] || { echo "$STUB_QP_STAGED"; exit 0; }
     info=$(pkginfo "$last") || exit 1
     echo "$(field pkgname "$info") $(field pkgver "$info")" ;;
   -Qip) info=$(pkginfo "$last") || exit 1
@@ -87,7 +90,7 @@ case $1 in
     case ${STUB_PACMAN_U:-no} in
       ok|hookfail)
         name=$(field pkgname "$info")
-        { echo "$name"; field conflict "$info"; } >"$STUB_DB/drop"
+        { echo "$name"; [[ -n ${STUB_PACMAN_KEEP:-} ]] || field conflict "$info"; } >"$STUB_DB/drop"
         awk 'NR == FNR { d[$1]; next } !($1 in d)' "$STUB_DB/drop" "$STUB_DB/installed" >"$STUB_DB/installed.new"
         echo "$name $(field pkgver "$info")" >>"$STUB_DB/installed.new"
         mv "$STUB_DB/installed.new" "$STUB_DB/installed"
@@ -122,6 +125,8 @@ case "$*" in
     # copies the package once you answer, after the installer has ended.
     [[ -z ${STUB_SUDO_ASKS:-} ]] || signal_installer "$STUB_SUDO_ASKS"
     mkdir -p "${dest%/*}" && cat >"$dest" || exit 1
+    # Another pacman installing this meanwhile, while sudo had the prompt.
+    [[ -z ${STUB_SUDO_MEANWHILE:-} ]] || echo "$STUB_SUDO_MEANWHILE" >>"$STUB_DB/installed"
     [[ -z ${STUB_TAMPER:-} ]] || printf 'x' >>"$dest"
     # The terminal closing or kill once the copy is there, before pacman.
     if [[ -n ${STUB_SUDO_INSTALL:-} ]]; then
@@ -190,6 +195,7 @@ EOF
 cat >"$istubs/makepkg" <<'EOF'
 #!/bin/bash
 echo "makepkg $*" >>"$STUB_LOG/calls"
+echo "${GNUPGHOME:-none}" >>"$STUB_LOG/gnupg"
 source ./PKGBUILD
 full=$pkgver-$pkgrel file=$PKGDEST/$pkgname-$pkgver-$pkgrel-x86_64$PKGEXT
 case " $* " in
@@ -475,10 +481,12 @@ rule "an Update of a vendor row" none '' testapp
 fresh 'testapp-bin 1.0.0-1'
 rule "--switch from another name" none '' --switch testapp
 fresh
-rule "--switch on a mise row" route '--switch works for omarchy and vendor rows only' --switch mise:testtool
+rule "--switch on a mise row" route "--switch works for rows from Omarchy's repo and vendor rows only" --switch mise:testtool
 rule "an indicator row" route \
   'Ind App has no Update here: omarchy update updates it when pacman or the AUR has its package, else update it the way you installed it' indapp
-rule "--switch on a repo row" route '--switch works for omarchy and vendor rows only' --switch rpapp
+rule "--switch on a repo row with nothing to switch" route 'Rp App is not installed under another name; nothing to switch' --switch rpapp
+rule "--build on a vendor row" route "Build now is not available for Test App: Omabump does not build its recipe (its apps.json entry has no \"build\": true). Update installs it once Omarchy's repo has it" --build testapp
+rule "--build while buildAhead is off" route "Build now is off. It builds Test Pkg on this machine from Omarchy's own recipe, before Omarchy's repo has the release: it takes minutes, runs Omarchy's build recipe as you, and the package is not signed by Omarchy. Turn it on with: omarchy bar set io.github.vladkarok.omabump buildAhead true --json (or in the Omabump panel's settings)" --build testpkg
 rule "Omabump from a local checkout" route "Omabump runs from a local checkout ($iplugin); update it with git" self:omabump
 
 # --- the vendor route ------------------------------------------------------------
@@ -881,6 +889,16 @@ no_call "install (vendor): pacman -U never runs on it" 'pacman -U'
 check "install (vendor): the copy stays, as the message says" test -f "$vstaged"
 no_call "install (vendor): the exit does not remove it either" 'rm -f --'
 check "install (vendor): nor record it for the next Update" test ! -e "$ileft/testapp"
+# A staged copy whose digest matches, but which pacman -Qp reads as another
+# package or version, is not installed either.
+for qp in 'testapp 2.0.0-2' 'other 2.0.0-1'; do
+  fresh 'testapp 1.0.0-1'
+  STUB_PACMAN_U=ok STUB_QP_STAGED=$qp inst testapp
+  same "install (vendor): a staged copy with the right digest that pacman -Qp reads as '$qp': refused, kept" \
+    "1|omabump: the staged copy is '$qp', expected 'testapp 2.0.0-1'; not installing (the copy stays in $vstaged)" \
+    "$irc|$(grep -vF 'the build and download files stay' <<<"$iout" | tail -n1)"
+  no_call "install (vendor), '$qp' staged: pacman -U never runs" 'pacman -U'
+done
 
 # The feed knows no epoch; the file's full version must still be newer.
 fresh 'testapp 1:1.0.0-1'
@@ -1098,7 +1116,12 @@ same "switch_conflicts: a recipe's provides_<this architecture>, which the old p
   "$(recipe_conflicts newapi "provides_$iarch = newapi=2")"
 rm -f "$idb/qi/testpkg-bin"
 
-# --- the omarchy route, on a local omarchy-pkgs clone ----------------------------
+# --- Build now, on a local omarchy-pkgs clone --------------------------------------
+
+# Build now runs only with buildAhead on: the section turns it on in the
+# widget's settings and off again at its end.
+ishell=$ihome/.config/omarchy/shell.json
+printf '{"plugins": [{"id": "io.github.vladkarok.omabump", "buildAhead": true}]}\n' >"$ishell"
 
 pk=$it/cache/omabump/omarchy-pkgs
 igit() { env GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c user.name=t -c user.email=t@example.com \
@@ -1131,175 +1154,205 @@ ostaged=$istaging/$opkg
 
 fresh 'testpkg-bin 1.5.0-1'
 printf 'Name            : testpkg-bin\nProvides        : None\nConflicts With  : None\n' >"$idb/qi/testpkg-bin"
-inst --prepare --switch testpkg
-same "install --prepare --switch (omarchy): succeeds" 0 "$irc"
-says "install --prepare --switch (omarchy): the recipe moved to the release" 'Recipe builds testpkg 2.0.0-1'
-says "install --prepare --switch (omarchy): the conflict, read from the recipe" 'pacman will ask to remove testpkg-bin for testpkg (declared conflict)'
-says "install --prepare --switch (omarchy): an install=\$pkgname.install script is found and shown" \
+inst --prepare --build testpkg
+same "install --prepare --switch (build): succeeds" 0 "$irc"
+says "install --prepare --switch (build): the recipe moved to the release" 'Recipe builds testpkg 2.0.0-1'
+says "install --prepare --switch (build): the conflict, read from the recipe" 'pacman will ask to remove testpkg-bin for testpkg (declared conflict)'
+says "install --prepare --switch (build): an install=\$pkgname.install script is found and shown" \
   '--- testpkg install script (testpkg.install in the recipe), run as root:'
-says "install --prepare --switch (omarchy): with its text" 'testpkg recipe hook'
-says "install --prepare (omarchy): the staged copy is checked against the build's sha256" \
+says "install --prepare --switch (build): with its text" 'testpkg recipe hook'
+says "install --prepare (build): the staged copy is checked against the build's sha256" \
   "Would check: sha256sum of $ostaged is the one taken of $it/cache/omabump/packages/$opkg right after the build"
-says "install --prepare (omarchy): the staged copy goes whether pacman installed it or not" \
+says "install --prepare (build): the staged copy goes whether pacman installed it or not" \
   "Would run: sudo rm -f -- $ostaged (whether pacman installed it or not)"
-no_call "install --prepare (omarchy): no build" ' -sfC'
-no_call "install --prepare (omarchy): no sudo" 'sudo '
-same "install --prepare (omarchy): the clone is left at the pinned recipe" 'pkgver=1.0.0' "$(grep '^pkgver=' "$pk/pkgbuilds/testpkg/PKGBUILD")"
+no_call "install --prepare (build): no build" ' -sfC'
+no_call "install --prepare (build): no sudo" 'sudo '
+same "install --prepare (build): the clone is left at the pinned recipe" 'pkgver=1.0.0' "$(grep '^pkgver=' "$pk/pkgbuilds/testpkg/PKGBUILD")"
 # With a token omarchy-pkgs' sync tool swaps in a .curlrc of its own, without
 # the HTTPS-only rule and the limits Update holds its downloads to.
 fresh 'testpkg-bin 1.5.0-1'
-UPSTREAM_GITHUB_TOKEN=ghp_test inst --prepare --switch testpkg
-same "install (omarchy): UPSTREAM_GITHUB_TOKEN does not reach bin/sync-upstream" '0|none' "$irc|$(cat "$pk/.git/test-sync-token")"
+UPSTREAM_GITHUB_TOKEN=ghp_test inst --prepare --build testpkg
+same "install (build): UPSTREAM_GITHUB_TOKEN does not reach bin/sync-upstream" '0|none' "$irc|$(cat "$pk/.git/test-sync-token")"
 
 fresh 'nocon-bin 1.0.0-1'
 printf 'Name            : nocon-bin\nProvides        : None\nConflicts With  : None\n' >"$idb/qi/nocon-bin"
-inst nocon
-same "install (omarchy): a switch without a declared conflict is refused" 1 "$irc"
-says "install (omarchy): and says why" 'neither nocon nor nocon-bin declares a conflict with the other'
-no_call "install (omarchy): before makepkg builds" ' -sfC'
+inst --build nocon
+same "install (build): a switch without a declared conflict is refused" 1 "$irc"
+says "install (build): and says why" 'neither nocon nor nocon-bin declares a conflict with the other'
+no_call "install (build): before makepkg builds" ' -sfC'
 
 fresh 'testpkg-bin 1.5.0-1'
-STUB_PACMAN_U=ok STUB_TAMPER=1 inst testpkg
-same "install (omarchy): a staged copy that is not the built file is refused" 1 "$irc"
-says "install (omarchy): by the sha256 taken after the build" 'sha256 of the staged copy is'
-no_call "install (omarchy): pacman -U never runs then" 'pacman -U'
+STUB_PACMAN_U=ok STUB_TAMPER=1 inst --build testpkg
+same "install (build): a staged copy that is not the built file is refused" 1 "$irc"
+says "install (build): by the sha256 taken after the build" 'sha256 of the staged copy is'
+no_call "install (build): pacman -U never runs then" 'pacman -U'
 
 fresh 'testpkg-bin 1.5.0-1'
-STUB_PACMAN_U=ok STUB_MAKEPKG_OWNER=1001:1001 inst testpkg
-same "install (omarchy), a build with files owned by uid 1001: refused" 1 "$irc"
-says "install (omarchy), a build with files owned by uid 1001: names the files" '  1001:1001 .PKGINFO'
-says "install (omarchy), a build with files owned by uid 1001: names where the package stays" \
+STUB_PACMAN_U=ok STUB_MAKEPKG_OWNER=1001:1001 inst --build testpkg
+same "install (build), a build with files owned by uid 1001: refused" 1 "$irc"
+says "install (build), a build with files owned by uid 1001: names the files" '  1001:1001 .PKGINFO'
+says "install (build), a build with files owned by uid 1001: names where the package stays" \
   "the package stays in $it/cache/omabump/packages/$opkg"
-no_call "install (omarchy), a build with files owned by uid 1001: pacman -U never runs" 'pacman -U'
-calls "install (omarchy), a build with files owned by uid 1001: the staged copy is checked, then removed" "sudo rm -f -- $ostaged"
-check "install (omarchy), a build with files owned by uid 1001: no staged copy left" test ! -e "$ostaged"
+no_call "install (build), a build with files owned by uid 1001: pacman -U never runs" 'pacman -U'
+calls "install (build), a build with files owned by uid 1001: the staged copy is checked, then removed" "sudo rm -f -- $ostaged"
+check "install (build), a build with files owned by uid 1001: no staged copy left" test ! -e "$ostaged"
 rm -rf "$it/cache/omabump/packages/$opkg" "$it/cache/omabump/build/testpkg"
 
 fresh 'testpkg-bin 1.5.0-1'
-STUB_PACMAN_U=ok inst testpkg
-same "install (omarchy): a switch with a declared conflict installs" 0 "$irc"
-calls "install (omarchy): after the build" ' -sfC'
-says "install (omarchy): the built package's own install script is shown" '--- testpkg install script (.INSTALL), run as root:'
-same "install (omarchy): pacman replaced the old package" 'testpkg 2.0.0-1' "$(<"$idb/installed")"
-check "install (omarchy): no staged copy left" test ! -e "$ostaged"
-check "install (omarchy): the package file is cleaned up" test ! -e "$it/cache/omabump/packages/$opkg"
-check "install (omarchy): the build tree is cleaned up" test ! -e "$it/cache/omabump/build/testpkg"
-says "install (omarchy): restart to use it" 'Restart Test Pkg to use 2.0.0-1.'
-same "install (omarchy): no word of files that stay" '' "$(grep -F 'the build and download files stay' <<<"$iout")"
+STUB_PACMAN_U=ok inst --build testpkg
+same "install (build): a switch with a declared conflict installs" 0 "$irc"
+calls "install (build): after the build" ' -sfC'
+says "install (build): the built package's own install script is shown" '--- testpkg install script (.INSTALL), run as root:'
+same "install (build): pacman replaced the old package" 'testpkg 2.0.0-1' "$(<"$idb/installed")"
+check "install (build): no staged copy left" test ! -e "$ostaged"
+check "install (build): the package file is cleaned up" test ! -e "$it/cache/omabump/packages/$opkg"
+check "install (build): the build tree is cleaned up" test ! -e "$it/cache/omabump/build/testpkg"
+says "install (build): restart to use it" 'Restart Test Pkg to use 2.0.0-1.'
+same "install (build): no word of files that stay" '' "$(grep -F 'the build and download files stay' <<<"$iout")"
 
 # The synced recipe reaches 2.0.0-1, which omarchy update installed after a
 # check that saw 1.0.0-1 and showed 2.0.0: nothing left to do, a success.
 # The panel's refresh runs once the clone is back at the pin and unlocked.
 fresh 'testpkg 2.0.0-1'
 shown testpkg 2.0.0 1.0.0-1
-inst testpkg
-same "install (omarchy), the version the panel showed installed since: a success" 0 "$irc"
-says "install (omarchy), the version the panel showed installed since: says so" 'Test Pkg 2.0.0-1 is already installed; nothing to do.'
-calls "install (omarchy), the version the panel showed installed since: refreshes the panel" 'omabump-check --no-notify --wait'
-no_call "install (omarchy), the version the panel showed installed since: not under the clone's lock" 'omabump-check: the clone is locked'
-no_call "install (omarchy), the version the panel showed installed since: builds nothing" ' -sfC'
-same "install (omarchy), the version the panel showed installed since: the clone is back at the pinned recipe" \
+inst --build testpkg
+same "install (build), the version the panel showed installed since: a success" 0 "$irc"
+says "install (build), the version the panel showed installed since: says so" 'Test Pkg 2.0.0-1 is already installed; nothing to do.'
+calls "install (build), the version the panel showed installed since: refreshes the panel" 'omabump-check --no-notify --wait'
+no_call "install (build), the version the panel showed installed since: not under the clone's lock" 'omabump-check: the clone is locked'
+no_call "install (build), the version the panel showed installed since: builds nothing" ' -sfC'
+same "install (build), the version the panel showed installed since: the clone is back at the pinned recipe" \
   'pkgver=1.0.0' "$(grep '^pkgver=' "$pk/pkgbuilds/testpkg/PKGBUILD")"
 : >"$ilog/calls"
-inst --prepare testpkg
-same "install --prepare (omarchy), the version the panel showed installed: succeeds" 0 "$irc"
-says "install --prepare (omarchy), the version the panel showed installed: says what a run would say" \
+inst --prepare --build testpkg
+same "install --prepare (build), the version the panel showed installed: succeeds" 0 "$irc"
+says "install --prepare (build), the version the panel showed installed: says what a run would say" \
   'Would say: Test Pkg 2.0.0-1 is already installed; nothing to do.'
-no_call "install --prepare (omarchy), the version the panel showed installed: without refreshing the panel" 'omabump-check'
-refuse "install --prepare (omarchy), the version the panel showed installed: and stops there, as the run would" \
+no_call "install --prepare (build), the version the panel showed installed: without refreshing the panel" 'omabump-check'
+refuse "install --prepare (build), the version the panel showed installed: and stops there, as the run would" \
   grep -qF -e 'Package file:' -e 'Would run: sudo pacman -U' <<<"$iout"
-same "install --prepare (omarchy), the version the panel showed installed: the clone is back at the pinned recipe" \
+same "install --prepare (build), the version the panel showed installed: the clone is back at the pinned recipe" \
   'pkgver=1.0.0' "$(grep '^pkgver=' "$pk/pkgbuilds/testpkg/PKGBUILD")"
 
 # Installed past the recipe: done, and guard_version still never builds the
 # older recipe.
 fresh 'testpkg 2.1.0-1'
 shown testpkg 2.1.0 2.0.0-1
-inst testpkg
-same "install (omarchy), installed past the recipe: a success" 0 "$irc"
-says "install (omarchy), installed past the recipe: says so" 'Test Pkg 2.1.0-1 is already installed; nothing to do.'
-no_call "install (omarchy), installed past the recipe: no downgrade built" ' -sfC'
-same "install (omarchy), installed past the recipe: nothing installed" 'testpkg 2.1.0-1' "$(<"$idb/installed")"
+inst --build testpkg
+same "install (build), installed past the recipe: a success" 0 "$irc"
+says "install (build), installed past the recipe: says so" 'Test Pkg 2.1.0-1 is already installed; nothing to do.'
+no_call "install (build), installed past the recipe: no downgrade built" ' -sfC'
+same "install (build), installed past the recipe: nothing installed" 'testpkg 2.1.0-1' "$(<"$idb/installed")"
 
 # The panel showed 2.1.0 from the vendor's feed, and omarchy-pkgs' recipe
 # syncs only to 2.0.0, which is installed: Update cannot reach 2.1.0 yet.
 fresh 'testpkg 2.0.0-1'
 shown testpkg 2.1.0 2.0.0-1
-inst testpkg
-same "install (omarchy), the recipe behind the panel: a failure" 1 "$irc"
-says "install (omarchy), the recipe behind the panel: names both versions" \
-  "omabump: omarchy-pkgs' recipe reaches 2.0.0-1, not the 2.1.0 the vendor's feed shows; Update cannot install it yet."
-no_call "install (omarchy), the recipe behind the panel: no panel refresh" 'omabump-check'
-no_call "install (omarchy), the recipe behind the panel: builds nothing" ' -sfC'
-same "install (omarchy), the recipe behind the panel: the clone is back at the pinned recipe" \
+inst --build testpkg
+same "install (build), the recipe behind the panel: a failure" 1 "$irc"
+says "install (build), the recipe behind the panel: names both versions" \
+  "omabump: omarchy-pkgs' recipe reaches 2.0.0-1, not the 2.1.0 the vendor's feed shows; Build now cannot install it yet."
+no_call "install (build), the recipe behind the panel: no panel refresh" 'omabump-check'
+no_call "install (build), the recipe behind the panel: builds nothing" ' -sfC'
+same "install (build), the recipe behind the panel: the clone is back at the pinned recipe" \
   'pkgver=1.0.0' "$(grep '^pkgver=' "$pk/pkgbuilds/testpkg/PKGBUILD")"
-inst --prepare testpkg
-same "install --prepare (omarchy), the recipe behind the panel: succeeds" 0 "$irc"
-says "install --prepare (omarchy), the recipe behind the panel: says it would refuse" \
-  "Would refuse: omarchy-pkgs' recipe reaches 2.0.0-1, not the 2.1.0 the vendor's feed shows; Update cannot install it yet."
-refuse "install --prepare (omarchy), the recipe behind the panel: and stops there, as the run would" \
+inst --prepare --build testpkg
+same "install --prepare (build), the recipe behind the panel: succeeds" 0 "$irc"
+says "install --prepare (build), the recipe behind the panel: says it would refuse" \
+  "Would refuse: omarchy-pkgs' recipe reaches 2.0.0-1, not the 2.1.0 the vendor's feed shows; Build now cannot install it yet."
+refuse "install --prepare (build), the recipe behind the panel: and stops there, as the run would" \
   grep -qF -e 'Package file:' -e 'Would run: sudo pacman -U' <<<"$iout"
 
 # An epoch installed keeps the recipe, which reaches the version the panel
 # showed, from being newer: Update says that, not that the recipe is behind.
 fresh 'testpkg 1:1.0.0-1'
 shown testpkg 2.0.0 1:1.0.0-1
-inst testpkg
-same "install (omarchy), an epoch installed: a failure" 1 "$irc"
-says "install (omarchy), an epoch installed: names the epoch's version" \
+inst --build testpkg
+same "install (build), an epoch installed: a failure" 1 "$irc"
+says "install (build), an epoch installed: names the epoch's version" \
   'omabump: 2.0.0-1 is not newer than the installed testpkg 1:1.0.0-1; nothing to do'
-refuse "install (omarchy), an epoch installed: not as a recipe behind the panel" grep -qF 'not the 2.0.0' <<<"$iout"
-no_call "install (omarchy), an epoch installed: builds nothing" ' -sfC'
-inst --prepare testpkg
-says "install --prepare (omarchy), an epoch installed: says it would refuse" \
+refuse "install (build), an epoch installed: not as a recipe behind the panel" grep -qF 'not the 2.0.0' <<<"$iout"
+no_call "install (build), an epoch installed: builds nothing" ' -sfC'
+inst --prepare --build testpkg
+says "install --prepare (build), an epoch installed: says it would refuse" \
   'Would refuse: 2.0.0-1 is not newer than the installed testpkg 1:1.0.0-1; nothing to do'
 
 # omarchy update installed the version while makepkg built it: the build
 # has nothing left to install, and goes with its files.
 fresh 'testpkg 1.0.0-1'
 shown testpkg 2.0.0 1.0.0-1
-STUB_MAKEPKG_INSTALLS='testpkg 2.0.0-1' inst testpkg
-same "install (omarchy), the version installed during the build: a success" 0 "$irc"
-calls "install (omarchy), the version installed during the build: after the build" ' -sfC'
-says "install (omarchy), the version installed during the build: says so" 'Test Pkg 2.0.0-1 is already installed; nothing to do.'
-no_call "install (omarchy), the version installed during the build: stages nothing" 'sudo '
-calls "install (omarchy), the version installed during the build: refreshes the panel" 'omabump-check --no-notify --wait'
-no_call "install (omarchy), the version installed during the build: not under the clone's lock" 'omabump-check: the clone is locked'
-check "install (omarchy), the version installed during the build: the package file goes" test ! -e "$it/cache/omabump/packages/$opkg"
-check "install (omarchy), the version installed during the build: and the build tree" test ! -e "$it/cache/omabump/build/testpkg"
-same "install (omarchy), the version installed during the build: no word of files that stay" '' \
+STUB_MAKEPKG_INSTALLS='testpkg 2.0.0-1' inst --build testpkg
+same "install (build), the version installed during the build: a success" 0 "$irc"
+calls "install (build), the version installed during the build: after the build" ' -sfC'
+says "install (build), the version installed during the build: says so" 'Test Pkg 2.0.0-1 is already installed; nothing to do.'
+no_call "install (build), the version installed during the build: stages nothing" 'sudo '
+calls "install (build), the version installed during the build: refreshes the panel" 'omabump-check --no-notify --wait'
+no_call "install (build), the version installed during the build: not under the clone's lock" 'omabump-check: the clone is locked'
+check "install (build), the version installed during the build: the package file goes" test ! -e "$it/cache/omabump/packages/$opkg"
+check "install (build), the version installed during the build: and the build tree" test ! -e "$it/cache/omabump/build/testpkg"
+same "install (build), the version installed during the build: no word of files that stay" '' \
   "$(grep -F 'the build and download files stay' <<<"$iout")"
-same "install (omarchy), the version installed during the build: the clone is back at the pinned recipe" \
+same "install (build), the version installed during the build: the clone is back at the pinned recipe" \
   'pkgver=1.0.0' "$(grep '^pkgver=' "$pk/pkgbuilds/testpkg/PKGBUILD")"
 # Short of the version the panel showed, the run still stops before pacman,
 # and keeps the build for a look.
 fresh 'testpkg 1.0.0-1'
 shown testpkg 2.1.0 1.0.0-1
-STUB_MAKEPKG_INSTALLS='testpkg 2.0.0-1' inst testpkg
-same "install (omarchy), installed during the build, short of the panel: a failure" 1 "$irc"
-says "install (omarchy), installed during the build, short of the panel: says why" \
+STUB_MAKEPKG_INSTALLS='testpkg 2.0.0-1' inst --build testpkg
+same "install (build), installed during the build, short of the panel: a failure" 1 "$irc"
+says "install (build), installed during the build, short of the panel: says why" \
   'omabump: 2.0.0-1 is not newer than the installed testpkg 2.0.0-1; not installing'
-says "install (omarchy), installed during the build, short of the panel: the build files stay" \
+says "install (build), installed during the build, short of the panel: the build files stay" \
   "omabump: the build and download files stay in $it/cache/omabump/{build,packages,sources}"
-no_call "install (omarchy), installed during the build, short of the panel: no panel refresh" 'omabump-check'
+no_call "install (build), installed during the build, short of the panel: no panel refresh" 'omabump-check'
 rm -rf "$it/cache/omabump/packages/$opkg" "$it/cache/omabump/build/testpkg"
 
-# --switch at the same version builds and installs, whatever the panel showed.
+# Build now never switches at the same version: Switch is the repo's
+# package's.
 fresh 'testpkg-bin 2.0.0-1'
-printf 'Name            : testpkg-bin\nProvides        : None\nConflicts With  : None\n' >"$idb/qi/testpkg-bin"
-shown testpkg 2.0.0 2.0.0-1
-STUB_PACMAN_U=ok inst --switch testpkg
-same "install --switch (omarchy): at the same version, a success" 0 "$irc"
-calls "install --switch (omarchy): at the same version, after the build" ' -sfC'
-same "install --switch (omarchy): at the same version, pacman replaced the old package" 'testpkg 2.0.0-1' "$(<"$idb/installed")"
-# Never to an older one; --prepare says so and stops there, as the run would.
-fresh 'testpkg-bin 2.1.0-1'
-inst --prepare --switch testpkg
-same "install --prepare --switch (omarchy), an older recipe: succeeds" 0 "$irc"
-says "install --prepare --switch (omarchy), an older recipe: says it would refuse" \
-  'Would refuse: 2.0.0-1 is older than the installed testpkg-bin 2.1.0-1; nothing to do'
-refuse "install --prepare --switch (omarchy), an older recipe: and stops there" grep -qF 'Package file:' <<<"$iout"
+STUB_PACMAN_U=ok inst --switch --build testpkg
+same "install --switch --build: refused, nothing built" "1|omabump: --switch and --build do not go together: Build now replaces a package installed under another name itself, as Update does" \
+  "$irc|$(tail -1 <<<"$iout")"
+no_call "install --switch --build: no sync, no build" 'makepkg'
 rm -f "$idb/qi/testpkg-bin"
+
+# Build now while buildAhead is off: refused, saying how to turn it on, and
+# nothing of omarchy-pkgs runs.
+printf '{"plugins": [{"id": "io.github.vladkarok.omabump", "buildAhead": "false"}]}\n' >"$ishell"
+for args in '--build testpkg' '--prepare --build testpkg'; do
+  fresh 'testpkg 1.0.0-1'
+  rm -f "$pk/.git/test-sync-token"
+  # shellcheck disable=SC2086 # the arguments, split on purpose
+  inst $args
+  rc=1 refusal='omabump: '
+  [[ $args != --prepare* ]] || rc=0 refusal='Would refuse: '
+  same "install $args, buildAhead off: refused" "$rc" "$irc"
+  says "install $args, buildAhead off: says what Build now does and how to turn it on" \
+    "${refusal}Build now is off. It builds Test Pkg on this machine from Omarchy's own recipe, before Omarchy's repo has the release: it takes minutes, runs Omarchy's build recipe as you, and the package is not signed by Omarchy. Turn it on with: omarchy bar set io.github.vladkarok.omabump buildAhead true --json (or in the Omabump panel's settings)"
+  no_call "install $args, buildAhead off: nothing built" 'makepkg'
+  check "install $args, buildAhead off: bin/sync-upstream never ran" test ! -e "$pk/.git/test-sync-token"
+done
+printf '{"plugins": [{"id": "io.github.vladkarok.omabump", "buildAhead": true}]}\n' >"$ishell"
+# An entry Build now may not build: refused before anything runs.
+fresh 'rpapp 1.0.0-1'
+inst --build rpapp
+same "install --build, an entry without build: refused" \
+  "1|omabump: Build now is not available for Rp App: Omabump does not build its recipe (its apps.json entry has no \"build\": true). Update installs it once Omarchy's repo has it" \
+  "$irc|$(tail -1 <<<"$iout")"
+# The repo has the release: Build now sends you to Update.
+mkdir -p "$iserved"
+make_pkg "$iserved/testpkg-2.0.0-1-$(uname -m).pkg.tar.zst" "pkgname = testpkg" "pkgver = 2.0.0-1"
+repo_db "$iserved/omarchy.db" "testpkg 2.0.0-1 testpkg-2.0.0-1-$(uname -m).pkg.tar.zst"
+fresh 'testpkg 1.0.0-1'
+inst_env+=(STUB_REPO_SERVER=https://pkgs.example/edge/x86_64)
+inst --build testpkg
+inst_env=("${inst_env[@]:0:${#inst_env[@]}-1}")
+same "install --build, the repo has a newer package: refused, use Update" \
+  "1|omabump: Omarchy's repo has testpkg 2.0.0-1, newer than the installed 1.0.0-1, and the vendor's newest release is not known; use Update instead, which installs its signed package" \
+  "$irc|$(tail -1 <<<"$iout")"
+no_call "install --build, the repo has it: nothing built" 'makepkg'
+rm -f "$iserved/omarchy.db" "$iserved/testpkg-2.0.0-1-$(uname -m).pkg.tar.zst"
+rm -f "$ishell"
 
 # --- the repo route: Omarchy's signed package -----------------------------------------
 
@@ -1386,14 +1439,85 @@ no_call "install (repo): builds nothing" 'makepkg'
 same "install (repo): the omarchy-pkgs clone is not touched, nor its code run" "$pk_head|$pk_status|no" \
   "$(git -C "$pk" rev-parse HEAD)|$(git -C "$pk" status --porcelain)|$([[ -e $pk/.git/test-sync-token ]] && echo ran || echo no)"
 
-# Installed under another name: the repo route has no Switch, so its
-# Update replaces nothing else.
+# Installed under another name: Update replaces it as the vendor route's
+# does, by a conflict the downloaded, verified package declares; this one
+# declares none, so pacman would keep both, and nothing is staged.
+fresh 'rpapp-bin 1.0.0-1'
+printf 'Name            : rpapp-bin\nProvides        : None\nConflicts With  : None\n' >"$idb/qi/rpapp-bin"
+STUB_PACMAN_U=ok rp_inst rpapp
+same "install (repo), installed under another name, no conflict declared: refused before sudo" \
+  "1|omabump: neither rpapp nor rpapp-bin declares a conflict with the other, so pacman would keep both; not switching" \
+  "$irc|$(grep -vF 'the build and download files stay' <<<"$iout" | tail -n1)"
+no_call "install (repo), no conflict declared: nothing staged" 'sudo '
+# With a conflict: Update replaces it, and Switch does at the same version.
+make_pkg "$iserved/$rpf" "pkgname = rpapp" "pkgver = 2.0.0-1" "conflict = rpapp-bin"
+echo "signed:$(sha256sum <"$iserved/$rpf" | cut -d' ' -f1)" >"$iserved/$rpf.sig"
+rp_db 'rpapp 2.0.0-1'
 fresh 'rpapp-bin 1.0.0-1'
 STUB_PACMAN_U=ok rp_inst rpapp
-same "install (repo), installed under another name: refused, nothing downloaded" \
-  "1|omabump: Rp App is installed as rpapp-bin; Update from Omarchy's repo replaces only rpapp itself, so remove rpapp-bin or install rpapp with pacman|" \
-  "$irc|$(tail -n1 <<<"$iout")|$(grep -F "$rpf" "$ilog/calls")"
+same "install (repo), installed under another name, a conflict declared: Update replaces it" '0|rpapp 2.0.0-1' "$irc|$(<"$idb/installed")"
+says "install (repo): pacman asks to remove the old package" 'pacman will ask to remove rpapp-bin for rpapp (declared conflict)'
+fresh 'rpapp-bin 2.0.0-1'
+STUB_PACMAN_U=ok rp_inst --switch rpapp
+same "install --switch (repo): at the same version, the repo's package replaces it" '0|rpapp 2.0.0-1' "$irc|$(<"$idb/installed")"
+fresh 'rpapp-bin 2.0.0-2'
+STUB_PACMAN_U=ok rp_inst --switch rpapp
+same "install --switch (repo): never to an older full version" \
+  "1|omabump: 2.0.0-1 is older than the installed rpapp-bin 2.0.0-2; nothing to do" "$irc|$(tail -n1 <<<"$iout")"
+no_call "install --switch (repo), older: nothing downloaded" "$rpf"
+# A conflict pacman does not apply to this version (rpapp-bin<2): both stay
+# installed, which is no switch: the run says so and fails.
+fresh 'rpapp-bin 2.0.0-1'
+STUB_PACMAN_U=ok STUB_PACMAN_KEEP=1 rp_inst --switch rpapp
+same "install --switch (repo): the old package still there after pacman: a failure that says so" \
+  "1|omabump: pacman installed rpapp 2.0.0-1, but rpapp-bin 2.0.0-1 is still installed beside it (its conflict does not cover this version); remove it with: sudo pacman -R rpapp-bin" \
+  "$irc|$(grep -vF 'the build and download files stay' <<<"$iout" | tail -n1)"
+# The canonical package came in meanwhile, at the target: the re-check of
+# both names right before the staging refuses, so nothing goes down.
+fresh 'rpapp-bin 1.0.0-1' 'rpapp 2.0.0-1'
+# shellcheck disable=SC2016 # expanded by the child bash
+inst_src 'pkg=rpapp installed_name=rpapp-bin installed=1.0.0-1 switch=1; stage_and_install "$STUB_SERVED/'"$rpf"'" "rpapp 2.0.0-1"'
+same "stage_and_install, a switch: the canonical package installed meanwhile at the target: refused before the staging" \
+  '1|omabump: rpapp is installed now, at 2.0.0-1, which 2.0.0-1 is not newer than; not installing' "$irc|$(tail -n1 <<<"$iout")"
+no_call "stage_and_install, the canonical package installed meanwhile: nothing staged" 'sudo '
+# The same while sudo waited for the password, after that re-check: asked
+# once more with the copy staged, right before pacman.
+fresh 'rpapp-bin 1.0.0-1'
+inst_env+=(STUB_SUDO_MEANWHILE='rpapp 2.0.0-1')
+# shellcheck disable=SC2016 # expanded by the child bash
+inst_src 'pkg=rpapp installed_name=rpapp-bin installed=1.0.0-1 switch=1; stage_and_install "$STUB_SERVED/'"$rpf"'" "rpapp 2.0.0-1"'
+inst_env=("${inst_env[@]:0:${#inst_env[@]}-1}")
+same "stage_and_install, a switch: the canonical package installed while sudo waited: refused before pacman" \
+  "1|omabump: rpapp is installed now, at 2.0.0-1, which 2.0.0-1 is not newer than; removed $istaging/$rpf, not installing" \
+  "$irc|$(tail -n1 <<<"$iout")"
+no_call "stage_and_install, installed while sudo waited: pacman -U not run" 'sudo pacman -U'
+calls "stage_and_install, installed while sudo waited: the staged copy removed" "sudo rm -f -- $istaging/$rpf"
+# The target installed meanwhile by something else, at what the panel
+# showed: the re-check before the staging ends the run as done.
+fresh 'rpapp 2.0.0-1'
+shown rpapp 2.0.0 1.0.0-1
+# shellcheck disable=SC2016 # expanded by the child bash
+inst_src 'pkg=rpapp installed_name=rpapp installed=1.0.0-1 label="Rp App"; stage_and_install "$STUB_SERVED/'"$rpf"'" "rpapp 2.0.0-1"'
+same "stage_and_install: the target installed meanwhile, as the panel showed: already installed, a success" \
+  '0|Rp App 2.0.0-1 is already installed; nothing to do.' "$irc|$(grep -F 'already installed' <<<"$iout")"
+no_call "stage_and_install: installed meanwhile: nothing staged" 'sudo '
+fresh 'rpapp-bin 1.0.0-1' 'rpapp 1.5.0-1'
+# shellcheck disable=SC2016 # expanded by the child bash
+inst_src 'pkg=rpapp installed_name=rpapp-bin installed=1.0.0-1; guard_version 2.0.0-1 && echo ok'
+same "guard_version: the canonical package older than the target: no word against it" '0|ok' "$irc|$(tail -n1 <<<"$iout")"
+rm -f "$idb/qi/rpapp-bin"
+rp_pkg rpapp 2.0.0-1
+rp_db 'rpapp 2.0.0-1' 'rpapp-debug 9.0.0-1 0000000000000000000000000000000000000000000000000000000000000000'
 
+# The repo's staged copy: its digest and signature match, pacman -Qp reads
+# another version: refused before pacman.
+fresh 'rpapp 1.0.0-1'
+STUB_PACMAN_U=ok STUB_QP_STAGED='rpapp 2.0.0-2' rp_inst rpapp
+same "install (repo): a staged copy pacman -Qp reads as another version: refused" \
+  "1|omabump: the staged copy is 'rpapp 2.0.0-2', expected 'rpapp 2.0.0-1'; not installing (the copy stays in $istaging/$rpf)" \
+  "$irc|$(grep -vF 'the build and download files stay' <<<"$iout" | tail -n1)"
+no_call "install (repo), another version staged: pacman -U never runs" 'pacman -U'
+rm -f "$rp_cache/$rpf" "$rp_cache/$rpf.sig"
 # A signature that does not verify: refused, both files removed, no sudo.
 echo 'signed:0000' >"$iserved/$rpf.sig"
 fresh 'rpapp 1.0.0-1'
@@ -1517,84 +1641,76 @@ rpe=$(rp_file rpepoch 1:2.0-1)
 rp_pkg rpepoch 1:2.0-1
 rp_db 'rpepoch 1:2.0-1'
 fresh 'rpepoch 1:1.0-1'
+# A package an earlier run kept for a retry nobody made, and a recent one.
+touch -d '9 days ago' "$rp_cache/old-1.0-1-x86_64.pkg.tar.zst"
+touch -d '2 days ago' "$rp_cache/kept-1.0-1-x86_64.pkg.tar.zst"
 STUB_PACMAN_U=ok rp_inst rpepoch
+same "install (repo): a kept package older than a week goes after a success, a recent one stays" 'kept-1.0-1-x86_64.pkg.tar.zst' \
+  "$(find "$rp_cache" -maxdepth 1 -type f \( -name 'old-*' -o -name 'kept-*' \) -printf '%f\n')"
+says "install (repo): and says so" "Removed 1 package file(s) older than a week from"
+rm -f "$rp_cache/kept-1.0-1-x86_64.pkg.tar.zst"
 same "install (repo), an epoch's file: a success" '0|rpepoch 1:2.0-1' "$irc|$(<"$idb/installed")"
 calls "install (repo), an epoch's file: fetched with the colon percent-encoded" "$rp_server/rpepoch-1%3A2.0-1-$rp_arch.pkg.tar.zst"
 calls "install (repo), an epoch's file: and its signature" "$rp_server/rpepoch-1%3A2.0-1-$rp_arch.pkg.tar.zst.sig"
 calls "install (repo), an epoch's file: staged by its name" "sudo pacman -U -- $istaging/$rpe"
 
-# An omarchy row: the repo has the vendor's newest, so its package, not a
-# build; the repo behind the vendor, or no vendor's version to go by, the
-# build as before.
-rp_pkg testpkg 2.0.0-1
-rp_db 'testpkg 2.0.0-1'
+# A row Build now may build (testpkg, build true): Update takes the repo's
+# package, and never builds, whatever the vendor has. The repo behind the
+# vendor: Update refuses, and says Build now can build it meanwhile.
+rp_pkg testpkg 1.0.0-1
+rp_db 'testpkg 1.0.0-1'
 fresh 'testpkg 1.0.0-1'
 shown testpkg 2.0.0 1.0.0-1
+rm -f "$pk/.git/test-sync-token"
 STUB_PACMAN_U=ok rp_inst testpkg
-same "install (omarchy), the repo at the vendor's newest: a success" '0|testpkg 2.0.0-1' "$irc|$(<"$idb/installed")"
-says "install (omarchy), the repo at the vendor's newest: says it installs the repo's package" \
-  "Omarchy's repo ($rp_server) has testpkg 2.0.0-1, the vendor's newest release: installing its package, nothing to build."
-calls "install (omarchy), the repo at the vendor's newest: the signature is verified" \
-  "gpg --homedir $idb/gnupg/ --no-permission-warning --status-fd 1 --verify $rp_cache/$(rp_file testpkg 2.0.0-1).sig"
-no_call "install (omarchy), the repo at the vendor's newest: no build" 'makepkg'
-same "install (omarchy), the repo at the vendor's newest: the clone is not touched, nor sync-upstream run" "$pk_head|$pk_status|no" \
-  "$(git -C "$pk" rev-parse HEAD)|$(git -C "$pk" status --porcelain)|$([[ -e $pk/.git/test-sync-token ]] && echo ran || echo no)"
-fresh 'testpkg 1.0.0-1'
-shown testpkg 2.0.0 1.0.0-1
-rp_inst --prepare testpkg
-same "install --prepare (omarchy), the repo at the vendor's newest: the repo path's steps" '0|Prepared: stopping before the download.' \
+same "install (repo), the vendor ahead of the repo: Update refuses, and names Build now" \
+  "1|omabump: Omarchy's repo has 1.0.0-1, not the 2.0.0 the vendor's feed shows; Update cannot install it yet. It usually follows within the hour. Build now (b in the panel) builds it from Omarchy's recipe meanwhile." \
   "$irc|$(tail -n1 <<<"$iout")"
-no_call "install --prepare (omarchy), the repo at the vendor's newest: no download, no makepkg" "$(rp_file testpkg 2.0.0-1)"
+no_call "install (repo), the vendor ahead: Update never builds" 'makepkg'
+check "install (repo), the vendor ahead: nor runs omarchy-pkgs' sync" test ! -e "$pk/.git/test-sync-token"
+same "install (repo), the vendor ahead: the clone is not touched" "$pk_head|$pk_status" \
+  "$(git -C "$pk" rev-parse HEAD)|$(git -C "$pk" status --porcelain)"
+# The repo newer than what is installed, the vendor newer still: Update
+# installs the repo's package, nothing built.
 rp_pkg testpkg 1.5.0-1
 rp_db 'testpkg 1.5.0-1'
 fresh 'testpkg 1.0.0-1'
 shown testpkg 2.0.0 1.0.0-1
 STUB_PACMAN_U=ok rp_inst testpkg
-same "install (omarchy), the repo behind the vendor: the build, a success" '0|testpkg 2.0.0-1' "$irc|$(<"$idb/installed")"
-says "install (omarchy), the repo behind the vendor: says why it builds" \
-  "Omarchy's repo has testpkg 1.5.0-1, the vendor's feed 2.0.0; building Omarchy's recipe instead."
-calls "install (omarchy), the repo behind the vendor: makepkg builds" ' -sfC'
-no_call "install (omarchy), the repo behind the vendor: the repo's package is not downloaded" "$(rp_file testpkg 1.5.0-1)"
+same "install (repo), the repo behind the vendor, ahead of what is installed: the repo's package" '0|testpkg 1.5.0-1' "$irc|$(<"$idb/installed")"
+no_call "install (repo), the repo behind the vendor: no build" 'makepkg'
+# Build now there, with buildAhead on: the vendor's 2.0.0 is ahead of the
+# repo's 1.5.0-1, so the recipe is built; the repo's package is not
+# downloaded.
+printf '{"plugins": [{"id": "io.github.vladkarok.omabump", "buildAhead": true}]}\n' >"$ishell"
+fresh 'testpkg 1.0.0-1'
+shown testpkg 2.0.0 1.0.0-1
+jq '.apps[0].vendorVersion = "2.0.0"' "$istatus" >"$istatus.new" && mv "$istatus.new" "$istatus"
+: >"$ilog/gnupg"
+STUB_PACMAN_U=ok rp_inst --build testpkg
+cp "$ilog/gnupg" "$ilog/gnupg.build"
+same "install --build, the vendor ahead of the repo: the build, a success" '0|testpkg 2.0.0-1' "$irc|$(<"$idb/installed")"
+calls "install --build: makepkg builds" ' -sfC'
+says "install --build: says the package is Omarchy's recipe built here, not signed by Omarchy" \
+  "Build now: building Test Pkg on this machine from Omarchy's recipe. The package is not signed by Omarchy."
+no_call "install --build: the repo's package is not downloaded" "$(rp_file testpkg 1.5.0-1)"
+check "install --build: no keyring left behind" test -z "$(find "$it/cache/omabump" -maxdepth 1 -name 'gnupg.*')"
+same "install --build: every makepkg of the run had the recipe's keyring for its GnuPG home, none yours" '' \
+  "$(grep -v "^$it/cache/omabump/gnupg\.[A-Za-z0-9]*\$" "$ilog/gnupg.build")"
+check "install --build: and makepkg ran" test -s "$ilog/gnupg.build"
+# The recipe reaches only what the repo has already (the vendor's newest is
+# held, or its watch lags): that release is Update's, signed.
 rp_pkg testpkg 2.0.0-1
 rp_db 'testpkg 2.0.0-1'
 fresh 'testpkg 1.0.0-1'
-rp_inst --prepare testpkg
-says "install --prepare (omarchy), no vendor's version known: the build" \
-  "Omarchy's repo has testpkg 2.0.0-1, and the vendor's newest version is not known; building Omarchy's recipe instead."
-says "install --prepare (omarchy), no vendor's version known: up to makepkg" 'Prepared: stopping before makepkg builds.'
-# A build tool missing: the repo's package needs none, so the repo is asked
-# first and the build tools only for a build (omarchy_repo_serves, as the
-# check words the row). A tool the repo path needs missing: the build.
-rp_src() { inst_env+=(STUB_REPO_SERVER="$rp_server"); inst_src "$@"; inst_env=("${inst_env[@]:0:${#inst_env[@]}-1}"); }
-no_make='missing_tools_line() { echo "Missing: makepkg; sudo pacman -S --needed base-devel"; }; '
-fresh 'testpkg 1.0.0-1'
-shown testpkg 2.0.0 1.0.0-1
-# shellcheck disable=SC2016 # expanded by the child bash
-STUB_PACMAN_U=ok rp_src "$no_make"'omabump_install "$@"' testpkg
-same "install (omarchy), a build tool missing, the repo at the vendor's newest: its package, a success" '0|testpkg 2.0.0-1' \
-  "$irc|$(<"$idb/installed")"
-refuse "install (omarchy), a build tool missing, the repo at the vendor's newest: the build tools are not asked for" \
-  grep -qF 'needs tools that are missing' <<<"$iout"
-no_call "install (omarchy), a build tool missing, the repo at the vendor's newest: no build" 'makepkg'
-rp_pkg testpkg 1.5.0-1
-rp_db 'testpkg 1.5.0-1'
-fresh 'testpkg 1.0.0-1'
-shown testpkg 2.0.0 1.0.0-1
-# shellcheck disable=SC2016 # expanded by the child bash
-STUB_PACMAN_U=ok rp_src "$no_make"'omabump_install "$@"' testpkg
-same "install (omarchy), a build tool missing, the repo behind the vendor: refused for the build tools, after the repo was asked" \
-  "1|Omarchy's repo has testpkg 1.5.0-1, the vendor's feed 2.0.0; building Omarchy's recipe instead.|omabump: building Omarchy's recipe needs tools that are missing." \
-  "$irc|$(grep -F "the vendor's feed 2.0.0" <<<"$iout")|$(grep -F 'needs tools that are missing' <<<"$iout")"
-no_call "install (omarchy), a build tool missing, the repo behind the vendor: no build" 'makepkg'
-rp_pkg testpkg 2.0.0-1
-rp_db 'testpkg 2.0.0-1'
-fresh 'testpkg 1.0.0-1'
-shown testpkg 2.0.0 1.0.0-1
-# shellcheck disable=SC2016 # expanded by the child bash
-rp_src 'repo_missing_line() { echo "Missing: gpg; sudo pacman -S --needed gnupg"; }; omabump_install "$@"' --prepare testpkg
-same "install --prepare (omarchy), gpg missing, the repo at the vendor's newest: the build, saying why" \
-  "0|Omarchy's repo path needs tools that are missing (Missing: gpg); building Omarchy's recipe instead.|Prepared: stopping before makepkg builds." \
-  "$irc|$(grep -F "repo path needs" <<<"$iout")|$(grep -F 'Prepared:' <<<"$iout")"
+shown testpkg 3.0.0 1.0.0-1
+jq '.apps[0].vendorVersion = "3.0.0"' "$istatus" >"$istatus.new" && mv "$istatus.new" "$istatus"
+STUB_PACMAN_U=ok rp_inst --build testpkg
+same "install --build, the recipe reaches only what the repo has: refused, Update named" \
+  "1|omabump: omarchy-pkgs' recipe reaches 2.0.0-1, and Omarchy's repo has 2.0.0-1 already; use Update instead, which installs its signed package|testpkg 1.0.0-1" \
+  "$irc|$(grep -F "use Update instead" <<<"$iout")|$(<"$idb/installed")"
+no_call "install --build, the recipe at the repo's release: nothing built" ' -sfC'
+rm -f "$ishell"
 rm -f "$iserved/omarchy.db" "$iserved"/rpapp-* "$iserved"/rpepoch-* "$iserved"/testpkg-* "$rp_cache"/rp* "$rp_cache"/testpkg-*
 
 # --- Omabump's own update: the fast-forward and its rollback ---------------------------

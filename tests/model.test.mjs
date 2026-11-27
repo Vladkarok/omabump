@@ -26,9 +26,9 @@ function same(actual, expected) {
 // A row as bin/omabump-check writes it.
 function row(fields) {
   return Object.assign({
-    pkg: "app", label: "App", source: "omarchy", installedName: "app", installed: "1.0.0-1",
+    pkg: "app", label: "App", source: "repo", installedName: "app", installed: "1.0.0-1",
     latest: "1.0.0", versionFrom: "feed", updateAvailable: false, installable: true, error: "", note: "",
-    stale: false, switchable: false, recipe: "", request: "", muted: false, skipped: false, skipEnded: "",
+    stale: false, switchable: false, skipped: false, skipEnded: "",
     unchecked: false, held: false, omarchyUpdate: false, blocked: false, selfUpdating: false, icon: "", iconLight: ""
   }, fields)
 }
@@ -174,7 +174,7 @@ test("liveSkips: drops the skips a run found over", () => {
 
 test("allMuted: every listed row of the source, and at least one", () => {
   const apps = [update, row({ pkg: "b" }), miseUpdate]
-  same([m.allMuted(apps, ["claude-desktop", "b"], "omarchy"), m.allMuted(apps, ["claude-desktop"], "omarchy"), m.allMuted(apps, [], "vendor-pkg")],
+  same([m.allMuted(apps, ["claude-desktop", "b"], "repo"), m.allMuted(apps, ["claude-desktop"], "repo"), m.allMuted(apps, [], "vendor-pkg")],
     [true, false, false])
 })
 
@@ -210,7 +210,7 @@ test("settingsEntry: the whole entry, id first, changes merged, dead skips dropp
   // A hand-set skip no check has read survives a write of another setting.
   same(m.settingsEntry("w", { skippedVersions: { "claude-desktop": "1.2.0" } }, { mutedApps: ["a"] }, [update],
     { "claude-desktop": "1.2.0" }), { id: "w", skippedVersions: { "claude-desktop": "1.2.0" }, mutedApps: ["a"] })
-  same(m.settingsEntry("w", { showMise: true }, { mutedApps: ["a"] }, [update], {}), { id: "w", showMise: true, mutedApps: ["a"] })
+  same(m.settingsEntry("w", { showCli: true }, { mutedApps: ["a"] }, [update], {}), { id: "w", showCli: true, mutedApps: ["a"] })
   same(m.settingsEntry("w", {}, { skippedVersions: { "claude-desktop": "1.1.0" } }, [update], {}),
     { id: "w", skippedVersions: { "claude-desktop": "1.1.0" } })
 })
@@ -318,27 +318,27 @@ test("waitScript: built from lockBusyExit and startedWord, as it was written out
 })
 
 test("checkCommand: the checker under the deadline, its flags by the settings", () => {
-  const o = { wait: false, ifDue: false, intervalSec: 3600, notify: true, showMise: true }
+  const o = { wait: false, ifDue: false, intervalSec: 3600, notify: true, showCli: true }
   same(m.checkCommand("/c", "/l", o), ["timeout", "-k", "10", "600", "/c"])
-  same(m.checkCommand("/c", "/l", Object.assign({}, o, { notify: false, showMise: false })),
-    ["timeout", "-k", "10", "600", "/c", "--no-notify", "--no-mise"])
+  same(m.checkCommand("/c", "/l", Object.assign({}, o, { notify: false, showCli: false })),
+    ["timeout", "-k", "10", "600", "/c", "--no-notify", "--no-cli"])
   same(m.checkCommand("/c", "/l", Object.assign({}, o, { ifDue: true, intervalSec: 900 })),
     ["timeout", "-k", "10", "600", "/c", "--if-due", "--interval", "900"])
 })
 
 test("checkCommand: a wait for the lock comes before the deadline, and the checker never gets --wait", () => {
-  const o = { wait: true, ifDue: false, intervalSec: 3600, notify: true, showMise: false }
+  const o = { wait: true, ifDue: false, intervalSec: 3600, notify: true, showCli: false }
   same(m.checkCommand("/c", "/l", o),
-    ["bash", "-c", m.waitScript, "omabump-wait", "/l", "660", "timeout", "-k", "10", "600", "/c", "--no-mise"])
+    ["bash", "-c", m.waitScript, "omabump-wait", "/l", "660", "timeout", "-k", "10", "600", "/c", "--no-cli"])
   for (const wait of [false, true]) for (const ifDue of [false, true]) for (const flag of [false, true]) {
-    const command = m.checkCommand("/c", "/l", { wait, ifDue, intervalSec: 60, notify: flag, showMise: flag })
+    const command = m.checkCommand("/c", "/l", { wait, ifDue, intervalSec: 60, notify: flag, showCli: flag })
     assert.ok(!command.includes("--wait"), JSON.stringify(command))
   }
 })
 
 test("localCommand: the local refresh under its own deadline", () => {
   same([m.localCommand("/c", true), m.localCommand("/c", false)],
-    [["timeout", "-k", "10", "120", "/c", "--local"], ["timeout", "-k", "10", "120", "/c", "--local", "--no-mise"]])
+    [["timeout", "-k", "10", "120", "/c", "--local"], ["timeout", "-k", "10", "120", "/c", "--local", "--no-cli"]])
 })
 
 test("queuedRunWaits: not behind a check that completed, behind any other end", () => {
@@ -388,14 +388,15 @@ test("ipcRefreshAction: during another check it refreshes, inside the window too
   same(m.ipcRefreshAction(false, false, true, 1000, 1000), "refresh")
 })
 
-test("showMiseRun: nothing before the first tick, queued behind this shell's check, else a waiting run", () => {
-  same([m.showMiseRun(false, false, false), m.showMiseRun(true, false, false), m.showMiseRun(false, true, true),
-    m.showMiseRun(true, true, true), m.showMiseRun(true, true, false)], ["", "", "", "queue", "wait"])
+test("showCliRun: nothing before the first tick, queued behind this shell's check, else a waiting run", () => {
+  same([m.showCliRun(false, false, false), m.showCliRun(true, false, false), m.showCliRun(false, true, true),
+    m.showCliRun(true, true, true), m.showCliRun(true, true, false)], ["", "", "", "queue", "wait"])
 })
 
 test("failureText: the checker's error first, a source failure only while not all muted", () => {
   const f = { checkError: "", runError: "", pkgsError: "", miseError: "" }
-  const apps = [row({ pkg: "a" }), row({ pkg: "mise:b", source: "mise" })]
+  // An omarchy-pkgs error counts while a row it was read for (ahead) is not muted.
+  const apps = [row({ pkg: "a", ahead: true }), row({ pkg: "mise:b", source: "mise" })]
   same([m.failureText(Object.assign({}, f, { checkError: "c", runError: "r" }), apps, []),
     m.failureText(Object.assign({}, f, { runError: "r", pkgsError: "p" }), apps, []),
     m.failureText(Object.assign({}, f, { pkgsError: "p", miseError: "m" }), apps, []),
@@ -504,7 +505,7 @@ test("rowTooltip: a self-updating app says it updates itself and which file it i
 
 test("allMuted: a self-updating app takes no route of its source, so it never keeps a failure of one showing", () => {
   const apps = [appImage, row({ pkg: "b" })]
-  same([m.allMuted(apps, ["b"], "omarchy"), m.allMuted([appImage], [], "omarchy"),
+  same([m.allMuted(apps, ["b"], "repo"), m.allMuted([appImage], [], "repo"),
     m.failureText({ checkError: "", runError: "", pkgsError: "p", miseError: "" }, apps, ["b"])], [true, false, ""])
 })
 
@@ -558,11 +559,83 @@ test("extraLine: the row's exception, in order", () => {
     ["Checking…", "Cannot skip 1..2: not a version Omabump stores", "Check failed: e", "Installed as chatgpt-desktop", "No install route", "Last known version", "", ""])
 })
 
-test("extraLine: the release-age hold says only until when", () => {
-  const held = row({ held: true, installable: false, updateAvailable: true,
-    note: "omarchy-pkgs holds new releases for 24 h, Update from Nov 13 14:05; Recipe at abc" })
-  same([m.extraLine(held, ""), m.rowTooltip(held, [], {}, "").split("\n")[2]],
-    ["Held until Nov 13 14:05", "No Update yet: omarchy-pkgs holds new releases for 24 h, Update from Nov 13 14:05"])
+test("extraLine: a recipe's release-age hold on Build now says only until when", () => {
+  const held = row({ held: true, installable: false, updateAvailable: true, ahead: true, buildable: false, latest: "2.0",
+    note: "Not in Omarchy's repo yet", buildNote: "omarchy-pkgs holds new releases for 24 h, Build now from Nov 13 14:05" })
+  same([m.extraLine(held, ""), m.rowTooltip(held, [], {}, "").split("\n").slice(2)],
+    ["Build now from Nov 13 14:05", ["No Update yet: Not in Omarchy's repo yet", "2.0 released, not in Omarchy's repo yet",
+      "No Build now: omarchy-pkgs holds new releases for 24 h, Build now from Nov 13 14:05"]])
+})
+
+test("ahead rows: the second level, apart from updates", () => {
+  const ahead = row({ pkg: "a", ahead: true, buildable: true, updateAvailable: true, installable: false, held: true, latest: "2.0",
+    vendorVersion: "2.0", note: "Not in Omarchy's repo yet", holdClause: "Not in Omarchy's repo yet" })
+  const both = row({ pkg: "b", installedName: "b", ahead: true, buildable: true, updateAvailable: true, installable: true, latest: "3.0",
+    vendorVersion: "3.0", repoVersion: "2.0-1" })
+  const off = row({ pkg: "c", ahead: true, buildable: false, updateAvailable: true, installable: false, latest: "2.0",
+    buildNote: "Not in Omarchy's repo yet", note: "Not in Omarchy's repo yet" })
+  const apps = [ahead, both, off, update]
+  same([m.updateCount(apps, [], {}), m.aheadCount(apps, [], {}), m.waitingCount(apps, [], {}), m.aheadCount(apps, ["a"], {}),
+    m.aheadCount(apps, [], { a: "2.0" })], [2, 2, 0, 1, 1])
+  same([m.latestTone(ahead, false), m.latestTone(both, false), m.latestTone(update, false), m.latestTone(ahead, true),
+    m.latestTone(row({ updateAvailable: true, installable: false }), false)], ["warning", "urgent", "urgent", "dim", "plain"])
+  same([m.noRoute(ahead), m.noRoute(off), m.hasAction(ahead), m.hasAction(off)], [false, false, true, false])
+  same(m.rowTooltip(both, [], {}, "0123456789"), ["Installed 1.0.0-1", "Newest 3.0 from the vendor's release feed",
+    "Updates from Omarchy's repo to 2.0-1", "3.0 released, not in Omarchy's repo yet",
+    "Build now (b) builds it from Omarchy's recipe at 0123456, not signed by Omarchy"].join("\n"))
+  same([m.extraLine(ahead, ""), m.extraLine(off, "")], ["Not in Omarchy's repo yet", "Not in Omarchy's repo yet"])
+  // A self-updating copy is never ahead, whatever its row says.
+  same([m.ahead(Object.assign({}, ahead, { selfUpdating: true })), m.buildable(Object.assign({}, ahead, { selfUpdating: true }))], [false, false])
+})
+
+test("barIconLevel and barIconShown: urgent for an update, warning for releases only the vendor has", () => {
+  const s = { updateCount: 0, aheadCount: 0, checkFailed: false, errorCount: 0 }
+  same([m.barIconLevel(s), m.barIconLevel(Object.assign({}, s, { aheadCount: 1 })),
+    m.barIconLevel(Object.assign({}, s, { updateCount: 1, aheadCount: 1 }))], ["", "warning", "urgent"])
+  same([m.barIconShown(s, true, false), m.barIconShown(Object.assign({}, s, { aheadCount: 1 }), true, false),
+    m.barIconShown(Object.assign({}, s, { updateCount: 1 }), true, false)], [false, true, true])
+})
+
+test("heroState and summaryText: updates, then ahead of the repo", () => {
+  const s = { checking: false, checkFailed: false, checkedAt: "x", appCount: 3, updateCount: 2, aheadCount: 1, waitingCount: 0,
+    quietCount: 0, errorCount: 0, mutedErrorCount: 0, uncheckedCount: 0, staleCount: 0, pkgsFollowing: false }
+  same([m.heroState(s, ""), m.heroState(Object.assign({}, s, { updateCount: 0 }), ""), m.summaryText(s),
+    m.tooltipText(Object.assign({}, s, { updateCount: 0 }))],
+    ["2 updates · 1 ahead of the repo", "1 ahead of the repo", "2 updates, 1 ahead of the repo", "Omabump: 1 ahead of the repo"])
+})
+
+test("buildStep: Build now runs with the setting on; off, it explains first, then turns the setting on", () => {
+  const ahead = row({ pkg: "a", label: "Codex", ahead: true, buildable: true, updateAvailable: true, installable: false, latest: "2.0" })
+  const no = row({ pkg: "n", ahead: true, buildable: false, updateAvailable: true, installable: false, latest: "2.0" })
+  same([m.buildStep(ahead, true, ""), m.buildStep(ahead, false, ""), m.buildStep(ahead, false, "a"), m.buildStep(ahead, false, "x"),
+    m.buildStep(no, true, ""), m.buildStep(no, false, "n"), m.buildStep(null, true, ""), m.buildStep(update, true, "")],
+    ["build", "explain", "enable", "explain", "", "", "", ""])
+  same(m.buildOffNote(ahead), "Builds it here from Omarchy's recipe: minutes, not signed by Omarchy. Off; b turns it on.")
+  assert.ok(m.buildOffNote(ahead).length <= 100, "the note fits the row's five lines beside the button")
+  same(["build", "explain", "enable"].map(step => m.buildButtonText(step)), ["Build now", "Build now", "Turn on"])
+  same(["build", "explain", "enable", ""].map(step => m.buildTooltip(ahead, step)),
+    ["Build 2.0 from Omarchy's recipe in a terminal; not signed by Omarchy  b", "What Build now does; it is off  b",
+      "Turn on Build now: it builds Codex 2.0 on this machine from Omarchy's own recipe, before Omarchy's repo has it."
+        + " It takes minutes, runs the recipe as you, and the package is not signed by Omarchy  b", ""])
+  // The footer lists b only on a row that offers it.
+  same([m.hintText(false, ahead, 2, [], {}, "build"), m.hintText(false, ahead, 2, [], {}, "enable"), m.hintText(false, ahead, 2, [], {}, ""),
+    m.hintText(false, update, 2, [], {}, "")],
+    ["b build now · K skip · m mute · Esc close", "b turn on Build now · K skip · m mute · Esc close",
+      "↑↓ select · r refresh · s settings · K skip · m mute", "Enter update · K skip · m mute · Esc close"])
+  same([m.keyAction("b", 0, false, true), m.keyAction("B", 0x02000000, false, true), m.keyAction("b", 0, true, true), m.keyAction("b", 0, false, false)],
+    ["build", "build", "", ""])
+  // Enter never builds.
+  same(m.primaryAction(ahead), "")
+})
+
+test("settingValue: showCli, its old name showMise standing in while it is absent; buildAhead off by default", () => {
+  same([m.showCli({}), m.showCli({ showMise: false }), m.showCli({ showMise: "false", showCli: true }), m.showCli({ showCli: "FALSE" }),
+    m.buildAhead({}), m.buildAhead({ buildAhead: "true" }), m.buildAhead({ buildAhead: 1 })], [true, false, true, false, false, true, false])
+})
+
+test("skipToggled: a repo row's full version, with a pkgrel or an epoch, can be skipped", () => {
+  same([m.skipVersionOk("1:2.0-1"), m.skipVersionOk("1.2-2"), m.skipVersionOk("1:2.0"), m.skipVersionOk("a:1-1")], [true, true, false, false])
+  same(m.skipToggled({}, row({ updateAvailable: true, latest: "1:2.0-1" })), { skips: { app: "1:2.0-1" } })
 })
 
 test("sourceLabel: where the newest version came from", () => {
@@ -571,9 +644,9 @@ test("sourceLabel: where the newest version came from", () => {
 })
 
 test("rowTooltip: a renamed row's route and the composed note", () => {
-  same(m.rowTooltip(Object.assign({}, renamed, { recipe: "chatgpt" }), [], {}, "0123456789abcdef"), [
+  same(m.rowTooltip(renamed, [], {}, "0123456789abcdef"), [
     "Installed 1.0.0-1 as chatgpt-desktop", "Newest 1.1.0 from the vendor's release feed",
-    "Updates through Omarchy's recipe chatgpt at 0123456", "Installed as chatgpt-desktop, Update switches to chatgpt; Recipe at abc"].join("\n"))
+    "Updates from Omarchy's repo", "Installed as chatgpt-desktop, Update switches to chatgpt; Recipe at abc"].join("\n"))
 })
 
 test("rowTooltip: no Update, held, and quiet rows", () => {
@@ -687,8 +760,8 @@ test("panelLayout: by the rows' section field when they have one", () => {
 
 test("switchRoute: the row's field, else omarchy and vendor-pkg (a 0.1.17 row has none)", () => {
   same([row({}), row({ source: "vendor-pkg" }), row({ source: "indicator" }), row({ source: "mise" }), self({}),
-    row({ switchRoute: false }), row({ source: "mise", switchRoute: true }), null, row({ source: "repo" })]
-    .map(app => m.switchRoute(app)), [true, true, false, false, false, false, true, false, false])
+    row({ switchRoute: false }), row({ source: "mise", switchRoute: true }), null, row({ source: "omarchy" })]
+    .map(app => m.switchRoute(app)), [true, true, false, false, false, false, true, false, true])
   // A field that is not a boolean is no answer: the source decides, against
   // what the value would say coerced.
   same([row({ source: "mise", switchRoute: "yes" }), row({ source: "mise", switchRoute: 1 }),
