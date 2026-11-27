@@ -878,9 +878,14 @@ clean_build_tree() {
 
 # After pacman -U succeeded: the package files go. $@ are the files.
 clean_after_install() {
-  local f
+  local f n
   for f; do [[ -f $f ]] && rm -f -- "$f"; done
   echo "Removed the installed package file from $PKGDEST."
+  # A package an earlier run kept for a retry (you answered no, pacman
+  # failed) that no run came back for: after a week it is a release since
+  # passed, as with the sources (clean_sources).
+  n=$(find "$PKGDEST" -mindepth 1 -maxdepth 1 -type f -mtime +7 -print -delete 2>/dev/null | wc -l)
+  (( n == 0 )) || echo "Removed $n package file(s) older than a week from $PKGDEST."
 }
 
 # After pacman -U succeeded, or something else installed the version built

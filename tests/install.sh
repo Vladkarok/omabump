@@ -1641,7 +1641,14 @@ rpe=$(rp_file rpepoch 1:2.0-1)
 rp_pkg rpepoch 1:2.0-1
 rp_db 'rpepoch 1:2.0-1'
 fresh 'rpepoch 1:1.0-1'
+# A package an earlier run kept for a retry nobody made, and a recent one.
+touch -d '9 days ago' "$rp_cache/old-1.0-1-x86_64.pkg.tar.zst"
+touch -d '2 days ago' "$rp_cache/kept-1.0-1-x86_64.pkg.tar.zst"
 STUB_PACMAN_U=ok rp_inst rpepoch
+same "install (repo): a kept package older than a week goes after a success, a recent one stays" 'kept-1.0-1-x86_64.pkg.tar.zst' \
+  "$(find "$rp_cache" -maxdepth 1 -type f \( -name 'old-*' -o -name 'kept-*' \) -printf '%f\n')"
+says "install (repo): and says so" "Removed 1 package file(s) older than a week from"
+rm -f "$rp_cache/kept-1.0-1-x86_64.pkg.tar.zst"
 same "install (repo), an epoch's file: a success" '0|rpepoch 1:2.0-1' "$irc|$(<"$idb/installed")"
 calls "install (repo), an epoch's file: fetched with the colon percent-encoded" "$rp_server/rpepoch-1%3A2.0-1-$rp_arch.pkg.tar.zst"
 calls "install (repo), an epoch's file: and its signature" "$rp_server/rpepoch-1%3A2.0-1-$rp_arch.pkg.tar.zst.sig"

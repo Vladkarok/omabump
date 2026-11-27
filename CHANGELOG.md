@@ -33,6 +33,7 @@ Fixed
 - Both package names are read once more with the copy staged and checked, right before pacman, so a package another pacman installed while sudo waited for the password is not taken back down.
 - Build now refuses when Omarchy's recipe reaches only a release Omarchy's repo already has (the vendor's newest is still held): that one is Update's, signed.
 - A skipped version with an epoch (`1:2.0-2`) no longer hides a later release the vendor names without one (`3.0`).
+- A package file an earlier run kept for a retry (you answered no to pacman, or it failed) is removed from `~/.cache/omabump/packages` after a week, at the next successful install; it stayed for good.
 - A local refresh that finds a row behind the vendor's release again asks for a full check, which reads the recipe.
 
 Removed
