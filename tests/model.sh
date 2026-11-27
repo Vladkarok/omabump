@@ -69,8 +69,10 @@ else
   # 0), and the verdict both give ("failed" or "ok"); where they differ,
   # the widget's apart (widget), with the reason beside the case.
   model_failed_cases() {
-    local a='{"pkg": "a", "source": "omarchy", "error": ""}' b='{"pkg": "b", "source": "omarchy", "error": ""}'
-    local s='{"pkg": "s", "source": "omarchy", "selfUpdating": true, "error": ""}'
+    # a and b are rows the vendor is ahead on, for which a check reads
+    # omarchy-pkgs: its error counts while one of them is not muted.
+    local a='{"pkg": "a", "source": "repo", "ahead": true, "error": ""}' b='{"pkg": "b", "source": "repo", "ahead": true, "error": ""}'
+    local s='{"pkg": "s", "source": "repo", "selfUpdating": true, "error": ""}'
     local m='{"pkg": "mise:m", "source": "mise", "error": ""}' v='{"pkg": "v", "source": "vendor-pkg", "error": ""}'
     local r='{"pkg": "r", "source": "repo", "section": "cli", "error": ""}'
     local rows="[$a, $b, $s, $m, $v, $r]" perr='"omarchyPkgs": {"error": "Could not fetch omarchy-pkgs"}'
@@ -79,12 +81,12 @@ else
 {"name": "a file with nothing in it", "file": {"apps": []}, "muted": [], "mise": 1, "want": "ok"}
 {"name": "runError", "file": {"runError": "The check stopped early (exit 143)"}, "muted": [], "mise": 1, "want": "failed"}
 {"name": "runError, every row muted", "file": {"runError": "x"}, "muted": ["a", "b", "s", "mise:m", "v", "r"], "mise": 1, "want": "failed"}
-{"name": "omarchy-pkgs error, no omarchy row muted", "file": {$perr}, "muted": [], "mise": 1, "want": "failed"}
-{"name": "omarchy-pkgs error, some omarchy rows muted", "file": {$perr}, "muted": ["a"], "mise": 1, "want": "failed"}
-{"name": "omarchy-pkgs error, every omarchy row muted", "file": {$perr}, "muted": ["a", "b"], "mise": 1, "want": "ok"}
+{"name": "omarchy-pkgs error, no ahead row muted", "file": {$perr}, "muted": [], "mise": 1, "want": "failed"}
+{"name": "omarchy-pkgs error, some ahead rows muted", "file": {$perr}, "muted": ["a"], "mise": 1, "want": "failed"}
+{"name": "omarchy-pkgs error, every ahead row muted", "file": {$perr}, "muted": ["a", "b"], "mise": 1, "want": "ok"}
 {"name": "omarchy-pkgs error, only the self-updating one muted", "file": {$perr}, "muted": ["s"], "mise": 1, "want": "failed"}
-{"name": "omarchy-pkgs error, no omarchy row", "file": {$perr, "apps": [$v, $m]}, "muted": ["v", "mise:m"], "mise": 1, "want": "failed"}
-{"name": "omarchy-pkgs error, only a self-updating omarchy row", "file": {$perr, "apps": [$s]}, "muted": ["s"], "mise": 1, "want": "failed"}
+{"name": "omarchy-pkgs error, no ahead row", "file": {$perr, "apps": [$v, $m]}, "muted": [], "mise": 1, "want": "ok"}
+{"name": "omarchy-pkgs error, only a self-updating row", "file": {$perr, "apps": [$s]}, "muted": [], "mise": 1, "want": "ok"}
 {"name": "omarchy-pkgs not an object", "file": {"omarchyPkgs": "Could not fetch"}, "muted": [], "mise": 1, "want": "ok"}
 {"name": "miseError, Show CLI tools on", "file": {"miseError": "mise ls failed"}, "muted": [], "mise": 1, "want": "failed"}
 {"name": "miseError, Show CLI tools off", "file": {"miseError": "mise ls failed"}, "muted": [], "mise": 0, "want": "ok"}
@@ -97,14 +99,16 @@ else
 {"name": "a mise row's error, Show CLI tools on", "file": {}, "muted": [], "mise": 1, "want": "failed", "rowError": "mise:m"}
 {"name": "a CLI repo row's error, Show CLI tools off", "file": {}, "muted": [], "mise": 0, "want": "ok", "rowError": "r"}
 {"name": "a CLI repo row's error, Show CLI tools on", "file": {}, "muted": [], "mise": 1, "want": "failed", "rowError": "r"}
-{"name": "omarchy-pkgs error, every omarchy row muted, a repo row not", "file": {$perr}, "muted": ["a", "b"], "mise": 1, "want": "ok"}
-{"name": "selfUpdating not exactly true takes its route", "file": {$perr, "apps": [$a, {"pkg": "t", "source": "omarchy", "selfUpdating": "true"}]}, "muted": ["a"], "mise": 1, "want": "failed"}
+{"name": "omarchy-pkgs error, every ahead row muted, another row not", "file": {$perr}, "muted": ["a", "b"], "mise": 1, "want": "ok"}
+{"name": "omarchy-pkgs error, an ahead CLI row while Show CLI tools is off", "file": {$perr, "apps": [{"pkg": "c", "source": "repo", "section": "cli", "ahead": true}]}, "muted": [], "mise": 0, "want": "ok"}
+{"name": "selfUpdating not exactly true is no copy", "file": {$perr, "apps": [$a, {"pkg": "t", "source": "repo", "ahead": true, "selfUpdating": "true"}]}, "muted": ["a"], "mise": 1, "want": "failed"}
 {"name": "rows that are no objects count for nothing", "file": {$perr, "apps": [1, "x", null, [], $a]}, "muted": ["a"], "mise": 1, "want": "ok"}
-{"name": "rows missing fields", "file": {$perr, "apps": [{"pkg": "a"}, {"source": "omarchy"}, {}]}, "muted": [], "mise": 1, "want": "failed"}
-{"name": "an error that is no string", "file": {"apps": [{"pkg": "a", "source": "omarchy", "error": 5}, {"pkg": "b", "error": true}]}, "muted": [], "mise": 1, "want": "failed"}
-{"name": "an error false is none", "file": {"runError": false, "apps": [{"pkg": "a", "source": "omarchy", "error": false}]}, "muted": [], "mise": 1, "want": "ok"}
-{"name": "an error 0", "file": {"apps": [{"pkg": "a", "source": "omarchy", "error": 0}]}, "muted": [], "mise": 1, "want": "failed", "widget": "ok"}
-{"name": "an error []", "file": {"apps": [{"pkg": "a", "source": "omarchy", "error": []}]}, "muted": [], "mise": 1, "want": "failed", "widget": "ok"}
+{"name": "rows missing fields", "file": {$perr, "apps": [{"pkg": "a"}, {"source": "repo"}, {}]}, "muted": [], "mise": 1, "want": "ok"}
+{"name": "ahead not exactly true is not ahead", "file": {$perr, "apps": [{"pkg": "a", "ahead": "true"}]}, "muted": [], "mise": 1, "want": "ok"}
+{"name": "an error that is no string", "file": {"apps": [{"pkg": "a", "source": "repo", "error": 5}, {"pkg": "b", "error": true}]}, "muted": [], "mise": 1, "want": "failed"}
+{"name": "an error false is none", "file": {"runError": false, "apps": [{"pkg": "a", "source": "repo", "error": false}]}, "muted": [], "mise": 1, "want": "ok"}
+{"name": "an error 0", "file": {"apps": [{"pkg": "a", "source": "repo", "error": 0}]}, "muted": [], "mise": 1, "want": "failed", "widget": "ok"}
+{"name": "an error []", "file": {"apps": [{"pkg": "a", "source": "repo", "error": []}]}, "muted": [], "mise": 1, "want": "failed", "widget": "ok"}
 {"name": "a runError 0", "file": {"runError": 0}, "muted": [], "mise": 1, "want": "failed", "widget": "ok"}
 {"name": "a miseError []", "file": {"miseError": []}, "muted": [], "mise": 1, "want": "failed", "widget": "ok"}
 {"name": "a check still marked as running", "file": {"checking": true}, "muted": [], "mise": 1, "want": "failed", "widget": "checking"}
@@ -149,8 +153,8 @@ EOF
   # rows while Show CLI tools is off, as Model.parseStatus does. An array
   # row is the one difference: an object to JavaScript, so parseStatus keeps
   # it (no checker writes one, and it counts toward no failure, above).
-  model_rows_doc='{"apps": [{"pkg": "a", "source": "omarchy"}, {"pkg": "mise:m", "source": "mise"}, 7, null, "x", [],
-    {"pkg": "s", "source": "omarchy", "selfUpdating": true}, {"pkg": "n"}, {"pkg": "mise:o", "source": "mise"}]}'
+  model_rows_doc='{"apps": [{"pkg": "a", "source": "repo"}, {"pkg": "mise:m", "source": "mise"}, 7, null, "x", [],
+    {"pkg": "s", "source": "repo", "selfUpdating": true}, {"pkg": "n"}, {"pkg": "mise:o", "source": "mise"}]}'
   for model_mise in 1 0; do
     same "status_apps lists the rows Model.parseStatus lists, Show CLI tools $model_mise, an array row aside" \
       "$(jq -c --argjson s "$model_mise" "$jq_status"' [status_apps($s)[] | .pkg]' <<<"$model_rows_doc")" \
@@ -171,7 +175,7 @@ EOF
     # shellcheck disable=SC2034 # row_json's fields
     {
       local pkg=p-$1 label=P source=$1 installed_name=other installed=1.0-1 latest=1.1 from=feed update=true
-      local installable=true error="" note="" stale=false switchable=false recipe="" request="" muted=false
+      local installable=true error="" note="" stale=false switchable=false
       local skipped=false skip_end="" unchecked=false held=false omarchy_update=false blocked="" self_updating=false
       local hold_clause="" unread=false app='{}'
     }
