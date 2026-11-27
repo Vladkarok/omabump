@@ -11,7 +11,7 @@ Added
 - A second notification, low urgency and once per vendor version: `<App> <version> released`, "Not in Omarchy's repo yet. Build now is available." It is sent only while `buildAhead` is on and Build now could run for the row.
 - Status rows gain `vendorVersion`, `ahead`, `buildable`, `buildNote` and `buildNoteFrom`.
 - An `apps.json` entry on the `repo` route can say `"build": true` to let Build now build its recipe, and its `feed` is optional: without one the repo's version is the only newest one and the row is never ahead.
-- Build now verifies a recipe's signed sources (Claude Code's) in a keyring made for the build, holding only the keys the recipe ships at the pinned commit. Your own keyring is not used, there is no keyserver lookup, and `--skippgpcheck` is never passed. The keyring code is covered by unit tests; no real makepkg of a signed recipe was run for this entry.
+- Build now verifies a recipe's signed sources (Claude Code's) in a keyring made for the build, holding only the keys the recipe ships at the pinned commit. Your own keyring is not used, there is no keyserver lookup, and `--skippgpcheck` is never passed.
 
 Changed
 

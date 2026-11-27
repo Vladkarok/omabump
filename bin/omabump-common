@@ -132,7 +132,7 @@ jq_name_rules='
   def home_path_ok: type == "string" and length <= 200 and test("^~(/[A-Za-z0-9._+-]+)+\\z")
     and (contains("..") | not) and (test("/\\.(/|\\z)") | not);
   def entry_ok: (.pkg | id_ok) and ((.pkg | pkg_ok) or .source == "mise")
-    and (.source | IN("repo", "vendor-pkg", "mise", "indicator"))
+    and (.source | IN(@SOURCES@))
     and ((.build // false) | type == "boolean")
     and ((.section // "cli") | IN("desktop", "cli")) and (.source != "mise" or (.section // "cli") == "cli")
     and ((.installed // []) | type == "array" and all(.[]; pkg_ok))
@@ -257,6 +257,12 @@ while read -r _route _versions _newest _installed _switch _section _build; do
   route_facts[$_route.section]=$_section route_facts[$_route.build]=$_build
 done <<<"$route_table"
 unset _route _versions _newest _installed _switch _section _build
+# The sources an apps.json entry may name (entry_ok): every route but
+# Omabump's own.
+_sources=""
+for _route in "${route_names[@]}"; do [[ $_route == self ]] || _sources+="${_sources:+, }\"$_route\""; done
+jq_name_rules=${jq_name_rules//@SOURCES@/$_sources}
+unset _route _sources
 
 # True when the route of the source $1 has the fact $2 at the value $3
 # (route_table). A source no route names has none.

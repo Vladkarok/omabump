@@ -705,6 +705,19 @@ require_root_owners() {
 # With --prepare it prints the commands and calls no sudo. pacman_hint, when
 # set, is a line said before the failure when pacman installs nothing.
 pacman_hint=""
+# guard_version for the full version $1 once the package is in hand: ends
+# the run when what is installed has moved, removing the staged copy $3
+# when there is one, with $2 after the reason. Installed meanwhile by
+# something else, at what the panel showed: nothing left to do, as when
+# that is found before the download (already_installed).
+guard_again() {
+  local got now
+  got=$(guard_version "$1") && return 0
+  [[ -z ${3:-} ]] || unstage "$3"
+  now=$(installed_package "$installed_name") || now=" $installed"
+  if (( ! switch )) && panel_reached "${now#* }"; then already_installed "${now#* }"; fi
+  die "$got; $2"
+}
 stage_and_install() {
   local file=$1 expect=$2 algo=${3:-} want=${4:-} sig=${5:-} staged got line now rc=0 locked
   staged=$staging_dir/${file##*/}
@@ -723,13 +736,7 @@ stage_and_install() {
   [[ ! -e $pacman_lock ]] || die "$locked. Not staging $staged; run $action again once no pacman runs (if none does, the lock file is stale: sudo rm $pacman_lock)"
   # What is installed may have moved since the file was checked (a build
   # takes minutes, sudo may wait for a password): both names again.
-  if ! got=$(guard_version "${expect#* }"); then
-    # Installed meanwhile by something else, at what the panel showed:
-    # nothing left to do, as when that is found before the download.
-    now=$(installed_package "$installed_name") || now=" $installed"
-    if (( ! switch )) && panel_reached "${now#* }"; then already_installed "${now#* }"; fi
-    die "$got; not installing"
-  fi
+  guard_again "${expect#* }" "not installing"
   # The file is opened here, as you, and root only writes what it reads: a
   # symlink swapped in for it cannot make root copy a file you cannot read
   # (/etc/shadow) into a world-readable place. The check is on the open file
@@ -760,10 +767,7 @@ stage_and_install() {
   # Once more, with the password answered and the copy checked: pacman
   # takes its lock next, so what another pacman could still change after
   # this is what it does in the moment between.
-  if ! got=$(guard_version "${expect#* }"); then
-    unstage "$staged"
-    die "$got; removed $staged, not installing"
-  fi
+  guard_again "${expect#* }" "removed $staged, not installing" "$staged"
   # pacman asks "Proceed with installation?": that prompt is where you can
   # still stop. sudo need not ask for a password, makepkg -s may have used it.
   # A run that ends meanwhile leaves the copy to pacman (on_exit).

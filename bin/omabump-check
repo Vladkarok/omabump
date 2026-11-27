@@ -887,7 +887,8 @@ while IFS=$'\x1f' read -r pkg source app facts; do
     [[ $self_updating == false ]] || body="Installed: $installed. Updates itself: $(self_update_text "$app" "$label")."
     [[ $announces == false ]] || announce "$announce_key" "$announce_version" "$label $shown available" "$body" "$update"
   fi
-  if (( notify && build_ahead )) && [[ $buildable == true ]]; then
+  # Not beside the notice of a package Update can install now: one a check.
+  if (( notify && build_ahead )) && [[ $buildable == true && $repo_new == false ]]; then
     announce "ahead:$pkg" "$vendor_version" "$label $vendor_version released" \
       "Not in Omarchy's repo yet. Build now is available." true -u low
   fi
