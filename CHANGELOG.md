@@ -1,5 +1,47 @@
 # Changelog
 
+## Unreleased
+
+Added
+
+- Build now, for the window when the vendor has released an app and Omarchy's repo has not caught up. It builds Omarchy's own recipe on this machine from the pinned omarchy-pkgs commit and installs the result with `sudo pacman -U`. Omarchy's repo usually follows within the hour, but measured delays are hours for some apps (Claude Code about 3.5 h, Codex about 16 h, Pi about 25 h). The package is not signed by Omarchy, the recipe's code runs as you, and the build takes minutes.
+- Build now is off by default. The setting is `buildAhead` ("Build now" in the panel's settings); `omarchy bar set io.github.vladkarok.omabump buildAhead true --json` turns it on. `b` on a row, or its Build now button, first says what it does and that it is off, then turns it on, then builds. The footer lists `b` only on a row that offers it.
+- `bin/omabump-install --build <pkg>` is Build now. `--switch` now also works on rows from Omarchy's repo, and `--switch --build` is refused.
+- Two levels of news. A release only the vendor has shows its `→ <version>` in the theme's warning colour and counts apart in the header (`2 updates · 1 ahead of the repo`), the tooltip and the IPC status. The bar icon turns the warning colour when only such rows exist, and "Bar icon only when updates exist" shows it for them too. Mute and skip apply to both levels.
+- A second notification, low urgency and once per vendor version: `<App> <version> released`, "Not in Omarchy's repo yet. Build now is available." It is sent only while `buildAhead` is on and Build now could run for the row.
+- Status rows gain `vendorVersion`, `ahead`, `buildable`, `buildNote` and `buildNoteFrom`.
+- An `apps.json` entry on the `repo` route can say `"build": true` to let Build now build its recipe, and its `feed` is optional: without one the repo's version is the only newest one and the row is never ahead.
+- Build now verifies a recipe's signed sources (Claude Code's) in a keyring made for the build, holding only the keys the recipe ships at the pinned commit. Your own keyring is not used, there is no keyserver lookup, and `--skippgpcheck` is never passed. The keyring code is covered by unit tests; no real makepkg of a signed recipe was run for this entry.
+
+Changed
+
+- Omabump no longer builds on Update. Update installs the signed package from Omarchy's repo for every app Omarchy packages (the `repo` route), with the checks of 0.1.19: sha256 against the repo's database, signature by a key pacman's keyring trusts, `pacman -Qp`, root-owned files, the signature again on the staged copy. The desktop apps that had the `omarchy` route take it too.
+- A repo row's `installable` means Update can run now: the repo's package is newer than the installed one. A current repo row has `installable: false` (0.1.19 wrote true). `updateAvailable` is also true while the row is ahead, and `latest` is the vendor's version while ahead.
+- A repo row installed under another package name now notifies, since Update replaces it, and offers Switch.
+- `omarchyPkgs.error` fails the check only while an unmuted row is ahead; it used to fail it unless every omarchy row was muted. With `buildAhead` off the check never clones or fetches omarchy-pkgs.
+- The release-age hold of a recipe now reads `omarchy-pkgs holds new releases for <N> h, Build now from <date>`.
+- The local refresh also runs while only ahead rows exist, and re-derives a repo row from the stored `repoVersion` and `vendorVersion`, so installing the repo's package or a built one clears the row.
+- `Show CLI tools` is the setting `showCli`, and the checker's flag is `--no-cli`. The pin-watch report treats the variables of a recipe's upstream watch (`_build`, `_hash`, `_npmver`) as routine syncs, and reads "shipped app" as an entry with `"build": true`.
+- The description in `manifest.json` says what the plugin does now: what is newer in Omarchy's repo, at the vendor or in mise, and updating that one app.
+- `cursor-cli`, `muse-code` and `deepseek-dsh` have no feed any more; they read omarchy-pkgs' master PKGBUILD for one, which showed what the repo was about to ship. Their rows are never ahead.
+
+Fixed
+
+- Switch on a repo row refuses a package older than the installed one, and both package names are read again right before staging.
+- When a switch leaves the old package installed beside the new one, the run says so and prints the `sudo pacman -R` to run.
+- The installer says "run Update again" or "run Build now again" when pacman's lock stops staging.
+- Both package names are read once more with the copy staged and checked, right before pacman, so a package another pacman installed while sudo waited for the password is not taken back down.
+- Build now refuses when Omarchy's recipe reaches only a release Omarchy's repo already has (the vendor's newest is still held): that one is Update's, signed.
+- A skipped version with an epoch (`1:2.0-2`) no longer hides a later release the vendor names without one (`3.0`).
+- A local refresh that finds a row behind the vendor's release again asks for a full check, which reads the recipe.
+
+Removed
+
+- The `omarchy` route. `"source": "omarchy"` in your own `apps.json` is still read, as `repo` with `"build": true` unless the entry sets `build`.
+- Compatibility: a `showMise` in `shell.json` counts while `showCli` is absent, and the panel's next settings write stores `showCli` and drops it. `--no-mise` stays as an alias of `--no-cli`.
+- Status rows no longer carry `muted`, `request` and `recipe`, which no panel read. `schemaVersion` stays 1, and a panel still loaded from 0.1.19 reads the new file.
+- The note `Installed as <name>; Update from Omarchy's repo replaces only <pkg> itself`.
+
 ## 0.1.19 (2026-11-27)
 
 - The coding agents Omarchy now installs as packages are back in the CLI section. Omarchy's migration of 2026-11-23 moved them from mise to its pacman repo, and Omabump listed only mise tools there, so the rows went. Twenty packages have a row, each with Update. The mise rows stay for a tool your own mise config asks for.
