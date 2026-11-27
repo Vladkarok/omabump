@@ -515,7 +515,14 @@ local_row() {
     # No package in the repo: nothing Update could install, and the note's
     # reason (no repo, no package) is the last check's.
     [[ -n $repo_version ]] || installable=false note=$p_note
-    [[ $p_ahead != true || $p_buildable == true ]] || recipe_why=$p_build_note
+    # The recipe's word, which only a check reads: the last buildNote, but
+    # for the reasons build_why gives from what is read here again.
+    if [[ $p_ahead == true && $p_buildable != true ]]; then
+      case $p_build_note in
+        "Not in Omarchy's repo yet"|"Update off: "*|"Missing: "*) ;;
+        *) recipe_why=$p_build_note ;;
+      esac
+    fi
     build_allowed "$app" && may_build=true
     build_reason=$(build_why "$may_build" "$blocked" "$(missing_tools_line)" "$recipe_why")
     repo_derive
@@ -730,7 +737,9 @@ while IFS=$'\x1f' read -r pkg source app facts; do
   fi
 
   label=$(jq -r '.label // .pkg' <<<"$app")
-  # What the last check's row says, for a feed that fails now.
+  # What the last check's row says, for a feed that fails now. A row
+  # written before 0.2.0 has no vendorVersion: its feed's latest stands in
+  # (a shim the next check makes needless).
   IFS=$'\x1f' read -r p_latest p_from p_installed p_update p_vendor < <(status_row "$pkg" "$previous" '
     [.latest // "", .versionFrom // "", .installed // "", .updateAvailable == true,
      (.vendorVersion // (if .versionFrom == "feed" then .latest else "" end))]

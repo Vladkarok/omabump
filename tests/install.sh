@@ -1345,7 +1345,7 @@ inst_env+=(STUB_REPO_SERVER=https://pkgs.example/edge/x86_64)
 inst --build testpkg
 inst_env=("${inst_env[@]:0:${#inst_env[@]}-1}")
 same "install --build, the repo has a newer package: refused, use Update" \
-  "1|omabump: Omarchy's repo has testpkg 2.0.0-1, the vendor's newest release; use Update instead, which installs its signed package" \
+  "1|omabump: Omarchy's repo has testpkg 2.0.0-1, newer than the installed 1.0.0-1, and the vendor's newest release is not known; use Update instead, which installs its signed package" \
   "$irc|$(tail -1 <<<"$iout")"
 no_call "install --build, the repo has it: nothing built" 'makepkg'
 rm -f "$iserved/omarchy.db" "$iserved/testpkg-2.0.0-1-$(uname -m).pkg.tar.zst"
@@ -1477,6 +1477,15 @@ inst_src 'pkg=rpapp installed_name=rpapp-bin installed=1.0.0-1 switch=1; stage_a
 same "stage_and_install, a switch: the canonical package installed meanwhile at the target: refused before the staging" \
   '1|omabump: rpapp is installed now, at 2.0.0-1, which 2.0.0-1 is not newer than; not installing' "$irc|$(tail -n1 <<<"$iout")"
 no_call "stage_and_install, the canonical package installed meanwhile: nothing staged" 'sudo '
+# The target installed meanwhile by something else, at what the panel
+# showed: the re-check before the staging ends the run as done.
+fresh 'rpapp 2.0.0-1'
+shown rpapp 2.0.0 1.0.0-1
+# shellcheck disable=SC2016 # expanded by the child bash
+inst_src 'pkg=rpapp installed_name=rpapp installed=1.0.0-1 label="Rp App"; stage_and_install "$STUB_SERVED/'"$rpf"'" "rpapp 2.0.0-1"'
+same "stage_and_install: the target installed meanwhile, as the panel showed: already installed, a success" \
+  '0|Rp App 2.0.0-1 is already installed; nothing to do.' "$irc|$(grep -F 'already installed' <<<"$iout")"
+no_call "stage_and_install: installed meanwhile: nothing staged" 'sudo '
 fresh 'rpapp-bin 1.0.0-1' 'rpapp 1.5.0-1'
 # shellcheck disable=SC2016 # expanded by the child bash
 inst_src 'pkg=rpapp installed_name=rpapp-bin installed=1.0.0-1; guard_version 2.0.0-1 && echo ok'

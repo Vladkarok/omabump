@@ -1999,16 +1999,25 @@ recipe_version() {
 # recipe and fingerprints in, a keyring directory or a refusal out.
 
 # The fingerprints PKGBUILD text on stdin lists in validpgpkeys, one a
-# line, upper case. Parsed, never sourced: the array as omarchy-pkgs writes
-# it, on one line or several, quoted or not, with comments. Fails, with the
+# line, upper case, from every assignment (= and +=). Parsed, never
+# sourced: the array as omarchy-pkgs writes it, on one line or several,
+# quoted or not, with comments. Fails, with the
 # reason on stderr, when an entry is not a 40-hex fingerprint (a short key
 # ID names no key for sure).
 pgp_fingerprints() {
-  local body word words=() out=()
+  local text body word words=() out=()
+  text=$(cat)
+  # Every assignment counts, = and += alike: a superset only asks for more
+  # key files. A mention in any other form (outside a comment) is refused.
+  if grep -vE '^[[:space:]]*#' <<<"$text" | grep -E 'validpgpkeys' \
+    | grep -qvE '^[[:space:]]*validpgpkeys[[:space:]]*\+?=[[:space:]]*\('; then
+    echo "validpgpkeys is set in a form Omabump does not read" >&2
+    return 1
+  fi
   body=$(awk '
     on { line = $0 }
-    !on && /^[[:space:]]*validpgpkeys[[:space:]]*=[[:space:]]*\(/ { on = 1; line = $0; sub(/^[^(]*\(/, "", line) }
-    on { sub(/#.*/, "", line); if (index(line, ")")) { sub(/\).*/, "", line); print line; exit } print line }')
+    !on && /^[[:space:]]*validpgpkeys[[:space:]]*\+?=[[:space:]]*\(/ { on = 1; line = $0; sub(/^[^(]*\(/, "", line) }
+    on { sub(/#.*/, "", line); if (index(line, ")")) { sub(/\).*/, "", line); on = 0 } print line }' <<<"$text")
   read -rd '' -a words <<<"$body" || true
   for word in "${words[@]}"; do
     word=${word//[\"\']/}

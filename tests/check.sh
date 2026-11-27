@@ -1763,6 +1763,19 @@ loc_pkgs 'bn-a 1.0-1' 'bn-n 1.0-1'
 rp_run --local
 same "--local: back below it: ahead again, buildable as apps.json says, the recipe unread until a check" 'true|true|' \
   "$(rp_row bn-a '"\(.ahead)|\(.buildable)|\(.buildNote)"')"
+# A buildNote the refresh reads again itself (Update off, here lifted in
+# apps.json since) is not carried over; a recipe's is.
+jq '.apps |= map(if .pkg == "bn-a" then .buildable = false | .buildNote = "Update off: old" else . end)' "$run_state/status.json" \
+  >"$run_dir/edited.json" && mv "$run_dir/edited.json" "$run_state/status.json"
+loc_pkgs 'bn-a 1.1-1' 'bn-n 1.0-1'
+rp_run --local
+same "--local: an Update-off buildNote is read again, not kept" 'true|true|' "$(rp_row bn-a '"\(.ahead)|\(.buildable)|\(.buildNote)"')"
+jq '.apps |= map(if .pkg == "bn-a" then .buildable = false | .buildNote = "Repo recipe has no upstream watch yet" else . end)' \
+  "$run_state/status.json" >"$run_dir/edited.json" && mv "$run_dir/edited.json" "$run_state/status.json"
+loc_pkgs 'bn-a 1.2-1' 'bn-n 1.0-1'
+rp_run --local
+same "--local: a recipe's buildNote is kept until a check" 'true|false|Repo recipe has no upstream watch yet' \
+  "$(rp_row bn-a '"\(.ahead)|\(.buildable)|\(.buildNote)"')"
 rm -rf "$bn_clone" "$run_dir/config/omarchy/omabump/pins.json" "$run_state/seen.json"
 run_settings ', "showMise": "false"'
 same "repo: the runs leave no scratch files" '' "$(leftovers)"

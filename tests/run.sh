@@ -677,6 +677,10 @@ same "pgp_fingerprints: several lines, comments, unquoted" "$(printf '%s\n' "$(p
   "$(printf 'validpgpkeys=(\n  "%s" # someone\n  %s\n)\nsource=(x)\n' "$(printf 'A%.0s' {1..40})" "$(printf 'b%.0s' {1..40})" | pgp_fingerprints)"
 same "pgp_fingerprints: none" '' "$(printf 'pkgname=x\n' | pgp_fingerprints)"
 refuse "pgp_fingerprints: a short key ID is refused" pgp_fingerprints <<<"validpgpkeys=('F0134EE680CAC571')"
+same "pgp_fingerprints: every assignment, += too" "$(printf '%s\n' "$(printf 'A%.0s' {1..40})" "$(printf 'B%.0s' {1..40})")" \
+  "$(printf "validpgpkeys=('%s')\nvalidpgpkeys+=(\n '%s' # b\n)\n" "$(printf 'a%.0s' {1..40})" "$(printf 'B%.0s' {1..40})" | pgp_fingerprints)"
+refuse "pgp_fingerprints: a form it does not read is refused" pgp_fingerprints <<<'validpgpkeys=@keys'
+check "pgp_fingerprints: a comment that names it is no assignment" pgp_fingerprints <<<'# validpgpkeys come later'
 # A throwaway key pair made here, its public key shipped as omarchy-pkgs
 # ships one: pkgbuilds/<pkg>/keys/pgp/<FPR>.asc, in a git repo the clone's
 # functions read at a commit.
@@ -717,6 +721,11 @@ if command -v gpg >/dev/null; then
   same "pgp_keyring: a file whose key has another fingerprint: refused" "1|$pgp_other" "$(cut -d'|' -f1 <<<"$out")|$(grep -o "primary key(s) [0-9A-F]*" <<<"$out" | cut -d' ' -f3)"
   out=$(keyring_of BOTH.asc "$pgp_good")
   same "pgp_keyring: a file with a second primary key: refused" '1|not exactly' "$(cut -d'|' -f1 <<<"$out")|$(grep -o 'not exactly' <<<"$out")"
+  # The keyring itself is checked too, whatever the file's listing said: a
+  # listing that let the other key through still ends in a refusal.
+  out=$( pgp_file_primaries() { echo "$pgp_good"; }; keyring_of WRONG.asc "$pgp_good" )
+  same "pgp_keyring: a keyring that ends up with another key than listed: refused" \
+    '1|the keyring made for the signed recipe holds' "$(cut -d'|' -f1 <<<"$out")|$(grep -o 'the keyring made for the signed recipe holds' <<<"$out")"
   out=$(keyring_of "$pgp_good.asc" "$pgp_other")
   same "pgp_keyring: a listed fingerprint without its key file: refused, saying which" \
     "1|ships no keys/pgp/$pgp_other.asc" "$(cut -d'|' -f1 <<<"$out")|$(grep -o "ships no keys/pgp/$pgp_other.asc" <<<"$out")"

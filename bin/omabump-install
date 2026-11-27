@@ -721,7 +721,13 @@ stage_and_install() {
   [[ ! -e $pacman_lock ]] || die "$locked. Not staging $staged; run $action again once no pacman runs (if none does, the lock file is stale: sudo rm $pacman_lock)"
   # What is installed may have moved since the file was checked (a build
   # takes minutes, sudo may wait for a password): both names again.
-  got=$(guard_version "${expect#* }") || die "$got; not installing"
+  if ! got=$(guard_version "${expect#* }"); then
+    # Installed meanwhile by something else, at what the panel showed:
+    # nothing left to do, as when that is found before the download.
+    now=$(installed_package "$installed_name") || now=" $installed"
+    if (( ! switch )) && panel_reached "${now#* }"; then already_installed "${now#* }"; fi
+    die "$got; not installing"
+  fi
   # The file is opened here, as you, and root only writes what it reads: a
   # symlink swapped in for it cannot make root copy a file you cannot read
   # (/etc/shadow) into a world-readable place. The check is on the open file
@@ -1105,7 +1111,10 @@ install_build() {
   echo "The vendor's newest release: ${vendor:-not known}"
   repo_version=""
   if repo_load && repo_lookup "$pkg"; then echo "Omarchy's repo ($repo_server) has $pkg $repo_version"; fi
+  # The repo has something newer: Update installs it, signed. Build now
+  # only when the vendor is known to be ahead of that too.
   if [[ -n $repo_version ]] && newer "$repo_version" "$installed" && ! vendor_ahead "$installed" "$repo_version" "$vendor"; then
+    [[ -n $vendor ]] || refuse "Omarchy's repo has $pkg $repo_version, newer than the installed ${installed:-nothing}, and the vendor's newest release is not known; use Update instead, which installs its signed package"
     refuse "Omarchy's repo has $pkg $repo_version, the vendor's newest release; use Update instead, which installs its signed package"
   fi
   # Without a vendor's version to go by, the recipe's sync says what the

@@ -56,7 +56,7 @@
         "type": "boolean",
         "label": "Bar icon only when updates exist",
         "defaultValue": false,
-        "description": "Show the bar icon only when an installable update exists or a check failed. IPC open and toggle still open the panel."
+        "description": "Show the bar icon only when an installable update exists, a vendor has a release Omarchy's repo does not have yet, or a check failed. IPC open and toggle still open the panel."
       },
       {
         "key": "buildAhead",
