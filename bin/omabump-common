@@ -2220,17 +2220,23 @@ build_hold_clause() {
 }
 
 # Why Build now could not run for a row, apart from whether the vendor is
-# ahead, on stdout; nothing when it could. In this order: the entry may not
+# ahead: sets build_reason to the words, "" when it could, and build_from
+# to which of the four it was (entry, off, tools, recipe; "" with no
+# reason), so that no reader has to tell them apart by their words: the
+# local refresh reads the first three again and keeps only a recipe's
+# (local_row in bin/omabump-check). In this order: the entry may not
 # be built ($1 false: build_allowed), Update is off for it ($2, the
 # reason), a build tool is missing ($3, missing_tools_line's), and what
 # the recipe says ($4: its blocker, its release-age clause, or why it could
 # not be read; "" when it was not read, as while buildAhead is off, when
 # the installer finds out the rest).
+build_reason="" build_from=""
 build_why() {
-  if [[ $1 != true ]]; then echo "Not in Omarchy's repo yet"
-  elif [[ -n $2 ]]; then echo "Update off: $2"
-  elif [[ -n $3 ]]; then echo "$3"
-  elif [[ -n $4 ]]; then echo "$4"
+  build_reason="" build_from=""
+  if [[ $1 != true ]]; then build_from=entry build_reason="Not in Omarchy's repo yet"
+  elif [[ -n $2 ]]; then build_from=off build_reason="Update off: $2"
+  elif [[ -n $3 ]]; then build_from=tools build_reason=$3
+  elif [[ -n $4 ]]; then build_from=recipe build_reason=$4
   fi
 }
 
@@ -2249,7 +2255,7 @@ build_why() {
 #   feed_error              the feed's failure, "" when it answered
 #   installable, note       the route's: true unless Update is off or a
 #                           tool is missing, and its note
-#   build_reason            build_why's answer for the row
+#   build_reason, build_from  build_why's answer for the row
 # Sets:
 #   repo_new                the repo has a package newer than installed:
 #                           Update can install it (and the check announces
@@ -2260,7 +2266,8 @@ build_why() {
 #   installable             Update can run: the route's, and repo_new
 #   route_ok                the route's installable, for Switch
 #   buildable, build_note   Build now could run (ahead, and no
-#                           build_reason), or why not while ahead
+#                           build_reason), or why not while ahead, with
+#                           build_note_from saying which reason it is
 #   latest, from            the newest version the row shows: the vendor's
 #                           while ahead; else the repo's, by its upstream
 #                           version when that is the vendor's too
@@ -2274,7 +2281,7 @@ build_why() {
 # shellcheck disable=SC2154 # the row's fields, the caller's variables
 repo_derive() {
   local repo_up=""
-  repo_new=false ahead=false buildable=false build_note="" held=false hold_clause="" route_ok=$installable
+  repo_new=false ahead=false buildable=false build_note="" build_note_from="" held=false hold_clause="" route_ok=$installable
   [[ -z $repo_version ]] || repo_up=$(upstream_part "$repo_version")
   if [[ -n $repo_version ]] && newer "$repo_version" "$installed"; then repo_new=true; fi
   if vendor_ahead "$installed" "$repo_version" "$vendor_version"; then ahead=true; fi
@@ -2306,7 +2313,7 @@ repo_derive() {
     [[ $ahead == true ]] || stale=false
   fi
   if [[ $ahead == true ]]; then
-    if [[ -z $build_reason ]]; then buildable=true; else build_note=$build_reason; fi
+    if [[ -z $build_reason ]]; then buildable=true; else build_note=$build_reason build_note_from=$build_from; fi
   fi
   if [[ $ahead == true && $repo_new == false && $route_ok == true && -n $repo_version ]]; then
     held=true hold_clause="Not in Omarchy's repo yet"
@@ -2332,7 +2339,7 @@ repo_derive() {
 # shellcheck disable=SC2154 # the row's fields, the caller's variables
 row_derive() {
   local target
-  update=$mise_update repo_new=false ahead=false buildable=false build_note="" hold_clause="" route_ok=$installable
+  update=$mise_update repo_new=false ahead=false buildable=false build_note="" build_note_from="" hold_clause="" route_ok=$installable
   if [[ $self_updating == true ]]; then
     self_row "$app" "$label" "$installed_name" "$installed" "$latest"
   elif route "$source" newest repo; then
@@ -2358,7 +2365,8 @@ row_derive() {
 # by a local refresh, read by no check since), repo_version (repoVersion:
 # the full version Omarchy's repo has of a repo row's package, "" when
 # unknown), vendor_version (vendorVersion, the feed's newest on such a
-# row, "" without one), ahead, buildable and build_note (buildNote), and
+# row, "" without one), ahead, buildable, build_note (buildNote) and
+# build_note_from (buildNoteFrom), and
 # the icon and iconLight of the entry app; section and switchRoute are its
 # route's (route_table), for the panel. Every string from a feed, mise,
 # pacman or apps.json goes through clean_text on its way in. The fields
@@ -2375,6 +2383,7 @@ row_json() {
     --arg holdClause "$(clean_text "$hold_clause")" --argjson unread "$unread" \
     --arg repoVersion "$(clean_text "${repo_version:-}")" --arg vendorVersion "$(clean_text "${vendor_version:-}")" \
     --argjson ahead "${ahead:-false}" --argjson buildable "${buildable:-false}" --arg buildNote "$(clean_text "${build_note:-}")" \
+    --arg buildNoteFrom "${build_note_from:-}" \
     --arg section "${route_facts[$source.section]:-desktop}" --argjson switchRoute "$(route "$source" switch yes && echo true || echo false)" \
     --argjson app "$app" \
     '{pkg: $pkg, label: $label, source: $source, installedName: $installedName,
@@ -2387,7 +2396,7 @@ row_json() {
       holdClause: $holdClause, unread: $unread,
       section: (($app.section | select(IN("desktop", "cli"))) // $section), switchRoute: $switchRoute,
       repoVersion: $repoVersion, vendorVersion: $vendorVersion, ahead: $ahead, buildable: $buildable,
-      buildNote: $buildNote}'
+      buildNote: $buildNote, buildNoteFrom: $buildNoteFrom}'
 }
 
 # --- status.json -----------------------------------------------------------------
@@ -2421,11 +2430,12 @@ row_json() {
 # selfUpdating, icon and iconLight, and since they came holdClause and
 # unread, then section and switchRoute (the route's section and switch,
 # route_table), then repoVersion, then (0.2.0) vendorVersion, ahead,
-# buildable and buildNote (repo_derive says what they mean). A file from an
+# buildable, buildNote and buildNoteFrom (repo_derive says what they mean;
+# buildNoteFrom is build_why's entry, off, tools or recipe). A file from an
 # older checker may lack the later ones: inventoryAt, retry, selfUpdating,
 # holdClause, unread, section, switchRoute, repoVersion, vendorVersion,
-# ahead, buildable and buildNote, and a row the local refresh carries over
-# from such a file lacks the last six until a check reads it. No field a
+# ahead, buildable, buildNote and buildNoteFrom, and a row the local refresh
+# carries over from such a file lacks the last seven until a check reads it. No field a
 # reader uses is removed or renamed within a version: a panel still loaded
 # from an older release reads a newer checker's file. 0.2.0 stopped
 # writing recipe, request and muted, which no panel read (a 0.1.x panel

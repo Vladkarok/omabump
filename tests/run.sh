@@ -1067,7 +1067,7 @@ derived() {
 mkdir -p "$state_dir"
 row_fields='"\(.updateAvailable)|\(.installable)|\(.held)|\(.switchable)|\(.unchecked)|\(.note)"'
 same "row: a vendor row with an update, the whole row" \
-  '{"pkg":"r-app","label":"R ‹App›","source":"vendor-pkg","installedName":"r-app","installed":"1.0-1","latest":"1.2","versionFrom":"feed","updateAvailable":true,"installable":true,"error":"","note":"A note of the route","stale":false,"switchable":false,"skipped":false,"skipEnded":"","unchecked":false,"held":false,"omarchyUpdate":false,"blocked":false,"selfUpdating":false,"icon":"assets/r.svg","iconLight":"","holdClause":"","unread":false,"section":"desktop","switchRoute":true,"repoVersion":"","vendorVersion":"","ahead":false,"buildable":false,"buildNote":""}' \
+  '{"pkg":"r-app","label":"R ‹App›","source":"vendor-pkg","installedName":"r-app","installed":"1.0-1","latest":"1.2","versionFrom":"feed","updateAvailable":true,"installable":true,"error":"","note":"A note of the route","stale":false,"switchable":false,"skipped":false,"skipEnded":"","unchecked":false,"held":false,"omarchyUpdate":false,"blocked":false,"selfUpdating":false,"icon":"assets/r.svg","iconLight":"","holdClause":"","unread":false,"section":"desktop","switchRoute":true,"repoVersion":"","vendorVersion":"","ahead":false,"buildable":false,"buildNote":"","buildNoteFrom":""}' \
   "$(derived vendor-pkg r-app 1.0-1 1.2 feed)"
 same "row: no field nothing reads (muted, request, recipe)" 'false|false|false' \
   "$(derived vendor-pkg r-app 1.0-1 1.2 feed | jq -r '"\(has("muted"))|\(has("request"))|\(has("recipe"))"')"
@@ -1116,9 +1116,13 @@ same "build_hold_clause: counted from when a check first saw it" \
   'omarchy-pkgs holds new releases for 2 h, Build now from Jan 1 01:00' "$(hold_of 5400 1800)"
 same "build_hold_clause: a window that has passed: nothing" '' "$(hold_of 86400 86400)"
 same "build_hold_clause: no window: nothing" '' "$(hold_of 0 0)"
+why_of() { build_why "$@"; echo "$build_reason"; }
+why_from() { build_why "$@"; echo "$build_from"; }
 same "build_why: in order: no build, Update off, tools, the recipe" \
   "Not in Omarchy's repo yet|Update off: x|m|held|" \
-  "$(build_why false x m held)|$(build_why true x m held)|$(build_why true '' m held)|$(build_why true '' '' held)|$(build_why true '' '' '')"
+  "$(why_of false x m held)|$(why_of true x m held)|$(why_of true '' m held)|$(why_of true '' '' held)|$(why_of true '' '' '')"
+same "build_why: and says which reason it is" 'entry|off|tools|recipe|' \
+  "$(why_from false x m held)|$(why_from true x m held)|$(why_from true '' m held)|$(why_from true '' '' held)|$(why_from true '' '' '')"
 # The settings' mute and skip, for a row with an update.
 # quiet_of <muted> <skipped>: row_quiet's answer for r-app at 1.0-1 with
 # 1.2 out, under those settings, as "muted|skipped|skip_end|quiet".
@@ -1318,9 +1322,9 @@ repo_derived() {
   # shellcheck disable=SC2034 # repo_sha256 is repo_lookup's, set for it
   local repo_state=$4 repo_error="" repo_version="" repo_file="" repo_sha256="" stale=false installable=${6:-true} note=""
   local app='{"pkg": "r-app", "label": "R"}' label=R mise_update=false self_updating=false repo_why="" repo_failed=false
-  local held=false unchecked=false omarchy_update=false blocked="" error line build_reason=${8:-}
+  local held=false unchecked=false omarchy_update=false blocked="" error line build_reason=${8:-} build_from=${8:+recipe}
   local muted_json='[]' skipped_json='{}' update switchable muted skipped skip_end quiet hold_clause="" unread=false
-  local repo_new ahead buildable build_note route_ok
+  local repo_new ahead buildable build_note build_note_from route_ok
   local -A repo_entries=()
   [[ -z $5 ]] || repo_entries[r-app]="$5 r-app-$5-any.pkg.tar.zst $sum64"
   repo_lookup r-app || true

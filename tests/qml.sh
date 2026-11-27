@@ -240,11 +240,11 @@ qml_row() {
   local now=1767225600 installable=true note="" held=false unchecked=false repo_version=1.0-1 repo_why="" repo_failed=false
   local error="" stale=false omarchy_update=false blocked="" feed_error="" route_error=""
   local muted_json='[]' skipped_json='{"qml-app": "1.2"}' seen_file=$scratch/qml-seen.json
-  local update switchable muted skipped skip_end quiet hold_clause unread=false build_reason
-  local repo_new ahead buildable build_note route_ok
+  local update switchable muted skipped skip_end quiet hold_clause unread=false build_reason build_from
+  local repo_new ahead buildable build_note build_note_from route_ok
   mkdir -p "$state_dir"
   rm -f "$seen_file"
-  build_reason=$(build_hold_clause "$pkg" "$vendor_version" "$3" "$now")
+  build_why true "" "" "$(build_hold_clause "$pkg" "$vendor_version" "$3" "$now")"
   row_derive
   row_json | jq -r "$4"
 }

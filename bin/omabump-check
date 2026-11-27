@@ -399,7 +399,7 @@ local_pacman_busy() {
 # as it is.
 local_row() {
   local p_source p_name p_installed p_latest p_from p_installable p_unchecked p_self p_unread p_repo p_vendor
-  local p_vendor_known p_note p_ahead p_buildable p_build_note
+  local p_vendor_known p_note p_build_note p_build_from
   local update held=false installable switchable=false past=false self=false blocked unchecked note unread=false repo_version="" hold_clause=""
   row="" why=""
   self_updating_name "$name" && self=true
@@ -423,11 +423,11 @@ local_row() {
   # (row_unread). For a self-updating app, unchecked alone does not say so:
   # its unknown or pre-release version is unchecked too.
   IFS=$'\x1f' read -r p_source p_name p_installed p_latest p_from p_installable p_unchecked p_self p_unread p_repo \
-    p_vendor p_vendor_known p_note p_ahead p_buildable p_build_note < <(jq -r "$jq_status"'
+    p_vendor p_vendor_known p_note p_build_note p_build_from < <(jq -r "$jq_status"'
     [.source // "", .installedName // "", .installed // "", .latest // "", .versionFrom // "",
      .installable == true, .unchecked == true, .selfUpdating == true, row_unread, .repoVersion // "",
      (.vendorVersion // (if .versionFrom == "feed" then .latest else "" end)),
-     (has("vendorVersion") or .versionFrom != "repo"), .note // "", .ahead == true, .buildable == true, .buildNote // ""]
+     (has("vendorVersion") or .versionFrom != "repo"), .note // "", .buildNote // "", .buildNoteFrom // ""]
     | map(tostring) | join("\u001f")' <<<"$prev")
   if [[ $p_source != "$source" ]]; then
     why="$pkg has another source in the app table"
@@ -448,7 +448,7 @@ local_row() {
       . + {installedName: $name, installed: $installed, selfUpdating: $self, updateAvailable: false, installable: false,
            switchable: false, held: false, skipped: false, unchecked: true, note: "Not checked yet",
            omarchyUpdate: false, blocked: ($blocked != ""), holdClause: "", unread: true,
-           ahead: false, buildable: false, buildNote: ""}' <<<"$prev")
+           ahead: false, buildable: false, buildNote: "", buildNoteFrom: ""}' <<<"$prev")
     why="$pkg is installed as $name now"
     return 0
   fi
@@ -506,8 +506,8 @@ local_row() {
   # the repo when it had no package, and of the recipe while the vendor
   # was ahead, stays.
   if route "$source" newest repo; then
-    local repo_why="" repo_failed=false feed_error="" recipe_why="" build_reason may_build=false
-    local repo_new ahead buildable build_note route_ok latest from route_error="" vendor_version
+    local repo_why="" repo_failed=false feed_error="" recipe_why="" build_reason build_from may_build=false
+    local repo_new ahead buildable build_note build_note_from route_ok latest from route_error="" vendor_version
     repo_version=$p_repo vendor_version=$p_vendor
     blocked=$(update_blocked "$app" false) || blocked=""
     repo_route_base
@@ -515,26 +515,23 @@ local_row() {
     # No package in the repo: nothing Update could install, and the note's
     # reason (no repo, no package) is the last check's.
     [[ -n $repo_version ]] || installable=false note=$p_note
-    # The recipe's word, which only a check reads: the last buildNote, but
-    # for the reasons build_why gives from what is read here again.
-    if [[ $p_ahead == true && $p_buildable != true ]]; then
-      case $p_build_note in
-        "Not in Omarchy's repo yet"|"Update off: "*|"Missing: "*) ;;
-        *) recipe_why=$p_build_note ;;
-      esac
-    fi
+    # The recipe's word, which only a check reads, is the last check's
+    # (buildNoteFrom recipe); build_why's other reasons are read here again.
+    [[ $p_build_from != recipe ]] || recipe_why=$p_build_note
     build_allowed "$app" && may_build=true
-    build_reason=$(build_why "$may_build" "$blocked" "$(missing_tools_line)" "$recipe_why")
+    build_why "$may_build" "$blocked" "$(missing_tools_line)" "$recipe_why"
     repo_derive
     row_switchable "$source" "$name" "$pkg" "$route_ok" "$update" "$installable" "$repo_version" "$installed" && switchable=true
     if [[ -n $latest ]] && row_past "$installed" "$latest" "$from"; then past=true; fi
     row=$(jq -c --arg name "$name" --arg installed "$installed" --argjson update "$update" --argjson held "$held" \
       --argjson installable "$installable" --argjson switchable "$switchable" --arg note "$(clean_text "$note")" \
       --arg clause "$hold_clause" --arg latest "$latest" --arg from "$from" --argjson ahead "$ahead" \
-      --argjson buildable "$buildable" --arg buildNote "$(clean_text "$build_note")" --argjson past "$past" '
+      --argjson buildable "$buildable" --arg buildNote "$(clean_text "$build_note")" --arg buildNoteFrom "$build_note_from" \
+      --argjson past "$past" '
       . + {installedName: $name, installed: $installed, updateAvailable: $update, held: $held,
            installable: $installable, switchable: $switchable, note: $note, holdClause: $clause,
-           latest: $latest, versionFrom: $from, ahead: $ahead, buildable: $buildable, buildNote: $buildNote}
+           latest: $latest, versionFrom: $from, ahead: $ahead, buildable: $buildable, buildNote: $buildNote,
+           buildNoteFrom: $buildNoteFrom}
       | if $update then . else .skipped = false end
       | if $past then . + {updateAvailable: false, switchable: false, skipped: false, ahead: false, buildable: false,
           unchecked: true, note: "Not checked yet", unread: true} else . end' <<<"$prev")
@@ -850,7 +847,7 @@ while IFS=$'\x1f' read -r pkg source app facts; do
       && vendor_ahead "$installed" "$repo_version" "$vendor_version"; then
       recipe_read "$pkg" "$vendor_version"
     fi
-    build_reason=$(build_why "$may_build" "$blocked" "$missing_line" "$recipe_why")
+    build_why "$may_build" "$blocked" "$missing_line" "$recipe_why"
   fi
 
   # The update, the switch and the settings' mute and skip, by the rules

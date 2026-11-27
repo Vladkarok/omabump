@@ -921,7 +921,7 @@ build_recipe() {
   fi
 
   # The first fetched code that runs: omarchy-pkgs' sync tool and the
-  # recipe's upstream hook, as you, after you pressed Update. Its curl calls
+  # recipe's upstream hook, as you, after you asked for Build now. Its curl calls
   # read the .curlrc above, its temporary files go under the cache, and the
   # maintainer-only release-age bypass never reaches it. Nor does
   # UPSTREAM_GITHUB_TOKEN: with it, sync-upstream points CURL_HOME at a

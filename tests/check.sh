@@ -758,7 +758,7 @@ same "--local: the new row in table order" 'loc-a loc-b loc-held loc-gone loc-ne
 # switchRoute, and without repoVersion and 0.2.0's fields; a row this
 # release writes has them too.
 same "--local: the new row has every field a check writes" \
-  "$(jq -c '.apps[0] | keys + ["section", "switchRoute", "repoVersion", "vendorVersion", "ahead", "buildable", "buildNote"] | sort' \
+  "$(jq -c '.apps[0] | keys + ["section", "switchRoute", "repoVersion", "vendorVersion", "ahead", "buildable", "buildNote", "buildNoteFrom"] | sort' \
     "$run_dir/fixture.json")" "$(loc_row loc-new 'keys | tojson')"
 same "--local: and its route's section and switch (indicator)" "desktop false" "$(loc_row loc-new '"\(.section) \(.switchRoute)"')"
 
@@ -1765,12 +1765,12 @@ same "--local: back below it: ahead again, buildable as apps.json says, the reci
   "$(rp_row bn-a '"\(.ahead)|\(.buildable)|\(.buildNote)"')"
 # A buildNote the refresh reads again itself (Update off, here lifted in
 # apps.json since) is not carried over; a recipe's is.
-jq '.apps |= map(if .pkg == "bn-a" then .buildable = false | .buildNote = "Update off: old" else . end)' "$run_state/status.json" \
+jq '.apps |= map(if .pkg == "bn-a" then .buildable = false | .buildNote = "Update off: old" | .buildNoteFrom = "off" else . end)' "$run_state/status.json" \
   >"$run_dir/edited.json" && mv "$run_dir/edited.json" "$run_state/status.json"
 loc_pkgs 'bn-a 1.1-1' 'bn-n 1.0-1'
 rp_run --local
 same "--local: an Update-off buildNote is read again, not kept" 'true|true|' "$(rp_row bn-a '"\(.ahead)|\(.buildable)|\(.buildNote)"')"
-jq '.apps |= map(if .pkg == "bn-a" then .buildable = false | .buildNote = "Repo recipe has no upstream watch yet" else . end)' \
+jq '.apps |= map(if .pkg == "bn-a" then .buildable = false | .buildNote = "Repo recipe has no upstream watch yet" | .buildNoteFrom = "recipe" else . end)' \
   "$run_state/status.json" >"$run_dir/edited.json" && mv "$run_dir/edited.json" "$run_state/status.json"
 loc_pkgs 'bn-a 1.2-1' 'bn-n 1.0-1'
 rp_run --local
