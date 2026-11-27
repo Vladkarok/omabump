@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.19 (2026-11-27)
 
 - The coding agents Omarchy now installs as packages are back in the CLI section. Omarchy's migration of 2026-11-23 moved them from mise to its pacman repo, and Omabump listed only mise tools there, so the rows went. Twenty packages have a row, each with Update. The mise rows stay for a tool your own mise config asks for.
 - A new route, `repo`, which those twenty rows take: Update installs the package from Omarchy's own repo [omarchy], which follows the vendors within the hour, instead of building a recipe. The repo's database is unsigned, so it only names the file; Update checks the download's sha256 against it, its signature with gpg in pacman's keyring, which must be by a key that keyring trusts (`pacman-key --verify` lets a good signature by an untrusted key through), and its name and version with `pacman -Qp`, before the usual staging and `sudo pacman -U`; the staged copy's signature is checked again before pacman opens it. No code from omarchy-pkgs runs. When the vendor is ahead of the repo, the row shows the update without an Update button or a notification, and says "Not in Omarchy's repo yet", until the repo has it. A repo row notifies only for an update its Update can install: not when this machine has no [omarchy] repo, the repo has no such package, or the app is installed under another package name, which the route does not replace (that row has no Update either).
