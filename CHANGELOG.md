@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (2026-11-28)
 
 Added
 
@@ -12,6 +12,11 @@ Changed
 - The panel no longer reads a note by its English words: a recipe's release-age hold is shortened to "Build now from <date>" by its key, and its end is written in the language's own way. A status.json from an older checker shows its English notes as they are, unshortened, until the next check.
 - `bin/omabump-install` and `bin/omabump-check` print English to a terminal as before; only notifications are translated. On Omarchy before 4.5.0, which has no translation support for plugins, the panel stays English and works as before.
 - In a right-to-left language the header's tooltips open towards the card, and the arrow before a newer version points the other way.
+
+Fixed
+
+- A notification whose title starts with a dash (an app label, a translation) is no longer read by `notify-send` as an option.
+- An `apps.json` `selfUpdate` text of `-n` or `-e` is shown instead of being swallowed.
 
 ## 0.2.0 (2026-11-28)
 

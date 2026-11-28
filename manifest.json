@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.vladkarok.omabump",
   "name": "Omabump",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": "vladkarok",
   "license": "MIT",
   "description": "Updates for your AI apps and coding-agent CLIs: see what is newer in Omarchy's repo, at the vendor or in mise, and update that one app.",
