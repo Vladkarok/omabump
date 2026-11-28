@@ -86,6 +86,124 @@ pkgs_lock=$cache_dir/omarchy-pkgs.lock
 shipped_pins=$plugin_dir/pins.json
 user_pins=${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/omabump/pins.json
 
+# --- text in the user's language -------------------------------------------------
+#
+# The panel words its text from the catalogs in i18n/, one flat JSON file
+# per Omarchy language code (Model.js says how). Of what the scripts say,
+# only the notifications follow that language too, through say below:
+# what they print to a terminal or stderr stays English, as pacman's own
+# output does, and so do status.json's English fields. Beside a row's note
+# and build note the checker writes their parts (noteParts,
+# buildNoteParts: a list of {key, args}, made by part), which the panel
+# words in the language, and the English field stays for an older panel, a
+# terminal and the tests; tests/check.sh holds each to its parts.
+
+i18n_dir=$plugin_dir/i18n
+# A catalog file larger than this is none: read as empty, so English.
+i18n_max_bytes=262144
+
+# The language picked under Setup > Region > Language, as Omarchy's
+# Commons/I18n.qml reads it (languageCode): the code in
+# ~/.config/omarchy/language ($OMARCHY_LANGUAGE_FILE overrides where, as
+# it does for the shell), trimmed, when it is one; else "en", for a file
+# that is missing too.
+i18n_language() {
+  local file=${OMARCHY_LANGUAGE_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/language} code=""
+  [[ -f $file ]] && code=$(head -c 256 -- "$file" 2>/dev/null | tr -d '\0')
+  code="${code#"${code%%[![:space:]]*}"}"
+  code="${code%"${code##*[![:space:]]}"}"
+  [[ $code =~ ^[a-z]{2,3}(-[A-Za-z]{2})?$ ]] || code=en
+  printf '%s\n' "$code"
+}
+
+# The strings of the catalog i18n/$1.json ($1 a code i18n_language
+# accepts), as one JSON object of the entries that are strings: no file,
+# one over i18n_max_bytes, or one that is not a JSON object gives {}. Data
+# only: read with jq, never sourced. Plural entries are left out: no
+# notification counts anything.
+i18n_catalog() {
+  local file=$i18n_dir/$1.json size
+  size=$(stat -c %s -- "$file" 2>/dev/null) || size=""
+  if [[ -n $size ]] && (( size <= i18n_max_bytes )); then
+    jq -c 'if type == "object" then with_entries(select(.value | type == "string" and . != "")) else {} end' -- "$file" \
+      2>/dev/null && return 0
+  fi
+  echo '{}'
+}
+
+# The catalog say reads: the language's strings over its base language's
+# (pt-BR over pt) over English's, as Commons.Translations layers them.
+# Loaded once, by the first i18n_load in this shell; a say in a subshell
+# ($(say ...)) loads it for itself unless the shell has, so a caller that
+# says several things loads it first. Set it to "" to read them again. It
+# goes to jq on stdin, never as an argument, whatever its size.
+i18n_strings=""
+i18n_load() {
+  [[ -z $i18n_strings ]] || return 0
+  local code base layers=()
+  code=$(i18n_language)
+  base=${code%%-*}
+  layers=("$(i18n_catalog en)")
+  [[ $base == "$code" || $base == en ]] || layers+=("$(i18n_catalog "$base")")
+  [[ $code == en ]] || layers+=("$(i18n_catalog "$code")")
+  i18n_strings=$(printf '%s\n' "${layers[@]}" | jq -cs 'add')
+}
+
+# jq: the string with its %1..%n holes filled from the list $a in one
+# pass (Model.fill's rule): an argument's own "%1" stays as it is, and so
+# does a hole with no argument.
+# shellcheck disable=SC2016 # jq variables, not the shell's
+jq_i18n='
+  def i18n_fill($a): gsub("%(?<n>[0-9]+)"; (.n | tonumber) as $i
+    | if $i >= 1 and $i <= ($a | length) then $a[$i - 1] | tostring else "%" + .n end);'
+
+# say <key> [<arg>...]: the string for key in the user's language, filled
+# with the args; a key no catalog has is itself.
+say() {
+  i18n_load
+  jq -r --arg k "$1" "$jq_i18n"' (.[$k] // $k) | i18n_fill($ARGS.positional)' --args -- "${@:2}" <<<"$i18n_strings"
+}
+
+# part <key> [<arg>...]: one clause of a note as parts, a JSON list of one
+# {key, args}. The key is one of i18n/en.json's, its string the clause in
+# English; an argument is a string, free text from outside (a feed's
+# error, apps.json's updateBlocked) included, through clean_text as the
+# English fields are.
+part() {
+  local args=() arg
+  for arg in "${@:2}"; do args+=("$(clean_text "$arg")"); done
+  jq -cn --arg k "$1" '[{key: $k, args: $ARGS.positional}]' --args -- "${args[@]}"
+}
+
+# The parts of "Not checked yet", the note of a row no check has read.
+parts_not_checked='[{"key":"note.notChecked","args":[]}]'
+
+# parts_cat <parts>...: the clauses in order, as one list; "" counts as
+# none. null (a note whose parts are not known, carried over from a row an
+# older checker wrote) when any of them is: the panel then reads the
+# English field.
+parts_cat() {
+  local p out=""
+  for p; do
+    [[ $p != null ]] || { echo null; return 0; }
+    p=${p#[}
+    p=${p%]}
+    [[ -z $p ]] || out+=${out:+,}$p
+  done
+  echo "[$out]"
+}
+
+# say_parts <parts>: the note in the user's language, its clauses joined by
+# "; " as the English fields join them; a date argument ({date: epoch
+# seconds}) as the English fields write it. "" for null.
+say_parts() {
+  i18n_load
+  jq -r --argjson p "$1" "$jq_i18n"'
+    . as $c
+    | [($p // [])[] | .key as $k | [.args[] | if type == "object" then .date | strflocaltime("%b %-d %H:%M") else . end] as $a
+      | ($c[$k] // $k) | i18n_fill($a)] | join("; ")' <<<"$i18n_strings"
+}
+
 # Omabump's own row ("self:omabump"): the installed version is this copy's
 # manifest.json, the newest one the GitHub release. Update fast-forwards the
 # plugin directory to the release tag (self_plan), so it has to be a git
@@ -926,11 +1044,16 @@ mise_outdated_table() {
 mise_key_safe() { jq -e --arg k "$1" 'has($k)' <<<"$mise_safe_json" >/dev/null 2>&1; }
 
 # Why a key is not checked, for the row: its explicit backend, else that it
-# resolves to none of the allowed ones.
+# resolves to none of the allowed ones. Sets note and note_parts.
 mise_skip_note() {
-  if [[ -n $mise_backend_error ]]; then echo "Update check skipped: $mise_backend_error"
-  elif [[ $1 == *:* ]]; then echo "Update check skipped: ${1%%:*} backend"
-  else echo "Update check skipped: not on a backend Omabump queries"; fi
+  if [[ -n $mise_backend_error ]]; then
+    # mise_backend_error has one wording, which the part says itself.
+    note="Update check skipped: $mise_backend_error" note_parts=$(part note.checkSkippedBackendList)
+  elif [[ $1 == *:* ]]; then
+    note="Update check skipped: ${1%%:*} backend" note_parts=$(part note.checkSkippedBackend "${1%%:*}")
+  else
+    note="Update check skipped: not on a backend Omabump queries" note_parts=$(part note.checkSkippedNoBackend)
+  fi
 }
 
 # A field of a tool's entry in one of the outdated tables, as text, or
@@ -948,8 +1071,8 @@ mise_entry_ok() { ! jq -e --arg t "$2" '.[$t]? | objects | .odd == true' <<<"$1"
 # What the check shows for a mise row whose active key is $1 at version $2,
 # and what Update installs. mise decides: an entry in `mise outdated` is a
 # version `mise up` will install; one only in the --bump table lies outside
-# the request. Sets latest, from, note, installable, mise_update, request,
-# feed_error and unchecked (a key on no allowed backend: no newest version
+# the request. Sets latest, from, note and note_parts, installable,
+# mise_update, request, feed_error and unchecked (a key on no allowed backend: no newest version
 # is known), and mise_state, the outcome in one word:
 #   unchecked  not on an allowed backend; note says why
 #   error      no answer to go by; feed_error says why
@@ -961,10 +1084,10 @@ mise_entry_ok() { ! jq -e --arg t "$2" '.[$t]? | objects | .odd == true' <<<"$1"
 mise_state=""
 mise_row() {
   local key=$1 have=$2
-  latest="" from=mise note="" installable=true mise_update=false request="" feed_error="" unchecked=false
+  latest="" from=mise note="" note_parts='[]' installable=true mise_update=false request="" feed_error="" unchecked=false
   if ! mise_key_safe "$key"; then
     installable=false from="" unchecked=true
-    note=$(mise_skip_note "$key")
+    mise_skip_note "$key"
   elif [[ -n ${mise_held[$key]:-} ]]; then
     feed_error=${mise_held[$key]}
   elif [[ -n $mise_error ]]; then
@@ -987,8 +1110,11 @@ mise_row() {
     if [[ -n $latest && $latest != "$have" ]]; then
       installable=false
       request=$(mise_field "$mise_bump_json" "$key" requested)
-      if [[ $request == latest ]]; then note="Held back by your mise settings, $latest exists"
-      else note="Pinned to $request, $latest exists"; fi
+      if [[ $request == latest ]]; then
+        note="Held back by your mise settings, $latest exists" note_parts=$(part note.miseHeld "$latest")
+      else
+        note="Pinned to $request, $latest exists" note_parts=$(part note.misePinned "$request" "$latest")
+      fi
     else
       latest=$have
     fi
@@ -1136,6 +1262,13 @@ self_update_text() {
   local text
   text=$(jq -r '.selfUpdate // "" | strings' <<<"$1")
   echo "${text:-open $2 to update}"
+}
+
+# The same as the clause of a note, "Updates itself: <that>", as parts.
+self_update_parts() {
+  local text
+  text=$(jq -r '.selfUpdate // "" | strings' <<<"$1")
+  if [[ -n $text ]]; then part note.updatesItself "$text"; else part note.updatesItselfOpen "$2"; fi
 }
 
 # Prints "<source> <installed name> <version>" for an app, or fails when it is
@@ -1515,14 +1648,16 @@ repo_db_max=8M repo_desc_max=$(( 64 * 1024 * 1024 ))
 # The first https Server pacman.conf gives the repo, as pacman-conf prints
 # it with $repo and $arch filled in, less a trailing slash; one with any
 # other character than a URL's plain ones, or a "..", is passed over. Sets
-# repo_server, or fails with repo_error saying why.
+# repo_server, or fails with repo_error saying why, and repo_error_parts
+# the same as parts (for a row's note).
 repo_server=""
+repo_error_parts='[]'
 repo_server_find() {
   local servers line
   repo_server=""
   servers=$(run_unlocked timeout 10 pacman-conf --repo "$repo_name" Server 2>/dev/null </dev/null) || servers=""
   if [[ -z $servers ]]; then
-    repo_error="No [$repo_name] repo in pacman.conf"
+    repo_error="No [$repo_name] repo in pacman.conf" repo_error_parts=$(part note.noRepo "$repo_name")
     return 1
   fi
   while IFS= read -r line; do
@@ -1532,7 +1667,7 @@ repo_server_find() {
       return 0
     fi
   done <<<"$servers"
-  repo_error="No https Server for [$repo_name] in pacman.conf"
+  repo_error="No https Server for [$repo_name] in pacman.conf" repo_error_parts=$(part note.noHttpsServer "$repo_name")
   return 1
 }
 
@@ -1647,19 +1782,45 @@ repo_file_url() { echo "$repo_server/${1//:/%3A}"; }
 # vercmp to compare versions.
 repo_tools=(sudo:base-devel curl:curl gpg:gnupg bsdtar:libarchive vercmp:pacman)
 
+# The tools of the list $1 (repo_tools, omarchy_tools) that are not on
+# PATH, $2... more names (a python3 too old) taken as missing too: sets
+# tools_missing, and tools_pkgs to the packages that have them, each once.
+tools_missing=() tools_pkgs=()
+tools_find() {
+  local -n list=$1
+  local entry tool
+  tools_missing=() tools_pkgs=()
+  for entry in "${list[@]}"; do
+    command -v "${entry%%:*}" >/dev/null || tools_missing+=("${entry%%:*}")
+  done
+  for tool in "${@:2}"; do tools_missing+=("$tool"); done
+  for tool in "${tools_missing[@]}"; do
+    for entry in "${list[@]}"; do
+      [[ $tool == "${entry%%:*}" && " ${tools_pkgs[*]} " != *" ${entry#*:} "* ]] && tools_pkgs+=("${entry#*:}")
+    done
+  done
+  return 0
+}
+
+# What tools_find found, "Missing: <tools>; sudo pacman -S --needed
+# <packages>", or nothing when nothing is missing; tools_parts the same as
+# parts, [] for nothing.
+tools_line() {
+  (( ${#tools_missing[@]} )) || return 0
+  echo "Missing: $(printf '%s, ' "${tools_missing[@]}" | sed 's/, $//'); sudo pacman -S --needed ${tools_pkgs[*]}"
+}
+tools_parts() {
+  (( ${#tools_missing[@]} )) || { echo '[]'; return 0; }
+  parts_cat "$(part note.missing "$(printf '%s, ' "${tools_missing[@]}" | sed 's/, $//')")" \
+    "$(part note.installWith "${tools_pkgs[*]}")"
+}
+
 # "Missing: <tools>; sudo pacman -S --needed <packages>" for what the repo
 # path lacks, as missing_tools_line says it for a build. Prints nothing
 # when everything is there. Only command -v, so the check can call it.
-repo_missing_line() {
-  local entry missing=() pkgs=()
-  for entry in "${repo_tools[@]}"; do
-    command -v "${entry%%:*}" >/dev/null && continue
-    missing+=("${entry%%:*}")
-    [[ " ${pkgs[*]} " == *" ${entry#*:} "* ]] || pkgs+=("${entry#*:}")
-  done
-  (( ${#missing[@]} )) || return 0
-  echo "Missing: $(printf '%s, ' "${missing[@]}" | sed 's/, $//'); sudo pacman -S --needed ${pkgs[*]}"
-}
+# repo_missing_parts: the same as parts.
+repo_missing_line() { tools_find repo_tools; tools_line; }
+repo_missing_parts() { tools_find repo_tools; tools_parts; }
 
 # Exits with that line when something is missing, as require_omarchy_tools
 # does for a build.
@@ -1745,32 +1906,19 @@ package_signature_ok() {
 # come with base-devel, vercmp with pacman, bsdtar with libarchive.
 omarchy_tools=(makepkg:base-devel git:git jq:jq python3:python bsdtar:libarchive vercmp:pacman curl:curl sudo:base-devel)
 
-# Names of the tools above that are not on PATH. Only command -v, so the
-# check can call it on every run.
-missing_tools() {
-  local entry
-  for entry in "${omarchy_tools[@]}"; do
-    command -v "${entry%%:*}" >/dev/null || echo "${entry%%:*}"
-  done
-}
-
 # "Missing: <tools>; sudo pacman -S --needed <packages>" for what building a
 # recipe lacks, a python3 older than bin/sync-upstream needs (3.11) included.
-# Prints nothing when everything is there.
-missing_tools_line() {
-  local missing=() pkgs=() entry tool
-  mapfile -t missing < <(missing_tools)
+# Prints nothing when everything is there. missing_tools_parts: the same
+# as parts.
+missing_tools_find() {
+  local old=()
   if command -v python3 >/dev/null && ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
-    missing+=(python3)
+    old=(python3)
   fi
-  (( ${#missing[@]} )) || return 0
-  for tool in "${missing[@]}"; do
-    for entry in "${omarchy_tools[@]}"; do
-      [[ $tool == "${entry%%:*}" && " ${pkgs[*]} " != *" ${entry#*:} "* ]] && pkgs+=("${entry#*:}")
-    done
-  done
-  echo "Missing: $(printf '%s, ' "${missing[@]}" | sed 's/, $//'); sudo pacman -S --needed ${pkgs[*]}"
+  tools_find omarchy_tools "${old[@]}"
 }
+missing_tools_line() { missing_tools_find; tools_line; }
+missing_tools_parts() { missing_tools_find; tools_parts; }
 
 # Exits with that line when something is missing.
 require_omarchy_tools() {
@@ -1924,26 +2072,42 @@ recipe_file() {
   return 2
 }
 
-# Why the recipe at commit $1 cannot follow its vendor, or nothing when it
-# can: bin/sync-upstream needs an upstream watch (package.json "upstream") or
-# hook (.omarchy/upstream.sh) to move it. Fails with the reason on stderr
-# when the clone could not read the recipe: that is a failed check, not a
+# Why the recipe of $2 at commit $1 cannot follow its vendor, as the key of
+# its words in i18n/en.json (recipe_blocker_text says them, for $2;
+# recipe_blocker_parts as parts), or nothing when it can: bin/sync-upstream
+# needs an upstream watch (package.json "upstream") or hook
+# (.omarchy/upstream.sh) to move it. Fails with the reason on stderr when
+# the clone could not read the recipe: that is a failed check, not a
 # missing recipe or watch.
 recipe_blocker() {
   local rev=$1 pkg=$2 meta rc=0
   recipe_has "$rev" "$pkg" PKGBUILD || rc=$?
-  case $rc in 0) ;; 1) echo "No $pkg recipe in omarchy-pkgs"; return 0 ;; *) return 1 ;; esac
+  case $rc in 0) ;; 1) echo build.noRecipe; return 0 ;; *) return 1 ;; esac
   rc=0
   meta=$(recipe_file "$rev" "$pkg" .omarchy/package.json) || rc=$?
   case $rc in 0) ;; 1) meta='{}' ;; *) return 1 ;; esac
   if jq -e '.sync == false' >/dev/null 2>&1 <<<"$meta"; then
-    echo "Repo recipe has no upstream watch yet (sync: false)"; return 0
+    echo build.noWatchSync; return 0
   fi
   rc=0
   recipe_has "$rev" "$pkg" .omarchy/upstream.sh || rc=$?
   case $rc in 0) return 0 ;; 1) ;; *) return 1 ;; esac
   jq -e '.upstream' >/dev/null 2>&1 <<<"$meta" && return 0
-  echo "Repo recipe has no upstream watch yet"
+  echo build.noWatch
+}
+recipe_blocker_text() {
+  case $1 in
+    build.noRecipe) echo "No $2 recipe in omarchy-pkgs" ;;
+    build.noWatchSync) echo "Repo recipe has no upstream watch yet (sync: false)" ;;
+    build.noWatch) echo "Repo recipe has no upstream watch yet" ;;
+  esac
+}
+recipe_blocker_parts() {
+  case $1 in
+    build.noRecipe) part build.noRecipe "$2" ;;
+    build.noWatchSync) part build.noWatchSync ;;
+    build.noWatch) part build.noWatch ;;
+  esac
 }
 
 # The release-age window the recipe at commit $1 declares, in seconds, or 0:
@@ -2152,12 +2316,13 @@ update_blocked() {
 apply_blocked() {
   [[ -n $blocked ]] || return 0
   installable=false note="Update off: $blocked${note:+; $note}"
+  note_parts=$(parts_cat "$(part note.updateOff "$blocked")" "${note_parts-null}")
 }
 
 # The repo route's own word on Update before the repo is read: its tools
-# (repo_missing_line). Sets installable and note.
+# (repo_missing_line). Sets installable, note and note_parts.
 repo_route_base() {
-  note=$(repo_missing_line) installable=true
+  note=$(repo_missing_line) note_parts=$(repo_missing_parts) installable=true
   [[ -z $note ]] || installable=false
 }
 
@@ -2190,8 +2355,8 @@ switch_target_ok() { [[ -n $2 ]] && ! newer "$1" "$2"; }
 # names it by its path): its own updater replaces it, so the row has no
 # route, and its note says how the app updates (self_update_text). $1 the
 # app, $2 its label, $3 the copy's path as installed_app names it, $4 its
-# version (empty when unknown), $5 the newest known. Sets update, unchecked
-# and note. A release version (version_ok: no "-", and a digit first)
+# version (empty when unknown), $5 the newest known. Sets update, unchecked,
+# note and note_parts. A release version (version_ok: no "-", and a digit first)
 # compares with the feed's by vercmp as it is, since a copy has no pkgrel.
 # A pre-release (0.1.1-nightly.20261019.1) is compared with nothing: a
 # feed's version never has a "-", so it is a release of another channel,
@@ -2202,21 +2367,26 @@ switch_target_ok() { [[ -n $2 ]] && ! newer "$1" "$2"; }
 # unknown, never claims an update and never reads as current (unchecked),
 # and its note says why first.
 self_row() {
-  local app=$1 label=$2 name=$3 have=$4 latest=$5 why=""
+  local app=$1 label=$2 name=$3 have=$4 latest=$5 why="" why_key=""
   update=false unchecked=false
   if [[ -z $have ]]; then
     unchecked=true
-    if [[ $name == "$(jq -r '.npmPackage // "" | strings' <<<"$app")" ]]; then why="Version unknown: its package.json names none"
-    elif command -v 7z >/dev/null; then why="Version unknown: 7z could not read it from the AppImage"
-    else why="Version unknown: install 7zip to read it (sudo pacman -S --needed 7zip)"; fi
+    if [[ $name == "$(jq -r '.npmPackage // "" | strings' <<<"$app")" ]]; then
+      why="Version unknown: its package.json names none" why_key=note.versionUnknownNpm
+    elif command -v 7z >/dev/null; then
+      why="Version unknown: 7z could not read it from the AppImage" why_key=note.versionUnknown7z
+    else
+      why="Version unknown: install 7zip to read it (sudo pacman -S --needed 7zip)" why_key=note.versionUnknownNo7z
+    fi
   elif [[ $have != [0-9]* ]]; then
-    unchecked=true why="Not a release number, not compared with the feed's"
+    unchecked=true why="Not a release number, not compared with the feed's" why_key=note.notRelease
   elif ! version_ok "$have"; then
-    unchecked=true why="Pre-release build, not compared with the feed's stable releases"
+    unchecked=true why="Pre-release build, not compared with the feed's stable releases" why_key=note.preRelease
   elif [[ -n $latest ]] && newer "$latest" "$have"; then
     update=true
   fi
   note="${why:+$why; }Updates itself: $(self_update_text "$app" "$label")"
+  note_parts=$(parts_cat "${why_key:+$(part "$why_key")}" "$(self_update_parts "$app" "$label")")
 }
 
 # The clause a recipe's release-age window puts on Build now: the recipe
@@ -2225,13 +2395,26 @@ self_row() {
 # build could not reach it before then. The window counts from the first
 # check that saw the version $2 of the row $1 (seen_since), at the time $4.
 # Prints the clause while it holds, nothing once it has passed or with no
-# window.
-build_hold_clause() {
+# window; build_hold_parts the same as parts, [] for nothing, the window's
+# end as a date ({date: epoch seconds}) that the panel writes its way.
+build_hold_end() {
   local ends
   (( $3 > 0 )) || return 0
   ends=$(( $(seen_since "$1" "$2" "$4") + $3 ))
   (( $4 < ends )) || return 0
+  echo "$ends"
+}
+build_hold_clause() {
+  local ends
+  ends=$(build_hold_end "$@")
+  [[ -n $ends ]] || return 0
   echo "omarchy-pkgs holds new releases for $(( ($3 + 3599) / 3600 )) h, Build now from $(date -d "@$ends" '+%b %-d %H:%M')"
+}
+build_hold_parts() {
+  local ends
+  ends=$(build_hold_end "$@")
+  [[ -n $ends ]] || { echo '[]'; return 0; }
+  jq -cn --arg h "$(( ($3 + 3599) / 3600 ))" --argjson e "$ends" '[{key: "build.hold", args: [$h, {date: $e}]}]'
 }
 
 # Why Build now could not run for a row, apart from whether the vendor is
@@ -2244,14 +2427,16 @@ build_hold_clause() {
 # reason), a build tool is missing ($3, missing_tools_line's), and what
 # the recipe says ($4: its blocker, its release-age clause, or why it could
 # not be read; "" when it was not read, as while buildAhead is off, when
-# the installer finds out the rest).
-build_reason="" build_from=""
+# the installer finds out the rest). $5 and $6 are $3 and $4 as parts
+# (missing_tools_parts, and the recipe's), and build_reason_parts the
+# reason as parts.
+build_reason="" build_from="" build_reason_parts='[]'
 build_why() {
-  build_reason="" build_from=""
-  if [[ $1 != true ]]; then build_from=entry build_reason="Not in Omarchy's repo yet"
-  elif [[ -n $2 ]]; then build_from=off build_reason="Update off: $2"
-  elif [[ -n $3 ]]; then build_from=tools build_reason=$3
-  elif [[ -n $4 ]]; then build_from=recipe build_reason=$4
+  build_reason="" build_from="" build_reason_parts='[]'
+  if [[ $1 != true ]]; then build_from=entry build_reason="Not in Omarchy's repo yet" build_reason_parts=$(part note.notInRepo)
+  elif [[ -n $2 ]]; then build_from=off build_reason="Update off: $2" build_reason_parts=$(part note.updateOff "$2")
+  elif [[ -n $3 ]]; then build_from=tools build_reason=$3 build_reason_parts=${5:-null}
+  elif [[ -n $4 ]]; then build_from=recipe build_reason=$4 build_reason_parts=${6:-null}
   fi
 }
 
@@ -2264,13 +2449,15 @@ build_why() {
 #                           or unknown
 #   vendor_version          the vendor's newest release from the entry's
 #                           feed, "" without one
-#   repo_why                why repo_version is "", for the note (no
-#                           repo, no such package); "" to add nothing
+#   repo_why, repo_why_parts  why repo_version is "", for the note (no
+#                           repo, no such package); "" (and []) to add
+#                           nothing
 #   repo_failed             true when the repo's database could not be read
 #   feed_error              the feed's failure, "" when it answered
-#   installable, note       the route's: true unless Update is off or a
-#                           tool is missing, and its note
-#   build_reason, build_from  build_why's answer for the row
+#   installable, note, note_parts  the route's: true unless Update is off
+#                           or a tool is missing, and its note
+#   build_reason, build_from, build_reason_parts  build_why's answer for
+#                           the row
 # Sets:
 #   repo_new                the repo has a package newer than installed:
 #                           Update can install it (and the check announces
@@ -2282,13 +2469,15 @@ build_why() {
 #   route_ok                the route's installable, for Switch
 #   buildable, build_note   Build now could run (ahead, and no
 #                           build_reason), or why not while ahead, with
-#                           build_note_from saying which reason it is
+#                           build_note_from saying which reason it is,
+#                           and build_note_parts the same as parts
 #   latest, from            the newest version the row shows: the vendor's
 #                           while ahead; else the repo's, by its upstream
 #                           version when that is the vendor's too
-#   held, hold_clause, note Update waits for the repo ("Not in Omarchy's
-#                           repo yet" first in the note) while the vendor
-#                           is ahead and the repo has an older package
+#   held, hold_clause, note, note_parts  Update waits for the repo ("Not
+#                           in Omarchy's repo yet" first in the note)
+#                           while the vendor is ahead and the repo has an
+#                           older package
 #   route_error             set when the repo could not be read and the
 #                           row shows something newer, or knows nothing
 #                           else: Update can be neither offered nor ruled
@@ -2296,7 +2485,8 @@ build_why() {
 # shellcheck disable=SC2154 # the row's fields, the caller's variables
 repo_derive() {
   local repo_up=""
-  repo_new=false ahead=false buildable=false build_note="" build_note_from="" held=false hold_clause="" route_ok=$installable
+  repo_new=false ahead=false buildable=false build_note="" build_note_from="" build_note_parts='[]' held=false hold_clause=""
+  route_ok=$installable
   [[ -z $repo_version ]] || repo_up=$(upstream_part "$repo_version")
   if [[ -n $repo_version ]] && newer "$repo_version" "$installed"; then repo_new=true; fi
   if vendor_ahead "$installed" "$repo_version" "$vendor_version"; then ahead=true; fi
@@ -2328,13 +2518,18 @@ repo_derive() {
     [[ $ahead == true ]] || stale=false
   fi
   if [[ $ahead == true ]]; then
-    if [[ -z $build_reason ]]; then buildable=true; else build_note=$build_reason build_note_from=$build_from; fi
+    if [[ -z $build_reason ]]; then buildable=true
+    else build_note=$build_reason build_note_from=$build_from build_note_parts=$build_reason_parts; fi
   fi
   if [[ $ahead == true && $repo_new == false && $route_ok == true && -n $repo_version ]]; then
     held=true hold_clause="Not in Omarchy's repo yet"
     note="$hold_clause${note:+; $note}"
+    note_parts=$(parts_cat "$(part note.notInRepo)" "${note_parts-null}")
   fi
-  if [[ -z $repo_version && -n $repo_why ]]; then note="${note:+$note; }$repo_why"; fi
+  if [[ -z $repo_version && -n $repo_why ]]; then
+    note="${note:+$note; }$repo_why"
+    note_parts=$(parts_cat "${note_parts-null}" "${repo_why_parts:-null}")
+  fi
   if [[ $repo_failed == true ]] && { [[ $update == true || -n $feed_error || -z $vendor_version ]]; }; then
     route_error=$repo_error
   fi
@@ -2354,7 +2549,8 @@ repo_derive() {
 # shellcheck disable=SC2154 # the row's fields, the caller's variables
 row_derive() {
   local target
-  update=$mise_update repo_new=false ahead=false buildable=false build_note="" build_note_from="" hold_clause="" route_ok=$installable
+  update=$mise_update repo_new=false ahead=false buildable=false build_note="" build_note_from="" build_note_parts='[]' hold_clause=""
+  route_ok=$installable
   if [[ $self_updating == true ]]; then
     self_row "$app" "$label" "$installed_name" "$installed" "$latest"
   elif route "$source" newest repo; then
@@ -2373,15 +2569,16 @@ row_derive() {
 # The row as status.json holds it, on stdout as one line of JSON: the one
 # place a whole row is built. Its fields are these variables (true/false
 # for a flag): pkg, label, source, installed_name, installed, latest, from
-# (versionFrom), update (updateAvailable), installable, error, note, stale,
+# (versionFrom), update (updateAvailable), installable, error, note and
+# note_parts (noteParts, its parts; null when they are not known), stale,
 # switchable, skipped, skip_end (skipEnded), unchecked, held,
 # omarchy_update, blocked (the reason, "" when Update is not off),
 # self_updating, hold_clause (holdClause, repo_derive's), unread (written
 # by a local refresh, read by no check since), repo_version (repoVersion:
 # the full version Omarchy's repo has of a repo row's package, "" when
 # unknown), vendor_version (vendorVersion, the feed's newest on such a
-# row, "" without one), ahead, buildable, build_note (buildNote) and
-# build_note_from (buildNoteFrom), and
+# row, "" without one), ahead, buildable, build_note (buildNote),
+# build_note_parts (buildNoteParts) and build_note_from (buildNoteFrom), and
 # the icon and iconLight of the entry app; section and switchRoute are its
 # route's (route_table), for the panel. Every string from a feed, mise,
 # pacman or apps.json goes through clean_text on its way in. The fields
@@ -2399,6 +2596,7 @@ row_json() {
     --arg repoVersion "$(clean_text "${repo_version:-}")" --arg vendorVersion "$(clean_text "${vendor_version:-}")" \
     --argjson ahead "${ahead:-false}" --argjson buildable "${buildable:-false}" --arg buildNote "$(clean_text "${build_note:-}")" \
     --arg buildNoteFrom "${build_note_from:-}" \
+    --argjson noteParts "${note_parts:-null}" --argjson buildNoteParts "${build_note_parts:-[]}" \
     --arg section "${route_facts[$source.section]:-desktop}" --argjson switchRoute "$(route "$source" switch yes && echo true || echo false)" \
     --argjson app "$app" \
     '{pkg: $pkg, label: $label, source: $source, installedName: $installedName,
@@ -2411,7 +2609,7 @@ row_json() {
       holdClause: $holdClause, unread: $unread,
       section: (($app.section | select(IN("desktop", "cli"))) // $section), switchRoute: $switchRoute,
       repoVersion: $repoVersion, vendorVersion: $vendorVersion, ahead: $ahead, buildable: $buildable,
-      buildNote: $buildNote, buildNoteFrom: $buildNoteFrom}'
+      buildNote: $buildNote, buildNoteFrom: $buildNoteFrom, noteParts: $noteParts, buildNoteParts: $buildNoteParts}'
 }
 
 # --- status.json -----------------------------------------------------------------
@@ -2553,7 +2751,8 @@ status_field() {
 # failed run, not only the one whose process exited non-zero), $6 the
 # omarchy-pkgs commit, $7 its error, $8 its note, $9 miseError, ${10} the
 # file of the status.json the run started from, ${11} the table's order
-# (a JSON array of pkg ids); the rows checked so far on stdin, one a line.
+# (a JSON array of pkg ids), ${12} the omarchy-pkgs note as parts ([]
+# when not given); the rows checked so far on stdin, one a line.
 # Until the final write, rows not checked yet keep their previous entry,
 # flagged "checking": true while the run lasts, so the panel shows progress
 # row by row. inventoryAt is the run's start once it is done, and stays the
@@ -2568,7 +2767,7 @@ status_write_check() {
   local out
   out=$(mktemp "${run_tmp:-$state_dir}/.status.XXXXXX")
   # shellcheck disable=SC2016 # jq variables, not the shell's
-  jq -s --slurpfile prevs "${10}" --argjson order "${11}" \
+  jq -s --slurpfile prevs "${10}" --argjson order "${11}" --argjson pparts "${12:-[]}" \
     --argjson final "$1" --arg at "$2" --arg started "$3" --argjson retry "$4" --arg rerr "$5" \
     --arg commit "$6" --arg perr "$7" --arg pnote "$8" --arg merr "$9" \
     --argjson following "$pkgs_follow" --argjson schema "$status_schema" "$jq_status"'
@@ -2580,7 +2779,7 @@ status_write_check() {
     | {schemaVersion: $schema, checkedAt: $at, checking: ($final == 0), startedAt: $started,
        inventoryAt: (if $final == 1 then $started else ($prev.inventoryAt | strings) // "" end), runError: $rerr,
        retry: ($retry == 1),
-       omarchyPkgs: {commit: $commit, following: ($following == 1), error: $perr, note: $pnote},
+       omarchyPkgs: {commit: $commit, following: ($following == 1), error: $perr, note: $pnote, noteParts: $pparts},
        miseError: $merr, apps: .}' >"$out" || { local rc=$?; rm -f "$out"; return "$rc"; }
   mv -f "$out" "$status_file"
 }

@@ -2,9 +2,18 @@
 // installed: one line per test, "ok<TAB>name" or "not ok<TAB>name<TAB>why",
 // then "done<TAB>count". Exits non-zero when any test fails.
 import assert from "node:assert/strict"
-import { loadModel } from "./model.mjs"
+import fs from "node:fs"
+import path from "node:path"
+import { loadModel, root } from "./model.mjs"
+import { translator, shipped, catalog, category, categories, loadPlural } from "./strings.mjs"
 
 const m = loadModel()
+// English, as the panel words it on a shell without Commons.Translations:
+// Model.catalogTranslator over en.json.
+const tr = translator(m, "en")
+// And Ukrainian and Russian, as Commons.Translations words them.
+const uk = translator(m, "uk")
+const ru = translator(m, "ru")
 
 let total = 0, failed = 0
 function test(name, fn) {
@@ -189,14 +198,16 @@ test("skipToggled: K skips the newest version, and unskips", () => {
 
 test("skipToggled: nothing without an update, a note for a version Omabump does not store", () => {
   same(m.skipToggled({}, row({})), null)
-  same(m.skipToggled({}, row({ latest: "1..2", updateAvailable: true })), { note: "Cannot skip 1..2: not a version Omabump stores" })
+  const refused = m.skipToggled({}, row({ latest: "1..2", updateAvailable: true }))
+  same(refused, { note: { key: "row.skipRefused", args: ["1..2"] } })
+  same(m.noteText(tr, refused.note), "Cannot skip 1..2: not a version Omabump stores")
 })
 
 test("quietText: listed rows only, and skips the settings keep", () => {
   const apps = [update, miseUpdate, row({ pkg: "old", installed: "2.0-1", latest: "2.0", label: "Old", skipEnded: "1.5" })]
-  same(m.quietText(apps, ["mise:claude", "unlisted"], { "claude-desktop": "1.1.0", old: "1.5", gone: "1.0" }),
+  same(m.quietText(tr, apps, ["mise:claude", "unlisted"], { "claude-desktop": "1.1.0", old: "1.5", gone: "1.0" }),
     "Muted: Claude Code · Skipped: Claude 1.1.0")
-  same(m.quietText(apps, [], {}), "")
+  same(m.quietText(tr, apps, [], {}), "")
 })
 
 test("quietCleared: Clear keeps what the line leaves out", () => {
@@ -276,7 +287,7 @@ test("parseStatus: the fields the widget reads", () => {
   same(status, {
     apps: [row({}), row({ pkg: "mise:x", source: "mise" })], checkedAt: "2026-10-07T10:00:00+00:00",
     checking: true, startedMs: Date.parse("2026-10-07T09:59:00+00:00"), inventoryMs: Date.parse("2026-10-07T10:04:00+00:00"),
-    pkgsCommit: "abc", pkgsFollowing: true, pkgsError: "e", pkgsNote: "n", miseError: "m", runError: "r"
+    pkgsCommit: "abc", pkgsFollowing: true, pkgsError: "e", pkgsNote: "n", pkgsNoteParts: null, miseError: "m", runError: "r"
   })
 })
 
@@ -346,7 +357,7 @@ test("queuedRunWaits: not behind a check that completed, behind any other end", 
 })
 
 test("checkErrorText: none for a check that ran, else why", () => {
-  same([m.checkErrorText("ok", 0, 660), m.checkErrorText("failed", 3, 660), m.checkErrorText("notRun", 75, 660)],
+  same([m.checkErrorText(tr, "ok", 0, 660), m.checkErrorText(tr, "failed", 3, 660), m.checkErrorText(tr, "notRun", 75, 660)],
     ["", "Check failed (exit 3), see the shell log", "Check not run: another check held the lock for over 11 min"])
 })
 
@@ -480,27 +491,27 @@ test("a self-updating app: no Update or Switch, whatever else the row says", () 
 test("a self-updating app's update counts as one without an install path, and skips and mutes as any row", () => {
   same([m.updateCount([appImage], [], {}), m.waitingCount([appImage], [], {}), m.waitingCount([appImage], ["t3code-bin"], {}),
     m.quietCount([appImage], [], { "t3code-bin": "0.1.1" })], [0, 1, 0, 1])
-  same([m.hintText(false, appImage, 1, [], {}), m.hintText(false, Object.assign({}, appImage, { updateAvailable: false, switchable: true }), 1, [], {})],
+  same([m.hintText(tr, false, appImage, 1, [], {}), m.hintText(tr, false, Object.assign({}, appImage, { updateAvailable: false, switchable: true }), 1, [], {})],
     ["↑↓ select · r refresh · s settings · K skip · m mute", "↑↓ select · r refresh · s settings · m mute"])
 })
 
 test("installedText: a self-updating app's version as it is, or unknown", () => {
-  same([m.installedText(appImage), m.installedText(Object.assign({}, appImage, { installed: "0.1.1-nightly.20261019.1", updateAvailable: false })),
-    m.installedText(Object.assign({}, appImage, { installed: "" })), m.installedText(Object.assign({}, appImage, { installed: "1.0-1", updateAvailable: false }))],
+  same([m.installedText(tr, appImage), m.installedText(tr, Object.assign({}, appImage, { installed: "0.1.1-nightly.20261019.1", updateAvailable: false })),
+    m.installedText(tr, Object.assign({}, appImage, { installed: "" })), m.installedText(tr, Object.assign({}, appImage, { installed: "1.0-1", updateAvailable: false }))],
     ["0.1.0", "0.1.1-nightly.20261019.1", "version unknown", "1.0-1"])
 })
 
 test("rowTooltip: a self-updating app says it updates itself and which file it is", () => {
-  same(m.rowTooltip(appImage, [], {}, ""), ["Installed 0.1.0", "Newest 0.1.1 from the vendor's release feed",
+  same(m.rowTooltip(tr, appImage, [], {}, ""), ["Installed 0.1.0", "Newest 0.1.1 from the vendor's release feed",
     "No Update here: the app at ~/.local/share/t3code/T3-Code.AppImage updates itself", "Updates itself: open T3 Code to update"].join("\n"))
   const unknown = Object.assign({}, appImage, { installed: "", updateAvailable: false, unchecked: true, error: "e", stale: true,
     note: "Version unknown: install 7zip to read it; Updates itself: open T3 Code to update" })
-  same(m.rowTooltip(unknown, ["t3code-bin"], {}, ""), ["Installed version unknown", "Newest 0.1.1 from an earlier check",
+  same(m.rowTooltip(tr, unknown, ["t3code-bin"], {}, ""), ["Installed version unknown", "Newest 0.1.1 from an earlier check",
     "No Update here: the app at ~/.local/share/t3code/T3-Code.AppImage updates itself",
     "Version unknown: install 7zip to read it; Updates itself: open T3 Code to update", "Check failed: e", "Muted: no badge, no notification"].join("\n"))
-  same(m.rowTooltip(Object.assign({}, appImage, { installedName: "", latest: "" }), [], { "t3code-bin": "0.1.1" }, ""),
+  same(m.rowTooltip(tr, Object.assign({}, appImage, { installedName: "", latest: "" }), [], { "t3code-bin": "0.1.1" }, ""),
     ["Installed 0.1.0", "No Update here: the app updates itself", "Updates itself: open T3 Code to update"].join("\n"))
-  same(m.extraLine(appImage, ""), "Updates itself: open T3 Code to update")
+  same(m.extraLine(tr, appImage, ""), "Updates itself: open T3 Code to update")
 })
 
 test("allMuted: a self-updating app takes no route of its source, so it never keeps a failure of one showing", () => {
@@ -527,44 +538,74 @@ const renamed = row({ pkg: "chatgpt", installedName: "chatgpt-desktop", installe
 const sameVersion = row({ pkg: "z-code", source: "vendor-pkg", installedName: "z-code-bin", installed: "2.0-1", latest: "2.0", switchable: true })
 
 test("switchClause: Update switches when newer, switch at the same version", () => {
-  same([m.switchClause(renamed), m.switchClause(sameVersion)],
+  same([m.switchClause(tr, renamed), m.switchClause(tr, sameVersion)],
     ["Installed as chatgpt-desktop, Update switches to chatgpt", "Installed as z-code-bin, switch to z-code"])
 })
 
 test("switchClause: none for mise, an indicator, no install path, the same name or nothing to switch", () => {
-  same([m.switchClause(Object.assign({}, renamed, { source: "mise" })), m.switchClause(Object.assign({}, renamed, { source: "indicator" })),
-    m.switchClause(Object.assign({}, renamed, { installable: false })), m.switchClause(Object.assign({}, renamed, { installedName: "chatgpt" })),
-    m.switchClause(Object.assign({}, sameVersion, { switchable: false })), m.switchClause(null)], ["", "", "", "", "", ""])
+  same([m.switchClause(tr, Object.assign({}, renamed, { source: "mise" })), m.switchClause(tr, Object.assign({}, renamed, { source: "indicator" })),
+    m.switchClause(tr, Object.assign({}, renamed, { installable: false })), m.switchClause(tr, Object.assign({}, renamed, { installedName: "chatgpt" })),
+    m.switchClause(tr, Object.assign({}, sameVersion, { switchable: false })), m.switchClause(tr, null)], ["", "", "", "", "", ""])
 })
 
 test("fullNote: the clause, then the checker's note", () => {
-  same([m.fullNote(renamed), m.fullNote(sameVersion), m.fullNote(row({ note: "n" }))],
+  same([m.fullNote(tr, renamed), m.fullNote(tr, sameVersion), m.fullNote(tr, row({ note: "n" }))],
     ["Installed as chatgpt-desktop, Update switches to chatgpt; Recipe at abc", "Installed as z-code-bin, switch to z-code", "n"])
 })
 
 test("shortNote: the name it is installed as, else the note's first clause", () => {
-  same([m.shortNote(renamed), m.shortNote(row({ note: "a; b" })),
-    m.shortNote(row({ note: "Installed as x, switch to app; b" }))], ["Installed as chatgpt-desktop", "a", "Installed as x, switch to app"])
+  same([m.shortNote(tr, renamed), m.shortNote(tr, row({ note: "a; b" })),
+    m.shortNote(tr, row({ note: "Installed as x, switch to app; b" }))], ["Installed as chatgpt-desktop", "a", "Installed as x, switch to app"])
 })
 
 test("installedText: no pkgrel, unless it is the only difference; mise as is", () => {
-  same([m.installedText(update), m.installedText(row({ installed: "1.0.0-2", latest: "1.0.0", updateAvailable: true })),
-    m.installedText(row({ source: "mise", installed: "2.0-1" })), m.installedText(null)], ["1.0.0", "1.0.0-2", "2.0-1", ""])
+  same([m.installedText(tr, update), m.installedText(tr, row({ installed: "1.0.0-2", latest: "1.0.0", updateAvailable: true })),
+    m.installedText(tr, row({ source: "mise", installed: "2.0-1" })), m.installedText(tr, null)], ["1.0.0", "1.0.0-2", "2.0-1", ""])
 })
 
 test("extraLine: the row's exception, in order", () => {
-  same([m.extraLine(row({ checking: true, error: "e" }), "n"), m.extraLine(row({ error: "e" }), "Cannot skip 1..2: not a version Omabump stores"),
-    m.extraLine(row({ error: "e", note: "x" }), ""), m.extraLine(renamed, undefined), m.extraLine(indicator, ""),
-    m.extraLine(row({ stale: true }), ""), m.extraLine(row({}), ""), m.extraLine(null, "")],
+  const refused = { key: "row.skipRefused", args: ["1..2"] }
+  same([m.extraLine(tr, row({ checking: true, error: "e" }), refused), m.extraLine(tr, row({ error: "e" }), refused),
+    m.extraLine(tr, row({ error: "e", note: "x" }), ""), m.extraLine(tr, renamed, undefined), m.extraLine(tr, indicator, ""),
+    m.extraLine(tr, row({ stale: true }), ""), m.extraLine(tr, row({}), ""), m.extraLine(tr, null, "")],
     ["Checking…", "Cannot skip 1..2: not a version Omabump stores", "Check failed: e", "Installed as chatgpt-desktop", "No install route", "Last known version", "", ""])
 })
 
 test("extraLine: a recipe's release-age hold on Build now says only until when", () => {
+  const ends = new Date(2026, 10, 13, 14, 5).getTime() / 1000
   const held = row({ held: true, installable: false, updateAvailable: true, ahead: true, buildable: false, latest: "2.0",
-    note: "Not in Omarchy's repo yet", buildNote: "omarchy-pkgs holds new releases for 24 h, Build now from Nov 13 14:05" })
-  same([m.extraLine(held, ""), m.rowTooltip(held, [], {}, "").split("\n").slice(2)],
+    note: "Not in Omarchy's repo yet", noteParts: [{ key: "note.notInRepo", args: [] }],
+    buildNote: "omarchy-pkgs holds new releases for 24 h, Build now from Nov 13 14:05",
+    buildNoteParts: [{ key: "build.hold", args: ["24", { date: ends }] }] })
+  same([m.extraLine(tr, held, ""), m.rowTooltip(tr, held, [], {}, "").split("\n").slice(2)],
     ["Build now from Nov 13 14:05", ["No Update yet: Not in Omarchy's repo yet", "2.0 released, not in Omarchy's repo yet",
       "No Build now: omarchy-pkgs holds new releases for 24 h, Build now from Nov 13 14:05"]])
+  // From a checker before the parts, the English note as it is: nothing
+  // reads its words to shorten it.
+  const old = Object.assign({}, held, { noteParts: undefined, buildNoteParts: undefined })
+  same(m.extraLine(tr, old, ""), "omarchy-pkgs holds new releases for 24 h, Build now from Nov 13 14:05")
+})
+
+test("parts: the panel words a note from its parts, else from the English field", () => {
+  const parts = [{ key: "note.updateOff", args: ["broken; see #1"] }, { key: "note.missing", args: ["sudo"] }]
+  const app = row({ note: "English as written", noteParts: parts, installable: false })
+  same([m.checkerNote(tr, app), m.shortNote(tr, app)], ["Update off: broken; see #1; Missing: sudo", "Update off: broken; see #1"])
+  // No parts (an older checker), parts of the wrong shape, or a key this
+  // panel does not know (a newer checker): the English field.
+  const english = row({ note: "Update off: x; Missing: sudo" })
+  same([english, Object.assign({}, english, { noteParts: "x" }), Object.assign({}, english, { noteParts: [{ key: "note.fromTheFuture", args: [] }] }),
+    Object.assign({}, english, { noteParts: [{ key: "note.missing", args: [5] }] }), Object.assign({}, english, { noteParts: [{ key: "note.missing" }] })]
+    .map(a => [m.checkerNote(tr, a), m.shortNote(tr, a)]),
+    Array(5).fill(["Update off: x; Missing: sudo", "Update off: x"]))
+  // omarchyPkgs' note, through parseStatus, the same way.
+  const pkgs = m.parseStatus(JSON.stringify({ omarchyPkgs: { note: "English", noteParts: [{ key: "note.pkgsBusy", args: [] }] } }), true)
+  same([m.pkgsNoteText(uk, { note: pkgs.pkgsNote, noteParts: pkgs.pkgsNoteParts }),
+    m.pkgsNoteText(uk, { note: "English", noteParts: m.parseStatus('{"omarchyPkgs": {"note": "English"}}', true).pkgsNoteParts })],
+    ["Клон omarchy-pkgs зайнятий оновленням; Build now прочитає рецепт, коли попросите", "English"])
+  // An empty list is a note with nothing in it, not an unknown one.
+  same(m.checkerNote(tr, row({ note: "", noteParts: [] })), "")
+  // An argument's own %1 stays as it is.
+  same(m.checkerNote(tr, row({ noteParts: [{ key: "note.misePinned", args: ["%2", "1.0"] }] })), "Pinned to %2, 1.0 exists")
 })
 
 test("ahead rows: the second level, apart from updates", () => {
@@ -580,10 +621,10 @@ test("ahead rows: the second level, apart from updates", () => {
   same([m.latestTone(ahead, false), m.latestTone(both, false), m.latestTone(update, false), m.latestTone(ahead, true),
     m.latestTone(row({ updateAvailable: true, installable: false }), false)], ["warning", "urgent", "urgent", "dim", "plain"])
   same([m.noRoute(ahead), m.noRoute(off), m.hasAction(ahead), m.hasAction(off)], [false, false, true, false])
-  same(m.rowTooltip(both, [], {}, "0123456789"), ["Installed 1.0.0-1", "Newest 3.0 from the vendor's release feed",
+  same(m.rowTooltip(tr, both, [], {}, "0123456789"), ["Installed 1.0.0-1", "Newest 3.0 from the vendor's release feed",
     "Updates from Omarchy's repo to 2.0-1", "3.0 released, not in Omarchy's repo yet",
     "Build now (b) builds it from Omarchy's recipe at 0123456, not signed by Omarchy"].join("\n"))
-  same([m.extraLine(ahead, ""), m.extraLine(off, "")], ["Not in Omarchy's repo yet", "Not in Omarchy's repo yet"])
+  same([m.extraLine(tr, ahead, ""), m.extraLine(tr, off, "")], ["Not in Omarchy's repo yet", "Not in Omarchy's repo yet"])
   // A self-updating copy is never ahead, whatever its row says.
   same([m.ahead(Object.assign({}, ahead, { selfUpdating: true })), m.buildable(Object.assign({}, ahead, { selfUpdating: true }))], [false, false])
 })
@@ -599,8 +640,8 @@ test("barIconLevel and barIconShown: urgent for an update, warning for releases 
 test("heroState and summaryText: updates, then ahead of the repo", () => {
   const s = { checking: false, checkFailed: false, checkedAt: "x", appCount: 3, updateCount: 2, aheadCount: 1, waitingCount: 0,
     quietCount: 0, errorCount: 0, mutedErrorCount: 0, uncheckedCount: 0, staleCount: 0, pkgsFollowing: false }
-  same([m.heroState(s, ""), m.heroState(Object.assign({}, s, { updateCount: 0 }), ""), m.summaryText(s),
-    m.tooltipText(Object.assign({}, s, { updateCount: 0 }))],
+  same([m.heroState(tr, s, "").text, m.heroState(tr, Object.assign({}, s, { updateCount: 0 }), "").text, m.summaryText(tr, s),
+    m.tooltipText(tr, Object.assign({}, s, { updateCount: 0 }))],
     ["2 updates · 1 ahead of the repo", "1 ahead of the repo", "2 updates, 1 ahead of the repo", "Omabump: 1 ahead of the repo"])
 })
 
@@ -610,16 +651,20 @@ test("buildStep: Build now runs with the setting on; off, it explains first, the
   same([m.buildStep(ahead, true, ""), m.buildStep(ahead, false, ""), m.buildStep(ahead, false, "a"), m.buildStep(ahead, false, "x"),
     m.buildStep(no, true, ""), m.buildStep(no, false, "n"), m.buildStep(null, true, ""), m.buildStep(update, true, "")],
     ["build", "explain", "enable", "explain", "", "", "", ""])
-  same(m.buildOffNote(ahead), "Builds it here from Omarchy's recipe: minutes, not signed by Omarchy. Off; b turns it on.")
-  assert.ok(m.buildOffNote(ahead).length <= 100, "the note fits the row's five lines beside the button")
-  same(["build", "explain", "enable"].map(step => m.buildButtonText(step)), ["Build now", "Build now", "Turn on"])
-  same(["build", "explain", "enable", ""].map(step => m.buildTooltip(ahead, step)),
+  same(m.noteText(tr, m.buildOffNote(ahead)), "Builds it here from Omarchy's recipe: minutes, not signed by Omarchy. Off; b turns it on.")
+  same(m.buildOffNote(null), null)
+  for (const code of shipped()) {
+    const note = m.noteText(translator(m, code), m.buildOffNote(ahead))
+    assert.ok(note.length <= 100, `the ${code} note fits the row's five lines beside the button: ${note.length} characters`)
+  }
+  same(["build", "explain", "enable"].map(step => m.buildButtonText(tr, step)), ["Build now", "Build now", "Turn on"])
+  same(["build", "explain", "enable", ""].map(step => m.buildTooltip(tr, ahead, step)),
     ["Build 2.0 from Omarchy's recipe in a terminal; not signed by Omarchy  b", "What Build now does; it is off  b",
       "Turn on Build now: it builds Codex 2.0 on this machine from Omarchy's own recipe, before Omarchy's repo has it."
         + " It takes minutes, runs the recipe as you, and the package is not signed by Omarchy  b", ""])
   // The footer lists b only on a row that offers it.
-  same([m.hintText(false, ahead, 2, [], {}, "build"), m.hintText(false, ahead, 2, [], {}, "enable"), m.hintText(false, ahead, 2, [], {}, ""),
-    m.hintText(false, update, 2, [], {}, "")],
+  same([m.hintText(tr, false, ahead, 2, [], {}, "build"), m.hintText(tr, false, ahead, 2, [], {}, "enable"), m.hintText(tr, false, ahead, 2, [], {}, ""),
+    m.hintText(tr, false, update, 2, [], {}, "")],
     ["b build now · K skip · m mute · Esc close", "b turn on Build now · K skip · m mute · Esc close",
       "↑↓ select · r refresh · s settings · K skip · m mute", "Enter update · K skip · m mute · Esc close"])
   same([m.keyAction("b", 0, false, true), m.keyAction("B", 0x02000000, false, true), m.keyAction("b", 0, true, true), m.keyAction("b", 0, false, false)],
@@ -638,45 +683,47 @@ test("skipToggled: a repo row's full version, with a pkgrel or an epoch, can be 
   same(m.skipToggled({}, row({ updateAvailable: true, latest: "1:2.0-1" })), { skips: { app: "1:2.0-1" } })
 })
 
-test("sourceLabel: where the newest version came from", () => {
-  same([row({ stale: true }), row({ versionFrom: "mise" }), row({}), row({ versionFrom: "x" }), row({ versionFrom: "" })].map(a => m.sourceLabel(a)),
-    ["an earlier check", "mise", "the vendor's release feed", "x", ""])
+test("newestLine: where the newest version came from", () => {
+  same([row({ stale: true }), row({ versionFrom: "mise" }), row({}), row({ versionFrom: "x" }), row({ versionFrom: "" }),
+    row({ versionFrom: "repo" })].map(a => m.newestLine(tr, a)),
+    ["Newest 1.0.0 from an earlier check", "Newest 1.0.0 from mise", "Newest 1.0.0 from the vendor's release feed",
+      "Newest 1.0.0 from x", "Newest 1.0.0", "Newest 1.0.0 from Omarchy's repo"])
 })
 
 test("rowTooltip: a renamed row's route and the composed note", () => {
-  same(m.rowTooltip(renamed, [], {}, "0123456789abcdef"), [
+  same(m.rowTooltip(tr, renamed, [], {}, "0123456789abcdef"), [
     "Installed 1.0.0-1 as chatgpt-desktop", "Newest 1.1.0 from the vendor's release feed",
     "Updates from Omarchy's repo", "Installed as chatgpt-desktop, Update switches to chatgpt; Recipe at abc"].join("\n"))
 })
 
 test("rowTooltip: no Update, held, and quiet rows", () => {
-  same(m.rowTooltip(Object.assign({}, indicator, { note: "No supported install path" }), ["kimi"], {}, ""), [
+  same(m.rowTooltip(tr, Object.assign({}, indicator, { note: "No supported install path" }), ["kimi"], {}, ""), [
     "Installed 1.0.0-1", "Newest 2.0 from the vendor's release feed", "No Update here: No supported install path",
     "Muted: no badge, no notification"].join("\n"))
-  same(m.rowTooltip(row({ held: true, installable: false, note: "held; b", latest: "2.0", updateAvailable: true }), [], { app: "2.0" }, ""), [
+  same(m.rowTooltip(tr, row({ held: true, installable: false, note: "held; b", latest: "2.0", updateAvailable: true }), [], { app: "2.0" }, ""), [
     "Installed 1.0.0-1", "Newest 2.0 from the vendor's release feed", "No Update yet: held", "held; b",
     "Skipped 2.0: no badge, no notification until a newer version"].join("\n"))
 })
 
 test("rowTooltip: mise, vendor and Omabump's own rows, and a failure", () => {
-  same(m.rowTooltip(Object.assign({}, miseUpdate, { installedName: "claude" }), [], {}, ""),
+  same(m.rowTooltip(tr, Object.assign({}, miseUpdate, { installedName: "claude" }), [], {}, ""),
     "Installed 2.0.0\nNewest 2.0.1 from mise\nUpdates with mise up")
-  same(m.rowTooltip(row({ source: "vendor-pkg", error: "e", stale: true }), [], {}, ""),
+  same(m.rowTooltip(tr, row({ source: "vendor-pkg", error: "e", stale: true }), [], {}, ""),
     "Installed 1.0.0-1\nNewest 1.0.0 from an earlier check\nUpdates with the vendor's Arch package\nCheck failed: e")
-  same(m.rowTooltip(row({ source: "self", installable: false, latest: "" }), [], {}, ""), "Installed 1.0.0-1\nomarchy update does not update plugins")
-  same(m.rowTooltip(row({ source: "repo", latest: "1.1.0", updateAvailable: true, repoVersion: "1.1.0-1" }), [], {}, ""),
+  same(m.rowTooltip(tr, row({ source: "self", installable: false, latest: "" }), [], {}, ""), "Installed 1.0.0-1\nomarchy update does not update plugins")
+  same(m.rowTooltip(tr, row({ source: "repo", latest: "1.1.0", updateAvailable: true, repoVersion: "1.1.0-1" }), [], {}, ""),
     "Installed 1.0.0-1\nNewest 1.1.0 from the vendor's release feed\nUpdates from Omarchy's repo to 1.1.0-1")
-  same(m.rowTooltip(row({ source: "repo", latest: "1.0.0-2", versionFrom: "repo", updateAvailable: true, repoVersion: "1.0.0-2" }), [], {}, ""),
+  same(m.rowTooltip(tr, row({ source: "repo", latest: "1.0.0-2", versionFrom: "repo", updateAvailable: true, repoVersion: "1.0.0-2" }), [], {}, ""),
     "Installed 1.0.0-1\nNewest 1.0.0-2 from Omarchy's repo\nUpdates from Omarchy's repo to 1.0.0-2")
-  same(m.rowTooltip(row({ source: "repo", repoVersion: "1.0.0-1" }), [], {}, ""),
+  same(m.rowTooltip(tr, row({ source: "repo", repoVersion: "1.0.0-1" }), [], {}, ""),
     "Installed 1.0.0-1\nNewest 1.0.0 from the vendor's release feed\nUpdates from Omarchy's repo")
   // The vendor ahead of the repo: held, as a recipe's hold is.
-  same(m.rowTooltip(row({ source: "repo", latest: "2.0", updateAvailable: true, installable: false, held: true,
+  same(m.rowTooltip(tr, row({ source: "repo", latest: "2.0", updateAvailable: true, installable: false, held: true,
     note: "Not in Omarchy's repo yet", holdClause: "Not in Omarchy's repo yet", repoVersion: "1.0.0-1" }), [], {}, ""),
     "Installed 1.0.0-1\nNewest 2.0 from the vendor's release feed\nNo Update yet: Not in Omarchy's repo yet")
-  same(m.rowTooltip(row({ source: "repo", latest: "2.0", updateAvailable: true, held: true, repoVersion: "1.0.0-1" }), [], {}, ""),
+  same(m.rowTooltip(tr, row({ source: "repo", latest: "2.0", updateAvailable: true, held: true, repoVersion: "1.0.0-1" }), [], {}, ""),
     "Installed 1.0.0-1\nNewest 2.0 from the vendor's release feed\nUpdates from Omarchy's repo")
-  same(m.rowTooltip(null, [], {}, ""), "")
+  same(m.rowTooltip(tr, null, [], {}, ""), "")
 })
 
 test("iconPathOk: relative paths inside the plugin only", () => {
@@ -770,8 +817,8 @@ test("switchRoute: the row's field, else omarchy and vendor-pkg (a 0.1.17 row ha
 })
 
 test("switchClause: by the row's switchRoute when it has one", () => {
-  same([m.switchClause(Object.assign({}, renamed, { switchRoute: true })), m.switchClause(Object.assign({}, renamed, { switchRoute: false })),
-    m.switchClause(Object.assign({}, renamed, { source: "indicator", switchRoute: true }))],
+  same([m.switchClause(tr, Object.assign({}, renamed, { switchRoute: true })), m.switchClause(tr, Object.assign({}, renamed, { switchRoute: false })),
+    m.switchClause(tr, Object.assign({}, renamed, { source: "indicator", switchRoute: true }))],
     ["Installed as chatgpt-desktop, Update switches to chatgpt", "", "Installed as chatgpt-desktop, Update switches to chatgpt"])
 })
 
@@ -836,9 +883,9 @@ test("keyAction: the panel's letter keys, in the settings view and without a cur
 })
 
 test("hintText: the keys the cursor's row takes", () => {
-  same([m.hintText(true, update, 3, [], {}), m.hintText(false, update, 3, [], {}), m.hintText(false, update, 3, ["claude-desktop"], { "claude-desktop": "1.1.0" }),
-    m.hintText(false, indicator, 3, [], {}), m.hintText(false, sameVersion, 3, [], {}), m.hintText(false, row({}), 3, [], {}),
-    m.hintText(false, null, 3, [], {}), m.hintText(false, null, 0, [], {})], [
+  same([m.hintText(tr, true, update, 3, [], {}), m.hintText(tr, false, update, 3, [], {}), m.hintText(tr, false, update, 3, ["claude-desktop"], { "claude-desktop": "1.1.0" }),
+    m.hintText(tr, false, indicator, 3, [], {}), m.hintText(tr, false, sameVersion, 3, [], {}), m.hintText(tr, false, row({}), 3, [], {}),
+    m.hintText(tr, false, null, 3, [], {}), m.hintText(tr, false, null, 0, [], {})], [
     "Space change · Esc back", "Enter update · K skip · m mute · Esc close", "Enter update · K unskip · m unmute · Esc close",
     "↑↓ select · r refresh · s settings · K skip · m mute", "w switch package · m mute · Esc close",
     "↑↓ select · r refresh · s settings · m mute", "↑↓ select · r refresh · s settings", "r refresh · s settings"])
@@ -846,17 +893,17 @@ test("hintText: the keys the cursor's row takes", () => {
 
 test("checkedText: how long ago the last check ended", () => {
   const now = Date.parse("2026-10-07T12:00:00Z")
-  same([m.checkedText(true, "", now), m.checkedText(false, "", now), m.checkedText(false, "nonsense", now),
-    m.checkedText(false, "2026-10-07T11:59:30Z", now), m.checkedText(false, "2026-10-07T11:15:00Z", now),
-    m.checkedText(false, "2026-10-07T07:00:00Z", now), m.checkedText(false, "2026-10-04T12:00:00Z", now),
-    m.checkedText(false, "2026-10-07T13:00:00Z", now)],
+  same([m.checkedText(tr, true, "", now), m.checkedText(tr, false, "", now), m.checkedText(tr, false, "nonsense", now),
+    m.checkedText(tr, false, "2026-10-07T11:59:30Z", now), m.checkedText(tr, false, "2026-10-07T11:15:00Z", now),
+    m.checkedText(tr, false, "2026-10-07T07:00:00Z", now), m.checkedText(tr, false, "2026-10-04T12:00:00Z", now),
+    m.checkedText(tr, false, "2026-10-07T13:00:00Z", now)],
     ["checking", "not checked yet", "", "checked just now", "checked 45 min ago", "checked 5 h ago", "checked 3 d ago", "checked just now"])
 })
 
 test("intervalLabel and intervalOptions: a hand-set value stays selectable", () => {
-  same([m.intervalLabel(7200), m.intervalLabel(300), m.intervalLabel(90)], ["2 h", "5 min", "90 s"])
-  same(m.intervalOptions([300, 3600], 3600), [{ value: "300", label: "5 min" }, { value: "3600", label: "1 h" }])
-  same(m.intervalOptions([300, 3600], 90), [{ value: "90", label: "90 s" }, { value: "300", label: "5 min" }, { value: "3600", label: "1 h" }])
+  same([m.intervalLabel(tr, 7200), m.intervalLabel(tr, 300), m.intervalLabel(tr, 90)], ["2 h", "5 min", "90 s"])
+  same(m.intervalOptions(tr, [300, 3600], 3600), [{ value: "300", label: "5 min" }, { value: "3600", label: "1 h" }])
+  same(m.intervalOptions(tr, [300, 3600], 90), [{ value: "90", label: "90 s" }, { value: "300", label: "5 min" }, { value: "3600", label: "1 h" }])
 })
 
 // The checker's state as Main.qml's summary holds it.
@@ -869,44 +916,183 @@ function summary(fields) {
 
 test("quietNote: muted and skipped updates, and with failures a muted row's failure", () => {
   const s = summary({ quietCount: 2, mutedErrorCount: 1 })
-  same([m.quietNote(s, false), m.quietNote(s, true), m.quietNote(summary({ mutedErrorCount: 2 }), true), m.quietNote(summary({}), true)],
-    [" (+2 muted/skipped)", " (+2 muted/skipped, check failed for 1 muted app)", " (check failed for 2 muted apps)", ""])
+  same([m.quietNote(tr, s, false), m.quietNote(tr, s, true), m.quietNote(tr, summary({ mutedErrorCount: 2 }), true), m.quietNote(tr, summary({}), true)],
+    ["+2 muted/skipped", "+2 muted/skipped, check failed for 1 muted app", "check failed for 2 muted apps", ""])
 })
 
 test("heroState: one state, the most pressing", () => {
   same([summary({ checkFailed: true, updateCount: 2 }), summary({ updateCount: 1 }), summary({ updateCount: 2, waitingCount: 1 }),
     summary({ waitingCount: 2 }), summary({ waitingCount: 1, staleCount: 1 }),
     summary({ staleCount: 1, errorCount: 1 }), summary({ errorCount: 1 }), summary({ checkedAt: "" }), summary({ uncheckedCount: 2 }),
-    summary({}), summary({ appCount: 0 })].map(s => m.heroState(s, "checked 5 min ago")),
+    summary({}), summary({ appCount: 0 })].map(s => m.heroState(tr, s, "checked 5 min ago").text),
     ["Check failed", "1 update", "2 updates", "2 newer, no Update here", "1 newer, no Update here",
       "Last known, checked 5 min ago", "Check failed", "Not checked yet",
       "All checked current, 2 unchecked", "All current", ""])
 })
 
 test("heroMeta: Settings, Checking…, or the state and what quiet rows hold back", () => {
-  same([m.heroMeta(summary({ checking: true }), true, ""), m.heroMeta(summary({ checking: true }), false, ""),
-    m.heroMeta(summary({ quietCount: 1, mutedErrorCount: 1 }), false, ""), m.heroMeta(summary({ checkedAt: "", quietCount: 1 }), false, ""),
-    m.heroMeta(summary({ appCount: 0 }), false, "")], ["Settings", "Checking…", "All current (+1 muted/skipped)", "Not checked yet", ""])
+  same([m.heroMeta(tr, summary({ checking: true }), true, ""), m.heroMeta(tr, summary({ checking: true }), false, ""),
+    m.heroMeta(tr, summary({ quietCount: 1, mutedErrorCount: 1 }), false, ""), m.heroMeta(tr, summary({ checkedAt: "", quietCount: 1 }), false, ""),
+    m.heroMeta(tr, summary({ appCount: 0 }), false, "")], ["Settings", "Checking…", "All current (+1 muted/skipped)", "Not checked yet", ""])
 })
 
 test("summaryText: the full count for the tooltip and IPC status", () => {
   same([summary({ updateCount: 2, waitingCount: 1, errorCount: 1, staleCount: 1, uncheckedCount: 1, quietCount: 1 }),
     summary({ checkFailed: true, errorCount: 1 }), summary({ errorCount: 2 }), summary({ uncheckedCount: 1 }),
-    summary({ mutedErrorCount: 1 }), summary({ checkedAt: "" }), summary({ appCount: 0 })].map(s => m.summaryText(s)), [
+    summary({ mutedErrorCount: 1 }), summary({ checkedAt: "" }), summary({ appCount: 0 })].map(s => m.summaryText(tr, s)), [
     "2 updates, 1 newer without an install path, check failed for 1 app, last known for 1 app, 1 unchecked (+1 muted/skipped)",
     "check failed", "check failed for 2 apps", "All checked current, 1 unchecked", "All current (check failed for 1 muted app)", "", ""])
 })
 
 test("followingText: the footer line", () => {
-  same([m.followingText(summary({ pkgsFollowing: true })), m.followingText(summary({}))],
+  same([m.followingText(tr, summary({ pkgsFollowing: true })), m.followingText(tr, summary({}))],
     ["omarchy-pkgs: following master (unpinned)", ""])
 })
 
 test("tooltipText: the bar icon's tooltip and IPC status", () => {
   same([summary({}), summary({ quietCount: 1 }), summary({ updateCount: 1 }), summary({ checkedAt: "" }), summary({ appCount: 0 }),
-    summary({ pkgsFollowing: true })].map(s => m.tooltipText(s)), [
+    summary({ pkgsFollowing: true })].map(s => m.tooltipText(tr, s)), [
     "Omabump up to date", "Omabump up to date (+1 muted/skipped)", "Omabump: 1 update", "Omabump: not checked yet",
     "Omabump: none installed", "Omabump up to date\nomarchy-pkgs: following master (unpinned)"])
+})
+
+// --- the catalogs ------------------------------------------------------------------
+
+// Where keys are used: Model.js picks most of them, the QML the labels,
+// and the scripts the notes they write parts for and the notifications.
+const keySources = ["Model.js", "Main.qml", "Panel.qml", "Translator.qml", "Strings.qml", "bin/omabump-common", "bin/omabump-check"]
+  .map(f => [f, fs.readFileSync(path.join(root, f), "utf8")])
+const english = catalog("en")
+const namespaces = [...new Set(Object.keys(english).map(k => k.split(".")[0]))]
+const escape = s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+// A key as a word of its own: not part of a longer name or path.
+const keyPattern = key => new RegExp(`(^|[^A-Za-z0-9_./-])${escape(key)}($|[^A-Za-z0-9_.-])`)
+const forms = v => typeof v === "string" ? [v] : Object.values(v)
+const holes = s => [...new Set(s.match(/%[0-9]+/g) || [])].sort().join(" ")
+
+test("catalogs: every file in i18n/ is a flat JSON object of strings and plural entries", () => {
+  for (const code of shipped()) {
+    const c = catalog(code)
+    assert.ok(c && typeof c === "object" && !Array.isArray(c), `${code}.json is an object`)
+    for (const [key, v] of Object.entries(c)) {
+      assert.ok(/^[a-z]+\.[A-Za-z0-9]+$/.test(key), `${code}: ${key} is a flat key`)
+      assert.ok(typeof v === "string" && v !== "" || v && typeof v === "object" && !Array.isArray(v)
+        && Object.values(v).every(f => typeof f === "string" && f !== ""), `${code}: ${key} is a string or plural forms`)
+    }
+  }
+})
+
+// A key in the code: quoted, or in the scripts the first word after part
+// or say (bin/omabump-common).
+test("catalogs: every key the code uses is in en.json", () => {
+  const key = `((?:${namespaces.join("|")})\\.[a-z][A-Za-z0-9]*)`
+  const used = [new RegExp(`"${key}"`, "g"), new RegExp(`\\b(?:part|say) ${key}(?![A-Za-z0-9_.-])`, "g")]
+  const unknown = [], seen = new Set()
+  for (const [file, text] of keySources)
+    for (const re of used)
+      for (const match of text.matchAll(re)) {
+        seen.add(match[1])
+        if (!(match[1] in english)) unknown.push(`${file}: ${match[1]}`)
+      }
+  same(unknown, [])
+  assert.ok(seen.size > 100, `found the keys in use: ${seen.size}`)
+})
+
+test("catalogs: every key in en.json is used", () => {
+  same(Object.keys(english).filter(key => !keySources.some(([, text]) => keyPattern(key).test(text))), [])
+})
+
+test("catalogs: no English string of the catalog is spelled out in Model.js or the QML", () => {
+  const code = keySources.filter(([file]) => !file.startsWith("bin/")).map(([, text]) => text).join("\n")
+  const spelled = []
+  for (const [key, v] of Object.entries(english))
+    for (const form of forms(v))
+      if (/[A-Za-z]{2,} [A-Za-z]/.test(form) && (code.includes(`"${form}"`) || code.includes(`'${form}'`))) spelled.push(key)
+  same(spelled, [])
+})
+
+test("catalogs: English's plural entries have one and other, and nothing else", () => {
+  for (const [key, v] of Object.entries(english))
+    if (typeof v !== "string") same([key, Object.keys(v).sort()], [key, ["one", "other"]])
+})
+
+for (const code of shipped().filter(c => c !== "en")) {
+  test(`catalogs: ${code}.json has exactly en.json's keys, each the same kind`, () => {
+    const c = catalog(code)
+    same(Object.keys(c).sort(), Object.keys(english).sort())
+    same(Object.keys(english).filter(k => (typeof c[k] === "string") !== (typeof english[k] === "string")), [])
+  })
+  test(`catalogs: ${code}.json fills the same %n holes as English, in every form`, () => {
+    const c = catalog(code), wrong = []
+    for (const key of Object.keys(english))
+      for (const form of c[key] === undefined ? [] : forms(c[key]))
+        if (holes(form) !== holes(forms(english[key])[forms(english[key]).length - 1])) wrong.push(`${key}: ${form}`)
+    same(wrong, [])
+  })
+  test(`catalogs: ${code}.json's plural entries have the categories ${code} counts reach`, () => {
+    const c = catalog(code)
+    for (const key of Object.keys(english))
+      if (typeof c[key] === "object") same([key, Object.keys(c[key]).sort()], [key, categories(code).slice().sort()])
+  })
+}
+
+test("catalogs: tests/plural.js's rules are those of the Omarchy installed here, if any", () => {
+  const file = [process.env.OMARCHY_PATH && path.join(process.env.OMARCHY_PATH, "shell/Commons/Plural.js"),
+    "/usr/share/omarchy/shell/Commons/Plural.js"].find(f => f && fs.existsSync(f))
+  if (!file) return
+  const installed = loadPlural(file)
+  const locales = [process.env.OMARCHY_PATH && path.join(process.env.OMARCHY_PATH, "default/i18n/locales.json"),
+    "/usr/share/omarchy/default/i18n/locales.json"].find(f => f && fs.existsSync(f))
+  const codes = locales ? Object.keys(JSON.parse(fs.readFileSync(locales, "utf8"))) : shipped()
+  const counts = [...Array(300).keys(), 1000, 1001, 1011, 1021, 1000000]
+  for (const code of codes) {
+    same([code, counts.map(n => category(code, n))], [code, counts.map(n => installed.category(code, n))])
+    same([code, categories(code)], [code, [...installed.categories(code)]])
+  }
+})
+
+// --- in Ukrainian and Russian -------------------------------------------------------
+
+test("uk: counts take the plural form of the count (1, 2, 5, 11, 21)", () => {
+  const at = days => new Date(Date.parse("2026-10-07T12:00:00Z") - days * 86400000).toISOString()
+  const now = Date.parse("2026-10-07T12:00:00Z")
+  same([1, 2, 5, 11, 21].map(d => m.checkedText(uk, false, at(d), now)),
+    ["перевірено 1 день тому", "перевірено 2 дні тому", "перевірено 5 днів тому", "перевірено 11 днів тому", "перевірено 21 день тому"])
+  same([1, 2, 5, 21].map(n => m.heroState(uk, summary({ updateCount: n }), "").text),
+    ["1 оновлення", "2 оновлення", "5 оновлень", "21 оновлення"])
+  same([1, 2, 5, 21].map(n => m.summaryText(uk, summary({ errorCount: n }))),
+    ["перевірка не вдалася для 1 програми", "перевірка не вдалася для 2 програм", "перевірка не вдалася для 5 програм",
+      "перевірка не вдалася для 21 програми"])
+})
+
+test("uk: the header's two counts, each in its own form", () => {
+  same(m.heroMeta(uk, summary({ updateCount: 2, aheadCount: 5, quietCount: 1 }), false, ""),
+    "2 оновлення · 5 новіших, ніж у repo (+1 приглушено/пропущено)")
+  same(m.heroState(uk, summary({ updateCount: 21, aheadCount: 1 }), "").text, "21 оновлення · 1 новіша, ніж у repo")
+})
+
+test("uk: a note with arguments, from its parts", () => {
+  const app = row({ installable: false, note: "Update off: broken", noteParts: [{ key: "note.updateOff", args: ["broken"] },
+    { key: "note.misePinned", args: ["0.97", "0.97.1"] }] })
+  same([m.checkerNote(uk, app), m.extraLine(uk, app, null)],
+    ["Оновлення вимкнено: broken; Закріплено на 0.97, є 0.97.1", "Оновлення вимкнено: broken"])
+  same(m.noteText(uk, m.skipToggled({}, row({ latest: "1..2", updateAvailable: true })).note),
+    "Не вдається пропустити 1..2: Omabump не зберігає таку версію")
+})
+
+test("ru: counts take the plural form of the count (1, 2, 5, 11, 22)", () => {
+  same([1, 2, 5, 11, 22].map(n => m.heroState(ru, summary({ updateCount: n }), "").text),
+    ["1 обновление", "2 обновления", "5 обновлений", "11 обновлений", "22 обновления"])
+  same(m.tooltipText(ru, summary({ updateCount: 3, aheadCount: 1 })), "Omabump: 3 обновления, 1 новее, чем в repo")
+})
+
+test("a language Omabump has no catalog for, or a key its catalog lacks, reads English", () => {
+  const pt = m.catalogTranslator([{ strings: {}, plural: () => "other" }, { strings: english, plural: m.englishPlural }], String)
+  same(m.heroState(pt, summary({ updateCount: 1 }), "").text, "1 update")
+  const partial = m.catalogTranslator([{ strings: { "count.updates": { other: "%1 x" } }, plural: () => "one" },
+    { strings: english, plural: m.englishPlural }], String)
+  // The form the translation lacks is its other form, as Plural.pick has it.
+  same([m.heroState(partial, summary({ updateCount: 1 }), "").text, m.heroMeta(partial, summary({}), true, "")], ["1 x", "Settings"])
 })
 
 console.log(`done\t${total}`)

@@ -7,6 +7,101 @@
 // The bar hands lists over as a QVariantList, which Array.isArray does not
 // accept, so lists from the settings are read by index (isList).
 
+// --- text --------------------------------------------------------------------
+
+// Every word the panel shows comes from the catalogs in i18n/, one flat
+// JSON file per Omarchy language code; i18n/en.json is English's one home.
+// A function here that returns text takes a translator tr first, which
+// Panel.qml builds over Omarchy's Commons.Translations (or, on a shell
+// without it, catalogTranslator over en.json):
+//   tr.t(key)       the string for key (a plural entry's "other" form)
+//   tr.tn(key, n)   the form of a plural entry for the count n
+//   tr.has(key)     whether the catalogs hold key
+//   tr.num(n)       the number n written the language's way
+//   tr.date(sec)    the moment sec (epoch seconds) written the language's way
+// Model.js picks the key and the arguments; fill puts them in the string's
+// %1..%n holes. A key is always written out whole here, never put together
+// from pieces, so that tests/model.test.mjs finds every key in use.
+
+// text with its %1..%n holes filled from args, in one pass: an argument
+// that holds "%1" itself stays as it is. A hole with no argument stays.
+function fill(text, args) {
+  var list = args || []
+  return String(text).replace(/%([0-9]+)/g, function(hole, n) {
+    var i = Number(n) - 1
+    return i >= 0 && i < list.length ? String(list[i]) : hole
+  })
+}
+
+// The string for key, filled with args.
+function say(tr, key, args) { return fill(tr.t(key), args) }
+
+// The form of the plural entry key for the count n, n (in the language's
+// digits) its %1, args after it.
+function sayCount(tr, key, n, args) { return fill(tr.tn(key, n), [tr.num(n)].concat(args || [])) }
+
+// A note the panel made itself ({key, args}, as skipToggled and
+// buildOffNote give it), in the language; "" for none.
+function noteText(tr, note) {
+  return note && typeof note.key === "string" ? say(tr, note.key, isList(note.args) ? note.args : []) : ""
+}
+
+// A catalog's text as an object, {} for anything else: what
+// Commons.Translations makes of a file it cannot read.
+function parseCatalog(text) {
+  try {
+    var parsed = JSON.parse(String(text || "{}"))
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}
+  } catch (e) {
+    return {}
+  }
+}
+
+// English's plural rule: the CLDR category of the count n.
+function englishPlural(n) { return Math.abs(Math.trunc(Number(n) || 0)) === 1 ? "one" : "other" }
+
+// A translator over catalogs, nearest first, by the rules
+// Commons.Translations follows: layers is a list of {strings, plural},
+// strings a parsed catalog and plural(n) its language's CLDR category for
+// a count. A key no layer has is itself. The fallback Panel.qml uses on a
+// shell without Commons.Translations (Omarchy before 4.5.0): en.json alone,
+// by englishPlural, numbers as JavaScript writes them; date is the
+// panel's. tests/model.test.mjs builds its translators with it too.
+function catalogTranslator(layers, date) {
+  function value(layer, key) {
+    var v = layer.strings ? layer.strings[key] : undefined
+    return typeof v === "string" || (v && typeof v === "object") ? v : undefined
+  }
+  function first(key) {
+    for (var i = 0; i < layers.length; i++) {
+      var v = value(layers[i], key)
+      if (v !== undefined) return v
+    }
+    return undefined
+  }
+  return {
+    t: function(key) {
+      var v = first(key)
+      if (v && typeof v === "object") v = v.other
+      return typeof v === "string" && v.length > 0 ? v : key
+    },
+    tn: function(key, n) {
+      for (var i = 0; i < layers.length; i++) {
+        var v = value(layers[i], key)
+        if (v && typeof v === "object") {
+          var form = v[layers[i].plural(n)]
+          v = typeof form === "string" && form.length > 0 ? form : v.other
+        }
+        if (typeof v === "string" && v.length > 0) return v
+      }
+      return key
+    },
+    has: function(key) { return first(key) !== undefined },
+    num: function(n) { return String(n) },
+    date: date
+  }
+}
+
 // --- settings ----------------------------------------------------------------
 
 function isList(value) {
@@ -198,14 +293,14 @@ function mutedToggled(muted, app) {
 }
 
 // skippedVersions after K on app, as { skips }; { note } when its newest
-// version is not one the checker reads (skipVersionOk); null with nothing
-// to skip.
+// version is not one the checker reads (skipVersionOk), the note as
+// noteText reads it; null with nothing to skip.
 function skipToggled(skipped, app) {
   var skips = {}
   for (var pkg in skipped) if (pkg !== app.pkg) skips[pkg] = skipped[pkg]
   if (!isSkipped(skipped, app)) {
     if (app.updateAvailable !== true || String(app.latest || "") === "") return null
-    if (!skipVersionOk(String(app.latest))) return { note: "Cannot skip " + app.latest + ": not a version Omabump stores" }
+    if (!skipVersionOk(String(app.latest))) return { note: { key: "row.skipRefused", args: [String(app.latest)] } }
     skips[app.pkg] = app.latest
   }
   return { skips: skips }
@@ -216,7 +311,7 @@ function skipToggled(skipped, app) {
 // is kept but not shown. Only skips the settings keep (skipKept): one that
 // no longer applies is dropped on the next write, not listed as active
 // until then.
-function quietText(apps, muted, skipped) {
+function quietText(tr, apps, muted, skipped) {
   var names = []
   for (var i = 0; i < muted.length; i++)
     if (appFor(apps, muted[i]) !== null) names.push(appName(apps, muted[i]))
@@ -225,8 +320,8 @@ function quietText(apps, muted, skipped) {
     if (appFor(apps, pkg) !== null && skipKept(apps, pkg, skipped[pkg]))
       skips.push(appName(apps, pkg) + " " + skipped[pkg])
   var parts = []
-  if (names.length > 0) parts.push("Muted: " + names.join(", "))
-  if (skips.length > 0) parts.push("Skipped: " + skips.join(", "))
+  if (names.length > 0) parts.push(say(tr, "settings.muted", [names.join(", ")]))
+  if (skips.length > 0) parts.push(say(tr, "settings.skipped", [skips.join(", ")]))
   return parts.join(" · ")
 }
 
@@ -371,6 +466,8 @@ function parseStatus(text, showCli) {
     pkgsFollowing: pkgs.following === true,
     pkgsError: String(pkgs.error || ""),
     pkgsNote: String(pkgs.note || ""),
+    // Its parts (partsKnown), null from a checker before them.
+    pkgsNoteParts: isList(pkgs.noteParts) ? pkgs.noteParts : null,
     miseError: showCli ? String(file.miseError || "") : "",
     runError: String(file.runError || "")
   }
@@ -485,10 +582,13 @@ function queuedRunWaits(outcome) {
 
 // checkError for a run that took the lock, or for "notRun": "" once a check
 // of this shell's ran. A run that left keeps the error it had.
-function checkErrorText(outcome, exitCode, lockWaitSec) {
-  if (outcome === "notRun")
-    return "Check not run: another check held the lock for over " + Math.round(lockWaitSec / 60) + " min"
-  return outcome === "ok" ? "" : "Check failed (exit " + exitCode + "), see the shell log"
+// outcome is checkOutcome's answer for this shell's last check that set
+// it, "" for none (Main.qml keeps the outcome and the exit, and words them
+// here, so a change of language words them again).
+function checkErrorText(tr, outcome, exitCode, lockWaitSec) {
+  if (outcome === "" || outcome === "ok") return ""
+  if (outcome === "notRun") return sayCount(tr, "error.notRun", Math.round(lockWaitSec / 60))
+  return say(tr, "error.checkFailed", [String(exitCode)])
 }
 
 // Whether status.json (parseStatus's answer) holds the answer this shell's
@@ -618,22 +718,20 @@ function buildStep(app, buildAheadOn, explainedPkg) {
   return explainedPkg === app.pkg ? "enable" : "explain"
 }
 
-// The row's note while Build now is off and was asked for.
+// The row's note while Build now is off and was asked for, as noteText
+// reads it; null without a row. Short: the row has five narrow lines
+// beside the button. The button's tooltip says the rest (buildTooltip).
 function buildOffNote(app) {
-  // Short: the row has five narrow lines beside the button. The button's
-  // tooltip says the rest (buildTooltip).
-  return app ? "Builds it here from Omarchy's recipe: minutes, not signed by Omarchy. Off; b turns it on." : ""
+  return app ? { key: "build.offNote", args: [] } : null
 }
 
 // The Build now button's text and tooltip, by buildStep.
-function buildButtonText(step) { return step === "enable" ? "Turn on" : "Build now" }
-function buildTooltip(app, step) {
+function buildButtonText(tr, step) { return say(tr, step === "enable" ? "build.buttonEnable" : "build.button") }
+function buildTooltip(tr, app, step) {
   if (!app || step === "") return ""
-  if (step === "enable") return "Turn on Build now: it builds " + String(app.label || app.pkg) + " " + String(app.latest || "")
-    + " on this machine from Omarchy's own recipe, before Omarchy's repo has it. It takes minutes, runs the recipe as you,"
-    + " and the package is not signed by Omarchy  b"
-  if (step === "explain") return "What Build now does; it is off  b"
-  return "Build " + app.latest + " from Omarchy's recipe in a terminal; not signed by Omarchy  b"
+  if (step === "enable") return say(tr, "build.tooltipEnable", [String(app.label || app.pkg), String(app.latest || "")])
+  if (step === "explain") return say(tr, "build.tooltipExplain")
+  return say(tr, "build.tooltip", [String(app.latest)])
 }
 
 // How the row's "→ newest" reads: "dim" on a quiet row, "urgent" for an
@@ -712,71 +810,126 @@ function cursorIndex(rows, pkg, moved, muted, skipped) {
 // that the plugin installs: Update replaces it when a newer version
 // exists, Switch does it at the same one. The checker writes the fields
 // and the widget says it (status.json schemaVersion 1).
-function switchClause(app) {
+function switchClause(tr, app) {
   if (!app || !switchRoute(app)) return ""
   var name = String(app.installedName || "")
   if (name === "" || name === app.pkg) return ""
-  if (updatable(app)) return "Installed as " + name + ", Update switches to " + app.pkg
-  if (switchable(app)) return "Installed as " + name + ", switch to " + app.pkg
+  if (updatable(app)) return say(tr, "row.switchClauseUpdate", [name, app.pkg])
+  if (switchable(app)) return say(tr, "row.switchClause", [name, app.pkg])
   return ""
 }
 
+// What a note's clauses are joined with, as the checker joins them in its
+// English fields: each clause is a whole sentence of its own.
+var clauseJoin = "; "
+
+// Whether parts, a field the checker writes beside an English one
+// (noteParts beside note, buildNoteParts beside buildNote), can be read:
+// a list of {key, args}, every key one the catalogs hold and every argument
+// a string or {date: epoch seconds}. A status.json from a checker before
+// 0.3.0 has no parts, and one from a newer checker may name a key this
+// panel does not know: the English field stands in for those.
+function partsKnown(tr, parts) {
+  if (!isList(parts)) return false
+  for (var i = 0; i < parts.length; i++) {
+    var part = parts[i]
+    if (!part || typeof part !== "object" || typeof part.key !== "string" || !tr.has(part.key) || !isList(part.args)) return false
+    for (var j = 0; j < part.args.length; j++) {
+      var arg = part.args[j]
+      if (typeof arg !== "string" && !(arg && typeof arg === "object" && typeof arg.date === "number" && isFinite(arg.date))) return false
+    }
+  }
+  return true
+}
+
+// One part's argument as the language writes it.
+function partArg(tr, arg) { return typeof arg === "string" ? arg : tr.date(arg.date) }
+
+// One part in the language. short: the release-age hold (build.hold) as the
+// row's second line says it, by its end alone, so the date fits; the
+// tooltip keeps it whole.
+function partText(tr, part, short) {
+  var args = []
+  for (var i = 0; i < part.args.length; i++) args.push(partArg(tr, part.args[i]))
+  if (short && part.key === "build.hold") return say(tr, "build.holdShort", [args[1]])
+  return say(tr, part.key, args)
+}
+
+// The clauses of a field the checker writes, in the language: from its
+// parts when partsKnown, else the English field's own, split where the
+// checker joins them. first: only the first clause. short: as partText.
+function clauses(tr, parts, english, first, short) {
+  var out = []
+  if (partsKnown(tr, parts)) {
+    for (var i = 0; i < parts.length && (!first || i < 1); i++) out.push(partText(tr, parts[i], short))
+    return out
+  }
+  var text = String(english || "")
+  if (text === "") return out
+  return first ? [text.split(clauseJoin)[0]] : [text]
+}
+
+// The checker's note, and its build note (why Build now cannot run), in
+// the language. And status.json's omarchyPkgs note ({note, noteParts}).
+function checkerNote(tr, app) { return clauses(tr, app.noteParts, app.note, false, false).join(clauseJoin) }
+function pkgsNoteText(tr, pkgs) { return clauses(tr, pkgs.noteParts, pkgs.note, false, false).join(clauseJoin) }
+function buildNoteText(tr, app, short) { return clauses(tr, app.buildNoteParts, app.buildNote, false, short).join(clauseJoin) }
+
 // The row's whole note: the switch clause, then the checker's own.
-function fullNote(app) {
-  var note = String(app.note || "")
-  var clause = switchClause(app)
+function fullNote(tr, app) {
+  var note = checkerNote(tr, app)
+  var clause = switchClause(tr, app)
   if (clause === "") return note
-  return note !== "" ? clause + "; " + note : clause
+  return note !== "" ? clause + clauseJoin + note : clause
 }
 
 // The row's second line keeps the first clause, and of a switch only the
 // name it is installed as: the tooltip and the Switch button say the rest.
-function shortNote(app) {
-  if (switchClause(app) !== "") return "Installed as " + app.installedName
-  return String(app.note || "").split("; ")[0]
+function shortNote(tr, app) {
+  if (switchClause(tr, app) !== "") return say(tr, "row.installedAs", [String(app.installedName)])
+  return clauses(tr, app.noteParts, app.note, true, false).join("")
 }
 
 // The package release (-1) says nothing next to an upstream version, so
 // rows drop it unless it is the only difference. A self-updating copy's
 // version has none and shows as it is, or as unknown when the checker could
 // not read it.
-function installedText(app) {
+function installedText(tr, app) {
   if (!app) return ""
   var full = String(app.installed || "")
-  if (selfUpdating(app)) return full !== "" ? full : "version unknown"
+  if (selfUpdating(app)) return full !== "" ? full : say(tr, "row.versionUnknown")
   if (app.source === "mise") return full
   var short = full.replace(/-[0-9.]+$/, "")
   return app.updateAvailable === true && short === String(app.latest || "") ? full : short
 }
 
-// A recipe's release-age hold on Build now (build_hold_clause in
-// bin/omabump-common). The row says it short, so the date fits; the
-// tooltip keeps it whole.
-var holdNote = /^omarchy-pkgs holds new releases for [0-9]+ h, Build now from /
-
 // The second line of a row: exceptions only. actionNote is why the last
 // Skip did nothing (skipToggled's note), or what Build now does while it
-// is off (buildOffNote). A release only the vendor has says why Build now
-// cannot run for it, when it cannot (buildNote), else the note.
-function extraLine(app, actionNote) {
+// is off (buildOffNote), as noteText reads it. A release only the vendor
+// has says why Build now cannot run for it, when it cannot (the build
+// note, a recipe's release-age hold by its end alone), else the note.
+function extraLine(tr, app, actionNote) {
   if (!app) return ""
-  if (app.checking === true) return "Checking…"
-  if (actionNote) return actionNote
-  if (String(app.error || "") !== "") return "Check failed: " + app.error
-  var build = aheadOnly(app) && !buildable(app) ? String(app.buildNote || "") : ""
-  var note = (build !== "" ? build : shortNote(app)).replace(holdNote, "Build now from ")
+  if (app.checking === true) return say(tr, "common.checking")
+  if (actionNote) return noteText(tr, actionNote)
+  if (String(app.error || "") !== "") return say(tr, "row.checkFailed", [String(app.error)])
+  var build = aheadOnly(app) && !buildable(app) ? buildNoteText(tr, app, true) : ""
+  var note = build !== "" ? build : shortNote(tr, app)
   if (note !== "") return note
-  if (noRoute(app)) return "No install route"
-  if (app.stale === true) return "Last known version"
+  if (noRoute(app)) return say(tr, "row.noRoute")
+  if (app.stale === true) return say(tr, "row.lastKnown")
   return ""
 }
 
-function sourceLabel(app) {
-  if (app.stale === true) return "an earlier check"
-  if (app.versionFrom === "mise") return "mise"
-  if (app.versionFrom === "feed") return "the vendor's release feed"
-  if (app.versionFrom === "repo") return "Omarchy's repo"
-  return String(app.versionFrom || "")
+// The tooltip's line on the newest version and where it is from.
+function newestLine(tr, app) {
+  var latest = String(app.latest)
+  if (app.stale === true) return say(tr, "tip.newestStale", [latest])
+  if (app.versionFrom === "mise") return say(tr, "tip.newestMise", [latest])
+  if (app.versionFrom === "feed") return say(tr, "tip.newestFeed", [latest])
+  if (app.versionFrom === "repo") return say(tr, "tip.newestRepo", [latest])
+  var from = String(app.versionFrom || "")
+  return from !== "" ? say(tr, "tip.newestFrom", [latest, from]) : say(tr, "tip.newest", [latest])
 }
 
 // How the row knows what it shows and what Update would do. A row with no
@@ -786,45 +939,57 @@ function sourceLabel(app) {
 // row from Omarchy's repo with an update names the version Update
 // installs (the checker's repoVersion), and one the vendor is ahead on says
 // so, and what Build now can do about it.
-function rowTooltip(app, muted, skipped, pkgsCommit) {
+function rowTooltip(tr, app, muted, skipped, pkgsCommit) {
   if (!app) return ""
   var lines = []
-  var note = fullNote(app)
+  var note = fullNote(tr, app)
   var name = String(app.installedName || "")
   var itself = selfUpdating(app)
-  lines.push("Installed " + (itself ? installedText(app) : String(app.installed || ""))
-    + (name !== "" && name !== app.pkg && app.source !== "mise" && !itself ? " as " + name : ""))
-  if (String(app.latest || "") !== "") {
-    var from = sourceLabel(app)
-    lines.push("Newest " + app.latest + (from !== "" ? " from " + from : ""))
-  }
-  if (itself) lines.push("No Update here: " + (name !== "" ? "the app at " + name : "the app") + " updates itself")
-  else if (app.source === "self") lines.push(app.installable === true
-    ? "Updates to the release's tagged commit, after showing its log and asking"
-    : "omarchy update does not update plugins")
+  var installed = itself ? installedText(tr, app) : String(app.installed || "")
+  lines.push(name !== "" && name !== app.pkg && app.source !== "mise" && !itself
+    ? say(tr, "tip.installedAs", [installed, name]) : say(tr, "tip.installed", [installed]))
+  if (String(app.latest || "") !== "") lines.push(newestLine(tr, app))
+  if (itself) lines.push(name !== "" ? say(tr, "tip.selfAt", [name]) : say(tr, "tip.self"))
+  else if (app.source === "self") lines.push(say(tr, app.installable === true ? "tip.pluginUpdate" : "tip.pluginNoUpdate"))
   else if (app.installable !== true) {
     // A held release gets its Update once the hold ends.
-    var why = shortNote(app)
-    lines.push((app.held === true ? "No Update yet" : "No Update here") + (why !== "" ? ": " + why : ""))
+    var why = shortNote(tr, app)
+    if (app.held === true) lines.push(why !== "" ? say(tr, "tip.noUpdateYetWhy", [why]) : say(tr, "tip.noUpdateYet"))
+    else lines.push(why !== "" ? say(tr, "tip.noUpdateWhy", [why]) : say(tr, "tip.noUpdate"))
     if (why === note) note = ""
-  } else if (app.source === "mise") lines.push("Updates with mise up")
+  } else if (app.source === "mise") lines.push(say(tr, "tip.mise"))
   else if (app.source === "repo") {
     var repo = String(app.repoVersion || "")
-    lines.push("Updates from Omarchy's repo" + (repo !== "" && app.updateAvailable === true && app.held !== true ? " to " + repo : ""))
-  } else if (app.source === "vendor-pkg") lines.push("Updates with the vendor's Arch package")
+    lines.push(repo !== "" && app.updateAvailable === true && app.held !== true
+      ? say(tr, "tip.repoTo", [repo]) : say(tr, "tip.repo"))
+  } else if (app.source === "vendor-pkg") lines.push(say(tr, "tip.vendorPkg"))
   if (ahead(app)) {
     var commit = String(pkgsCommit || "")
-    lines.push(String(app.vendorVersion || app.latest) + " released, not in Omarchy's repo yet")
-    lines.push(buildable(app)
-      ? "Build now (b) builds it from Omarchy's recipe" + (commit !== "" ? " at " + commit.substring(0, 7) : "") + ", not signed by Omarchy"
-      : "No Build now" + (String(app.buildNote || "") !== "" ? ": " + app.buildNote : ""))
+    var build = buildNoteText(tr, app, false)
+    lines.push(say(tr, "tip.ahead", [String(app.vendorVersion || app.latest)]))
+    if (buildable(app)) lines.push(commit !== "" ? say(tr, "tip.buildAt", [commit.substring(0, 7)]) : say(tr, "tip.build"))
+    else lines.push(build !== "" ? say(tr, "tip.noBuildWhy", [build]) : say(tr, "tip.noBuild"))
   }
   if (note !== "") lines.push(note)
-  if (String(app.error || "") !== "") lines.push("Check failed: " + app.error)
-  if (isMuted(muted, app)) lines.push("Muted: no badge, no notification")
-  if (isSkipped(skipped, app)) lines.push("Skipped " + skippedVersion(skipped, app) + ": no badge, no notification until a newer version")
+  if (String(app.error || "") !== "") lines.push(say(tr, "row.checkFailed", [String(app.error)]))
+  if (isMuted(muted, app)) lines.push(say(tr, "tip.muted"))
+  if (isSkipped(skipped, app)) lines.push(say(tr, "tip.skipped", [skippedVersion(skipped, app)]))
   return lines.join("\n")
 }
+
+// The tooltips of a row's buttons: Update, Switch, Skip and Mute.
+function updateTooltip(tr, app) {
+  return app ? say(tr, "row.updateTip", [installedText(tr, app), String(app.latest)]) : ""
+}
+function switchTooltip(tr, app) {
+  return app ? say(tr, "row.switchTip", [String(app.installedName), String(app.pkg)]) : ""
+}
+function skipTooltip(tr, skipped, app) {
+  if (!app) return ""
+  return isSkipped(skipped, app) ? say(tr, "row.unskipTip", [skippedVersion(skipped, app)])
+    : say(tr, "row.skipTip", [String(app.latest)])
+}
+function muteTooltip(tr, muted, app) { return say(tr, isMuted(muted, app) ? "row.unmuteTip" : "row.muteTip") }
 
 // White marks ship a dark twin for light themes, the same convention the
 // first-party agents panel uses. Only relative paths inside this plugin
@@ -940,46 +1105,52 @@ function keyAction(text, modifiers, settingsOpen, cursorActive) {
   return text === "K" ? "skip" : ""
 }
 
+// What the footer's key hints are joined with: each is whole on its own.
+var hintJoin = " · "
+
 // The footer's keys for the cursor's row. buildStepNow is buildStep's
 // answer for it: b is listed only on a row that offers Build now.
-function hintText(settingsOpen, app, rowCount, muted, skipped, buildStepNow) {
-  if (settingsOpen) return "Space change · Esc back"
-  var mute = app ? (isMuted(muted, app) ? " · m unmute" : " · m mute") : ""
-  if (app && app.updateAvailable === true) mute = (isSkipped(skipped, app) ? " · K unskip" : " · K skip") + mute
-  var build = !buildStepNow ? "" : buildStepNow === "enable" ? " · b turn on Build now" : " · b build now"
-  if (updatable(app)) return "Enter update" + build + mute + " · Esc close"
-  if (switchable(app)) return "w switch package" + build + mute + " · Esc close"
-  if (build !== "") return build.substring(3) + mute + " · Esc close"
-  return (rowCount > 0 ? "↑↓ select · " : "") + "r refresh · s settings" + mute
+function hintText(tr, settingsOpen, app, rowCount, muted, skipped, buildStepNow) {
+  if (settingsOpen) return say(tr, "hint.settings")
+  var quiet = []
+  if (app && app.updateAvailable === true) quiet.push(say(tr, isSkipped(skipped, app) ? "hint.unskip" : "hint.skip"))
+  if (app) quiet.push(say(tr, isMuted(muted, app) ? "hint.unmute" : "hint.mute"))
+  var build = !buildStepNow ? [] : [say(tr, buildStepNow === "enable" ? "hint.buildEnable" : "hint.build")]
+  var close = [say(tr, "hint.close")]
+  if (updatable(app)) return [say(tr, "hint.update")].concat(build, quiet, close).join(hintJoin)
+  if (switchable(app)) return [say(tr, "hint.switch")].concat(build, quiet, close).join(hintJoin)
+  if (build.length > 0) return build.concat(quiet, close).join(hintJoin)
+  return (rowCount > 0 ? [say(tr, "hint.select")] : []).concat([say(tr, "hint.refresh"), say(tr, "hint.openSettings")], quiet)
+    .join(hintJoin)
 }
 
-function checkedText(checking, checkedAt, nowMs) {
-  if (checking) return "checking"
-  if (checkedAt === "") return "not checked yet"
+function checkedText(tr, checking, checkedAt, nowMs) {
+  if (checking) return say(tr, "checked.checking")
+  if (checkedAt === "") return say(tr, "checked.never")
   var ms = new Date(checkedAt).getTime()
   if (!isFinite(ms)) return ""
   var minutes = Math.floor(Math.max(0, nowMs - ms) / 60000)
-  if (minutes < 1) return "checked just now"
-  if (minutes < 60) return "checked " + minutes + " min ago"
+  if (minutes < 1) return say(tr, "checked.justNow")
+  if (minutes < 60) return sayCount(tr, "checked.minutes", minutes)
   var hours = Math.floor(minutes / 60)
-  if (hours < 24) return "checked " + hours + " h ago"
-  return "checked " + Math.floor(hours / 24) + " d ago"
+  if (hours < 24) return sayCount(tr, "checked.hours", hours)
+  return sayCount(tr, "checked.days", Math.floor(hours / 24))
 }
 
-function intervalLabel(sec) {
-  if (sec % 3600 === 0) return (sec / 3600) + " h"
-  if (sec % 60 === 0) return (sec / 60) + " min"
-  return sec + " s"
+function intervalLabel(tr, sec) {
+  if (sec % 3600 === 0) return say(tr, "unit.hours", [tr.num(sec / 3600)])
+  if (sec % 60 === 0) return say(tr, "unit.minutes", [tr.num(sec / 60)])
+  return say(tr, "unit.seconds", [tr.num(sec)])
 }
 
 // A value set by hand that is not one of the choices stays selectable.
-function intervalOptions(choices, current) {
+function intervalOptions(tr, choices, current) {
   var list = choices.slice()
   if (list.indexOf(current) === -1) {
     list.push(current)
     list.sort(function(a, b) { return a - b })
   }
-  return list.map(function(sec) { return { value: String(sec), label: intervalLabel(sec) } })
+  return list.map(function(sec) { return { value: String(sec), label: intervalLabel(tr, sec) } })
 }
 
 // The summaries below read s, the checker's state (Main.qml's summary):
@@ -988,71 +1159,99 @@ function intervalOptions(choices, current) {
 // mutedErrorCount, uncheckedCount, staleCount) and pkgsFollowing.
 
 // "1 ahead of the repo": the releases only the vendor has (aheadCount).
-function aheadText(s) { return s.aheadCount > 0 ? s.aheadCount + " ahead of the repo" : "" }
+function aheadText(tr, s) { return s.aheadCount > 0 ? sayCount(tr, "count.ahead", s.aheadCount) : "" }
+
+// What the items of a summary list are joined with ("2 updates, check
+// failed"), and the header's two counts ("2 updates · 1 ahead of the
+// repo"): each item is whole on its own.
+var listJoin = ", "
+var headerJoin = " · "
 
 // What quiet rows hold back, in one wording for the header, the tooltip
-// and IPC status: " (+N muted/skipped)" for their updates. The tooltip and
+// and IPC status: "+N muted/skipped" for their updates. The tooltip and
 // IPC status (withFailures) also say when a muted row's check failed; the
-// header and the bar leave that out, as they leave out its update.
-function quietNote(s, withFailures) {
+// header and the bar leave that out, as they leave out its update. ""
+// when there is nothing to say; withQuiet puts it beside the summary.
+function quietNote(tr, s, withFailures) {
   var parts = []
-  if (s.quietCount > 0) parts.push("+" + s.quietCount + " muted/skipped")
+  if (s.quietCount > 0) parts.push(sayCount(tr, "quiet.count", s.quietCount))
   var failed = withFailures ? s.mutedErrorCount : 0
-  if (failed > 0) parts.push("check failed for " + failed + " muted " + (failed === 1 ? "app" : "apps"))
-  return parts.length > 0 ? " (" + parts.join(", ") + ")" : ""
+  if (failed > 0) parts.push(sayCount(tr, "quiet.mutedFailed", failed))
+  return parts.join(listJoin)
 }
 
-// All current, N updates, check failed, or last known (rows from an
-// earlier run because this one failed for them). "N updates" counts what
-// the bar icon counts, the rows with an Update (updateCount); newer
-// releases Omabump does not install (waitingCount) are named apart, and
-// only when there is no update to say first.
-function heroState(s, checked) {
-  if (s.checkFailed) return "Check failed"
-  var ahead = aheadText(s)
-  if (s.updateCount > 0) return s.updateCount + (s.updateCount === 1 ? " update" : " updates") + (ahead !== "" ? " · " + ahead : "")
-  if (ahead !== "") return ahead
-  if (s.waitingCount > 0) return s.waitingCount + " newer, no Update here"
-  if (s.staleCount > 0) return "Last known, " + checked
-  if (s.errorCount > 0) return "Check failed"
-  if (s.checkedAt === "") return "Not checked yet"
-  if (s.uncheckedCount > 0) return "All checked current, " + s.uncheckedCount + " unchecked"
-  return s.appCount > 0 ? "All current" : ""
+// A summary with what quiet rows hold back beside it.
+function withQuiet(tr, text, quiet) { return quiet !== "" ? say(tr, "summary.withQuiet", [text, quiet]) : text }
+
+// The hero's one state, as { kind, text }: kind "" (nothing to say),
+// "notChecked" or "state". All current, N updates, check failed, or last
+// known (rows from an earlier run because this one failed for them). "N
+// updates" counts what the bar icon counts, the rows with an Update
+// (updateCount); newer releases Omabump does not install (waitingCount)
+// are named apart, and only when there is no update to say first.
+function heroState(tr, s, checked) {
+  function state(text) { return { kind: "state", text: text } }
+  if (s.checkFailed) return state(say(tr, "hero.checkFailed"))
+  var ahead = aheadText(tr, s)
+  if (s.updateCount > 0) {
+    var updates = sayCount(tr, "count.updates", s.updateCount)
+    return state(ahead !== "" ? updates + headerJoin + ahead : updates)
+  }
+  if (ahead !== "") return state(ahead)
+  if (s.waitingCount > 0) return state(sayCount(tr, "hero.waiting", s.waitingCount))
+  if (s.staleCount > 0) return state(say(tr, "hero.lastKnown", [checked]))
+  if (s.errorCount > 0) return state(say(tr, "hero.checkFailed"))
+  if (s.checkedAt === "") return { kind: "notChecked", text: say(tr, "hero.notChecked") }
+  if (s.uncheckedCount > 0) return state(sayCount(tr, "summary.allCheckedCurrent", s.uncheckedCount))
+  return s.appCount > 0 ? state(say(tr, "summary.allCurrent")) : { kind: "", text: "" }
 }
 
 // The hero says one thing (heroState), then what quiet rows hold back.
 // checked is checkedText's answer.
-function heroMeta(s, settingsOpen, checked) {
-  if (settingsOpen) return "Settings"
-  if (s.checking) return "Checking…"
-  var state = heroState(s, checked)
-  return state !== "" && state !== "Not checked yet" ? state + quietNote(s, false) : state
+function heroMeta(tr, s, settingsOpen, checked) {
+  if (settingsOpen) return say(tr, "hero.settings")
+  if (s.checking) return say(tr, "common.checking")
+  var state = heroState(tr, s, checked)
+  return state.kind === "state" ? withQuiet(tr, state.text, quietNote(tr, s, false)) : state.text
 }
 
-// The bar tooltip and the status IPC call keep the full count.
-function summaryText(s) {
+// What the bar tooltip and the status IPC call summarise, with the full
+// count, as { kind, text }: kind "list" (the items, joined), "allCurrent",
+// "allCheckedCurrent" or "" (nothing checked, or nothing installed), and
+// text without what quiet rows hold back.
+function summary(tr, s) {
   var parts = []
-  if (s.updateCount > 0) parts.push(s.updateCount + (s.updateCount === 1 ? " update" : " updates"))
-  if (s.aheadCount > 0) parts.push(aheadText(s))
-  if (s.waitingCount > 0) parts.push(s.waitingCount + " newer without an install path")
+  if (s.updateCount > 0) parts.push(sayCount(tr, "count.updates", s.updateCount))
+  if (s.aheadCount > 0) parts.push(aheadText(tr, s))
+  if (s.waitingCount > 0) parts.push(sayCount(tr, "summary.waiting", s.waitingCount))
   var failed = s.errorCount
-  if (s.checkFailed) parts.push("check failed")
-  else if (failed > 0) parts.push("check failed for " + failed + (failed === 1 ? " app" : " apps"))
-  if (s.staleCount > 0) parts.push("last known for " + s.staleCount + (s.staleCount === 1 ? " app" : " apps"))
-  var unchecked = s.uncheckedCount > 0 ? s.uncheckedCount + " unchecked" : ""
-  var text = parts.length > 0 ? parts.concat(unchecked !== "" ? [unchecked] : []).join(", ")
-    : s.checkedAt === "" || s.appCount === 0 ? ""
-    : unchecked !== "" ? "All checked current, " + unchecked : "All current"
-  return text !== "" ? text + quietNote(s, true) : text
+  if (s.checkFailed) parts.push(say(tr, "summary.checkFailed"))
+  else if (failed > 0) parts.push(sayCount(tr, "summary.failedApps", failed))
+  if (s.staleCount > 0) parts.push(sayCount(tr, "summary.staleApps", s.staleCount))
+  if (parts.length > 0) {
+    if (s.uncheckedCount > 0) parts.push(sayCount(tr, "summary.unchecked", s.uncheckedCount))
+    return { kind: "list", text: parts.join(listJoin) }
+  }
+  if (s.checkedAt === "" || s.appCount === 0) return { kind: "", text: "" }
+  if (s.uncheckedCount > 0) return { kind: "allCheckedCurrent", text: sayCount(tr, "summary.allCheckedCurrent", s.uncheckedCount) }
+  return { kind: "allCurrent", text: say(tr, "summary.allCurrent") }
 }
 
-function followingText(s) { return s.pkgsFollowing ? "omarchy-pkgs: following master (unpinned)" : "" }
+// The summary as one line, with what quiet rows hold back.
+function summaryText(tr, s) {
+  var sum = summary(tr, s)
+  return sum.kind !== "" ? withQuiet(tr, sum.text, quietNote(tr, s, true)) : ""
+}
 
-function tooltipText(s) {
-  var summary = summaryText(s)
-  var text = summary.indexOf("All current") === 0 ? "Omabump up to date" + summary.substring(11)
-    : summary !== "" ? "Omabump: " + summary
-    : s.checkedAt === "" ? "Omabump: not checked yet" : "Omabump: none installed"
-  if (followingText(s) !== "") text += "\n" + followingText(s)
+function followingText(tr, s) { return s.pkgsFollowing ? say(tr, "bar.following") : "" }
+
+function tooltipText(tr, s) {
+  var sum = summary(tr, s)
+  var quiet = quietNote(tr, s, true)
+  var text = sum.kind === "allCurrent" ? (quiet !== "" ? say(tr, "bar.upToDateQuiet", [quiet]) : say(tr, "bar.upToDate"))
+    : sum.kind !== "" ? say(tr, "bar.summary", [withQuiet(tr, sum.text, quiet)])
+    : s.checkedAt === "" ? say(tr, "bar.notChecked") : say(tr, "bar.noneInstalled")
+  var following = followingText(tr, s)
+  if (following !== "") text += "\n" + following
   return text
 }

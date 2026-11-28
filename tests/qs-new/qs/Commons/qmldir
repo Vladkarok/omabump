@@ -1,0 +1,3 @@
+module qs.Commons
+Translations 1.0 Translations.qml
+singleton I18n 1.0 I18n.qml

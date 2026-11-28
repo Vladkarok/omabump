@@ -63,6 +63,9 @@ mkdir -p "$root/.tests"
 scratch=$(mktemp -d -p "$root/.tests")
 trap 'rm -rf "$scratch"; rmdir "$root/.tests" 2>/dev/null' EXIT
 export XDG_CONFIG_HOME=$scratch/config XDG_STATE_HOME=$scratch/state XDG_CACHE_HOME=$scratch/cache
+# The notifications' language is the scratch config's, never the one the
+# shell running the tests points at.
+unset OMARCHY_LANGUAGE_FILE
 mkdir -p "$XDG_CONFIG_HOME/omarchy/omabump" "$scratch/served"
 
 # shellcheck source=../bin/omabump-common
@@ -1053,7 +1056,7 @@ same "update_blocked: unread for an app that updates itself as well" '137|' \
 # a row as a check's route would leave it (installable, the route's note),
 # through row_derive and row_json. Prints the row.
 derived() {
-  local pkg source installed_name installed latest from app label installable note
+  local pkg source installed_name installed latest from app label installable note note_parts build_note_parts
   local mise_update self_updating held unchecked error stale omarchy_update blocked
   local muted_json='[]' skipped_json='{}' update switchable muted skipped skip_end quiet
   local hold_clause unread=false
@@ -1070,7 +1073,7 @@ derived() {
 mkdir -p "$state_dir"
 row_fields='"\(.updateAvailable)|\(.installable)|\(.held)|\(.switchable)|\(.unchecked)|\(.note)"'
 same "row: a vendor row with an update, the whole row" \
-  '{"pkg":"r-app","label":"R ‹App›","source":"vendor-pkg","installedName":"r-app","installed":"1.0-1","latest":"1.2","versionFrom":"feed","updateAvailable":true,"installable":true,"error":"","note":"A note of the route","stale":false,"switchable":false,"skipped":false,"skipEnded":"","unchecked":false,"held":false,"omarchyUpdate":false,"blocked":false,"selfUpdating":false,"icon":"assets/r.svg","iconLight":"","holdClause":"","unread":false,"section":"desktop","switchRoute":true,"repoVersion":"","vendorVersion":"","ahead":false,"buildable":false,"buildNote":"","buildNoteFrom":""}' \
+  '{"pkg":"r-app","label":"R ‹App›","source":"vendor-pkg","installedName":"r-app","installed":"1.0-1","latest":"1.2","versionFrom":"feed","updateAvailable":true,"installable":true,"error":"","note":"A note of the route","stale":false,"switchable":false,"skipped":false,"skipEnded":"","unchecked":false,"held":false,"omarchyUpdate":false,"blocked":false,"selfUpdating":false,"icon":"assets/r.svg","iconLight":"","holdClause":"","unread":false,"section":"desktop","switchRoute":true,"repoVersion":"","vendorVersion":"","ahead":false,"buildable":false,"buildNote":"","buildNoteFrom":"","noteParts":null,"buildNoteParts":[]}' \
   "$(derived vendor-pkg r-app 1.0-1 1.2 feed)"
 same "row: no field nothing reads (muted, request, recipe)" 'false|false|false' \
   "$(derived vendor-pkg r-app 1.0-1 1.2 feed | jq -r '"\(has("muted"))|\(has("request"))|\(has("recipe"))"')"
@@ -1703,4 +1706,71 @@ done
 mise_ls_json='{"grok":[{"version":"1.0.46","installed":true,"active":true}]}'
 same "the Grok CLI row finds mise's first-party grok" "grok 1.0.46" "$(mise_active "$(app_json mise:grok-cli)")"
 mise_ls_json='{}'
+
+# --- say: the notifications' language --------------------------------------------
+
+# say_as <language file text|-> <key> [<arg>...]: say with the language file
+# holding that text ("-": no file), read afresh, in a subshell.
+say_as() (
+  if [[ $1 == - ]]; then rm -f "$scratch/language"; else printf '%s' "$1" >"$scratch/language"; fi
+  OMARCHY_LANGUAGE_FILE=$scratch/language i18n_strings=""
+  say "${@:2}"
+)
+same "say: no language file is English" "Not in Omarchy's repo yet. Build now is available." "$(say_as - notify.aheadBody)"
+same "say: the language file's code, its args filled" "Доступно: Codex 2.0|Ещё нет в repo Omarchy. Доступен Build now." \
+  "$(say_as ru notify.available Codex 2.0)|$(say_as ru notify.aheadBody)"
+same "say: the code trimmed, as Omarchy reads it" "Встановлено: 1.0. Відкрийте панель Omabump, щоб оновити." \
+  "$(say_as $' uk\n\n' notify.bodyOpen 1.0)"
+same "say: a code that is not one is English" \
+  "$(printf '%s\n' "Codex 2.0 released" "Codex 2.0 released" "Codex 2.0 released" "Codex 2.0 released" "Codex 2.0 released")" \
+  "$(for code in ../uk UK english 'uk ru' $'u\001k'; do say_as "$code" notify.released Codex 2.0; done)"
+same "say: a key no catalog has is the key" "notify.nothing" "$(say_as uk notify.nothing a)"
+same "say: an argument's own %1 stays, a hole with no argument too" "Installed: %2. %2." "$(say_as - notify.bodyNote %2)"
+same "say and part: an argument that looks like an option is text" 'Installed: -n. --args.|["-x","-n"]' \
+  "$(say_as - notify.bodyNote -n --args)|$(part note.misePinned -x -n | jq -c '.[0].args')"
+# A catalog directory of its own: a pt-BR user with only pt here, a broken
+# catalog, and one missing a key.
+i18n_real=$i18n_dir
+i18n_dir=$scratch/i18n
+mkdir -p "$i18n_dir"
+cp "$i18n_real/en.json" "$i18n_dir/en.json"
+echo '{"notify.released": "%1 %2 lançado"}' >"$i18n_dir/pt.json"
+echo '{"notify.released": "%1 %2: nova versão", "notify.aheadBody": ""}' >"$i18n_dir/pt-BR.json"
+same "say: pt-BR, then its base language pt, then English" "Codex 2.0: nova versão|Not in Omarchy's repo yet. Build now is available." \
+  "$(say_as pt-BR notify.released Codex 2.0)|$(say_as pt-BR notify.aheadBody)"
+rm "$i18n_dir/pt-BR.json"
+same "say: pt-BR with only pt here reads pt" "Codex 2.0 lançado" "$(say_as pt-BR notify.released Codex 2.0)"
+echo '{"notify.released": "%1 %2 lançado",' >"$i18n_dir/pt.json"
+same "say: a malformed catalog is English" "Codex 2.0 released" "$(say_as pt notify.released Codex 2.0)"
+for bad in '["x"]' '"x"' '{"notify.released": 5}' '{"notify.released": {"one": "x", "other": "y"}}'; do
+  echo "$bad" >"$i18n_dir/pt.json"
+  same "say: a catalog $bad is no string for the key: English" "Codex 2.0 released" "$(say_as pt notify.released Codex 2.0)"
+done
+{ printf '{"notify.released": "%%1 %%2 lançado", "pad": "'; head -c "$i18n_max_bytes" /dev/zero | tr '\0' x; printf '"}\n'; } >"$i18n_dir/pt.json"
+same "say: a catalog over i18n_max_bytes is English" "Codex 2.0 released" "$(say_as pt notify.released Codex 2.0)"
+{ printf '{"notify.released": "%%1 %%2 lançado", "pad": "'; head -c 200000 /dev/zero | tr '\0' x; printf '"}\n'; } >"$i18n_dir/pt.json"
+same "say: a catalog under it but larger than one argument may be reads" "Codex 2.0 lançado" "$(say_as pt notify.released Codex 2.0)"
+echo '{"notify.aheadBody": "Ainda não está no repo do Omarchy."}' >"$i18n_dir/pt.json"
+same "say: a key missing in the language is English" "Codex 2.0 released|Ainda não está no repo do Omarchy." \
+  "$(say_as pt notify.released Codex 2.0)|$(say_as pt notify.aheadBody)"
+rm -f "$i18n_dir/en.json"
+same "say: without even English, the key" "notify.released" "$(say_as pt notify.released Codex 2.0)"
+i18n_dir=$i18n_real
+rm -rf "$scratch/i18n" "$scratch/language"
+
+# say_parts: a note's parts in the language, a date as the English fields
+# write it.
+say_parts_as() ( printf '%s' "$1" >"$scratch/language"; OMARCHY_LANGUAGE_FILE=$scratch/language i18n_strings=""; say_parts "$2" )
+parts_example=$(parts_cat "$(part note.updateOff 'broken <tag> & 50%1')" "$(part note.missing "sudo, curl")" \
+  "$(jq -cn '[{key: "build.hold", args: ["24", {date: 1767225600}]}]')")
+same "part: an argument goes through clean_text, as the English fields do" '["broken ‹tag› ＆ 50%1"]' \
+  "$(jq -c '.[0].args' <<<"$parts_example")"
+same "say_parts: in English, joined as the English fields join their clauses" \
+  "Update off: broken ‹tag› ＆ 50%1; Missing: sudo, curl; omarchy-pkgs holds new releases for 24 h, Build now from $(date -d @1767225600 '+%b %-d %H:%M')" \
+  "$(say_parts_as en "$parts_example")"
+same "say_parts: in Ukrainian" \
+  "Оновлення вимкнено: broken ‹tag› ＆ 50%1; Бракує: sudo, curl; omarchy-pkgs притримує нові релізи на 24 год, Build now з $(date -d @1767225600 '+%b %-d %H:%M')" \
+  "$(say_parts_as uk "$parts_example")"
+same "parts_cat: none, empty and null" '[]|[]|null' "$(parts_cat)|$(parts_cat '' '[]')|$(parts_cat '[]' null "$parts_example")"
+rm -f "$scratch/language"
 finish

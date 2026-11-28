@@ -2,10 +2,12 @@
 // context of its own. Its first line, ".pragma library", is QML's and not
 // JavaScript, so it becomes a blank line (line numbers stay right).
 //
-//   node tests/model.mjs <function> <lines
+//   node tests/model.mjs <function> [<language>] <lines
 //
 // calls a Model.js function once per line of stdin, each line a JSON array
-// of its arguments, and prints each answer as one line of JSON: how
+// of its arguments (after the translator for <language>, tests/strings.mjs's,
+// when one is named: for a function that words text), and prints each
+// answer as one line of JSON: how
 // tests/model.sh and tests/qml.sh set the widget's rules against the
 // scripts'. For a value that is no function, it prints that value as JSON
 // and reads no stdin: how tests/qml.sh reads the numbers and words Model.js
@@ -36,9 +38,11 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     process.stdout.write(JSON.stringify(model[name]) + "\n")
     process.exit(0)
   }
+  const lead = []
+  if (process.argv[3]) lead.push((await import("./strings.mjs")).translator(model, process.argv[3]))
   const out = []
   for (const line of fs.readFileSync(0, "utf8").split("\n")) {
-    if (line !== "") out.push(JSON.stringify(model[name](...JSON.parse(line))))
+    if (line !== "") out.push(JSON.stringify(model[name](...lead, ...JSON.parse(line))))
   }
   process.stdout.write(out.length > 0 ? out.join("\n") + "\n" : "")
 }

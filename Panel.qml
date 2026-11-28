@@ -45,6 +45,18 @@ Panel {
   readonly property var barApi: root.bar
   readonly property var shellApi: barApi ? barApi.shell : null
 
+  // What all the text below is worded with, in the language Omarchy is set
+  // to (Translator.qml): every binding that words text passes it to
+  // Model.js, or calls t(), and so words it again when the language changes.
+  readonly property var tr: translator.tr
+  // A catalog string, filled (Model.say).
+  function t(key, args) { return Model.say(root.tr, key, args) }
+  // i18n/en.json, for a shell without Omarchy's Commons.Translations.
+  property string englishCatalog: ""
+  // A glyph that points from the installed version to the newer one: the
+  // other way round in a right-to-left language.
+  readonly property string forwardGlyph: translator.i18nValue("rightToLeft", false) ? "←" : "→"
+
   readonly property var apps: checker.apps
   // Desktop apps, the CLI tools, then Omabump's own row while it has
   // something to say (Model.panelLayout): the keyboard cursor walks
@@ -69,7 +81,8 @@ Panel {
   property string cursorPkg: ""
   property bool cursorMoved: false
   // Why the last Skip did nothing, or what Build now does while it is off,
-  // by pkg, shown as the row's second line until the panel closes.
+  // by pkg, shown as the row's second line until the panel closes: as
+  // Model.noteText reads them, worded where they show.
   property var actionNotes: ({})
   // The row whose Build now was explained while the setting is off: its
   // next b turns the setting on (Model.buildStep).
@@ -82,13 +95,12 @@ Panel {
   property bool settingsOpen: false
   property int settingIndex: 0
   readonly property var settingRows: [
-    { key: "showCli", fallback: true, label: "Show CLI tools", description: "Coding agents and other CLI tools, below the desktop apps" },
-    { key: "barIconOnlyWithUpdates", fallback: false, label: "Bar icon only when updates exist", description: "It also shows while a check fails" },
-    { key: "notify", fallback: true, label: "Notify on new releases", description: "" },
-    { key: "buildAhead", fallback: false, label: "Build now",
-      description: "Build Omarchy's recipe here before its repo has a release: minutes, not signed by Omarchy" }
+    { key: "showCli", fallback: true, label: t("settings.showCli"), description: t("settings.showCliNote") },
+    { key: "barIconOnlyWithUpdates", fallback: false, label: t("settings.iconOnly"), description: t("settings.iconOnlyNote") },
+    { key: "notify", fallback: true, label: t("settings.notify"), description: "" },
+    { key: "buildAhead", fallback: false, label: t("settings.buildAhead"), description: t("settings.buildAheadNote") }
   ]
-  readonly property string quietText: Model.quietText(apps, checker.mutedApps, checker.skippedVersions)
+  readonly property string quietText: Model.quietText(tr, apps, checker.mutedApps, checker.skippedVersions)
   // Which row is which: the interval, the toggles, then the "Muted: …" line
   // with its Clear button, while it lists any (Model.settingsLayout).
   readonly property var settingsLayout: Model.settingsLayout(settingRows.length, quietText !== "")
@@ -97,7 +109,7 @@ Panel {
   // "checked 3 min ago" reads this instead of Date.now() so it keeps moving
   // while the panel sits open.
   property double nowMs: Date.now()
-  readonly property string checkedText: Model.checkedText(checker.checking, checker.checkedAt, nowMs)
+  readonly property string checkedText: Model.checkedText(tr, checker.checking, checker.checkedAt, nowMs)
 
   function refreshNow() { checker.refresh() }
 
@@ -303,7 +315,7 @@ Panel {
       buildExplained = app.pkg
       setActionNote(app.pkg, Model.buildOffNote(app))
     } else if (step === "enable") {
-      setActionNote(app.pkg, "")
+      setActionNote(app.pkg, null)
       buildExplained = ""
       setSetting("buildAhead", true)
     } else if (step === "build" && root.bar) {
@@ -313,10 +325,10 @@ Panel {
     }
   }
 
-  function setActionNote(pkg, text) {
+  function setActionNote(pkg, note) {
     var notes = {}
     for (var key in actionNotes) notes[key] = actionNotes[key]
-    notes[pkg] = text
+    notes[pkg] = note
     actionNotes = notes
   }
 
@@ -373,6 +385,20 @@ Panel {
   Main {
     id: checker
     settings: root.settings
+    tr: root.tr
+  }
+
+  Translator {
+    id: translator
+    englishText: root.englishCatalog
+  }
+
+  FileView {
+    path: decodeURIComponent(String(Qt.resolvedUrl("i18n/en.json")).replace(/^file:\/\//, "").replace(/[?#].*$/, ""))
+    printErrors: false
+    // Read before the first binding words anything: small and local.
+    blockLoading: true
+    onLoaded: root.englishCatalog = text()
   }
 
   Timer {
@@ -394,7 +420,7 @@ Panel {
     function hide(): void { root.ipcClose() }
     function toggle(): void { root.ipcToggle() }
     function refresh(): string { return root.ipcRefresh() }
-    function status(): string { return Model.tooltipText(checker.summary) }
+    function status(): string { return Model.tooltipText(root.tr, checker.summary) }
     function settings(): void { root.ipcSettings() }
   }
 
@@ -405,7 +431,7 @@ Panel {
     text: root.glyph
     active: root.iconLevel !== ""
     activeColor: root.iconColor
-    tooltipText: Model.tooltipText(checker.summary)
+    tooltipText: Model.tooltipText(root.tr, checker.summary)
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.MiddleButton || buttonCode === Qt.RightButton) root.refreshNow()
       else root.toggle()
@@ -477,7 +503,7 @@ Panel {
           PanelHero {
             width: parent.width
             title: "Omabump"
-            meta: Model.heroMeta(checker.summary, root.settingsOpen, root.checkedText)
+            meta: Model.heroMeta(root.tr, checker.summary, root.settingsOpen, root.checkedText)
             foreground: root.foreground
             fontFamily: root.fontFamily
 
@@ -502,9 +528,10 @@ Panel {
 
                   PanelToolTip {
                     visible: refreshButton.hot
-                    text: root.checkedText + " · Refresh  r"
+                    text: root.t("panel.refreshTip", [root.checkedText])
                     fontFamily: root.fontFamily
-                    x: refreshButton.width - width
+                    // The edge the button sits on: the left one, mirrored.
+                    x: refreshButton.LayoutMirroring.enabled ? 0 : refreshButton.width - width
                   }
                 }
 
@@ -520,9 +547,9 @@ Panel {
 
                   PanelToolTip {
                     visible: gearButton.hot
-                    text: root.settingsOpen ? "Back to the apps  Esc" : "Settings  s"
+                    text: root.t(root.settingsOpen ? "panel.backTip" : "panel.settingsTip")
                     fontFamily: root.fontFamily
-                    x: gearButton.width - width
+                    x: gearButton.LayoutMirroring.enabled ? 0 : gearButton.width - width
                   }
                 }
               }
@@ -544,7 +571,8 @@ Panel {
             textFormat: Text.PlainText
             visible: !root.settingsOpen && text !== ""
             width: parent.width
-            text: checker.failureText !== "" ? checker.failureText : checker.pkgsNote
+            text: checker.failureText !== "" ? checker.failureText
+              : Model.pkgsNoteText(root.tr, { note: checker.pkgsNote, noteParts: checker.pkgsNoteParts })
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -586,7 +614,7 @@ Panel {
               Text {
                 textFormat: Text.PlainText
                 width: parent.width
-                text: checker.checking ? "Checking for new versions…" : "No agent desktop apps or CLIs installed"
+                text: root.t(checker.checking ? "panel.checkingEmpty" : "panel.empty")
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.body
@@ -598,7 +626,7 @@ Panel {
                 textFormat: Text.PlainText
                 visible: !checker.checking
                 width: parent.width
-                text: "Install from the Omarchy menu, AI"
+                text: root.t("panel.emptyHint")
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
@@ -614,7 +642,7 @@ Panel {
               spacing: Style.space(10)
 
               PanelSectionHeader {
-                text: "DESKTOP APPS"
+                text: root.t("panel.desktopSection")
                 foreground: root.foreground
                 fontFamily: root.fontFamily
               }
@@ -651,7 +679,7 @@ Panel {
               spacing: Style.space(10)
 
               PanelSectionHeader {
-                text: "CLI TOOLS"
+                text: root.t("panel.cliSection")
                 foreground: root.foreground
                 fontFamily: root.fontFamily
               }
@@ -690,7 +718,7 @@ Panel {
               spacing: Style.space(10)
 
               PanelSectionHeader {
-                text: "PLUGIN"
+                text: root.t("panel.pluginSection")
                 foreground: root.foreground
                 fontFamily: root.fontFamily
               }
@@ -747,7 +775,7 @@ Panel {
                   anchors.verticalCenter: parent.verticalCenter
                   anchors.leftMargin: intervalSurface.borderLeft + Style.spacing.rowPaddingX
                   anchors.rightMargin: Style.spacing.rowPaddingX
-                  text: "Check every"
+                  text: root.t("settings.interval")
                   color: root.foreground
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.body
@@ -762,7 +790,7 @@ Panel {
                   anchors.rightMargin: intervalSurface.borderRight + Style.spacing.rowPaddingX
                   width: Style.space(110)
                   showLabel: false
-                  options: Model.intervalOptions(root.intervalChoices, checker.refreshIntervalSec)
+                  options: Model.intervalOptions(root.tr, root.intervalChoices, checker.refreshIntervalSec)
                   value: String(checker.refreshIntervalSec)
                   foreground: root.foreground
                   fontFamily: root.fontFamily
@@ -841,12 +869,12 @@ Panel {
                   anchors.right: parent.right
                   anchors.verticalCenter: parent.verticalCenter
                   anchors.rightMargin: quietSurface.borderRight + Style.spacing.rowPaddingX
-                  text: "Clear"
+                  text: root.t("settings.clear")
                   bordered: true
                   foreground: root.foreground
                   fontFamily: root.fontFamily
                   fontSize: Style.font.bodySmall
-                  tooltipText: "Unmute and unskip these rows  Space"
+                  tooltipText: root.t("settings.clearTip")
                   onClicked: root.clearQuiet()
                 }
               }
@@ -861,7 +889,7 @@ Panel {
           Text {
             textFormat: Text.PlainText
             width: parent.width
-            text: Model.hintText(root.settingsOpen, root.cursorActive ? root.selectedApp() : null, root.orderedApps.length,
+            text: Model.hintText(root.tr, root.settingsOpen, root.cursorActive ? root.selectedApp() : null, root.orderedApps.length,
               checker.mutedApps, checker.skippedVersions,
               root.cursorActive ? Model.buildStep(root.selectedApp(), checker.buildAhead, root.buildExplained) : "")
             color: root.dim
@@ -875,7 +903,7 @@ Panel {
             textFormat: Text.PlainText
             visible: text !== ""
             width: parent.width
-            text: Model.followingText(checker.summary)
+            text: Model.followingText(root.tr, checker.summary)
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -903,8 +931,8 @@ Panel {
     readonly property bool muted: Model.isMuted(checker.mutedApps, app)
     readonly property bool quiet: Model.isQuiet(checker.mutedApps, checker.skippedVersions, app)
     readonly property bool skipped: Model.isSkipped(checker.skippedVersions, app)
-    readonly property string actionNote: app ? String(root.actionNotes[app.pkg] || "") : ""
-    readonly property string extra: Model.extraLine(app, actionNote)
+    readonly property var actionNote: app ? root.actionNotes[app.pkg] || null : null
+    readonly property string extra: Model.extraLine(root.tr, app, actionNote)
     property bool actionHovered: false
     onShowActionChanged: if (!showAction) actionHovered = false
 
@@ -927,7 +955,7 @@ Panel {
 
     PanelToolTip {
       visible: rowMouse.containsMouse && !appRow.actionHovered
-      text: Model.rowTooltip(appRow.app, checker.mutedApps, checker.skippedVersions, checker.pkgsCommit)
+      text: Model.rowTooltip(root.tr, appRow.app, checker.mutedApps, checker.skippedVersions, checker.pkgsCommit)
       fontFamily: root.fontFamily
     }
 
@@ -1003,8 +1031,8 @@ Panel {
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
           // An action's note (what Build now does) is read whole.
-          wrapMode: appRow.actionNote !== "" ? Text.WordWrap : Text.NoWrap
-          maximumLineCount: appRow.actionNote !== "" ? 5 : 1
+          wrapMode: appRow.actionNote ? Text.WordWrap : Text.NoWrap
+          maximumLineCount: appRow.actionNote ? 5 : 1
           elide: Text.ElideRight
         }
       }
@@ -1016,7 +1044,7 @@ Panel {
 
         Text {
           textFormat: Text.PlainText
-          text: Model.installedText(appRow.app)
+          text: Model.installedText(root.tr, appRow.app)
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
@@ -1025,7 +1053,7 @@ Panel {
         Text {
           textFormat: Text.PlainText
           visible: appRow.hasUpdate
-          text: appRow.app ? "→ " + appRow.app.latest : ""
+          text: appRow.app ? root.forwardGlyph + " " + appRow.app.latest : ""
           // Red and bold for a release Update installs from here, which is
           // what the header and the bar icon count; the warning colour for
           // one only the vendor has (Model.latestTone). A newer one Omabump
@@ -1040,7 +1068,7 @@ Panel {
         Text {
           textFormat: Text.PlainText
           visible: appRow.skipped
-          text: "skipped"
+          text: root.t("row.skipped")
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
@@ -1051,12 +1079,12 @@ Panel {
         id: updateButton
         visible: appRow.showAction && appRow.updatable
         Layout.alignment: Qt.AlignVCenter
-        text: "Update"
+        text: root.t("row.update")
         bordered: true
         foreground: root.urgent
         fontFamily: root.fontFamily
         fontSize: Style.font.bodySmall
-        tooltipText: appRow.app ? Model.installedText(appRow.app) + " → " + appRow.app.latest + ", in a terminal  Enter" : ""
+        tooltipText: Model.updateTooltip(root.tr, appRow.app)
         onHovered: function(on) { appRow.actionHovered = on }
         onClicked: root.updateApp(appRow.app)
       }
@@ -1065,12 +1093,12 @@ Panel {
       Button {
         visible: appRow.showAction && appRow.buildStep !== ""
         Layout.alignment: Qt.AlignVCenter
-        text: Model.buildButtonText(appRow.buildStep)
+        text: Model.buildButtonText(root.tr, appRow.buildStep)
         bordered: true
         foreground: root.warning
         fontFamily: root.fontFamily
         fontSize: Style.font.bodySmall
-        tooltipText: Model.buildTooltip(appRow.app, appRow.buildStep)
+        tooltipText: Model.buildTooltip(root.tr, appRow.app, appRow.buildStep)
         onHovered: function(on) { appRow.actionHovered = on }
         onClicked: root.buildApp(appRow.app)
       }
@@ -1078,12 +1106,12 @@ Panel {
       Button {
         visible: appRow.showAction && appRow.switchable
         Layout.alignment: Qt.AlignVCenter
-        text: "Switch"
+        text: root.t("row.switch")
         bordered: true
         foreground: root.foreground
         fontFamily: root.fontFamily
         fontSize: Style.font.bodySmall
-        tooltipText: appRow.app ? "Replace " + appRow.app.installedName + " with " + appRow.app.pkg + " in a terminal; pacman asks first  w" : ""
+        tooltipText: Model.switchTooltip(root.tr, appRow.app)
         onHovered: function(on) { appRow.actionHovered = on }
         onClicked: root.switchApp(appRow.app)
       }
@@ -1093,8 +1121,7 @@ Panel {
         Layout.alignment: Qt.AlignVCenter
         iconText: "󰒭"
         bordered: appRow.skipped
-        tooltipText: appRow.skipped ? "Unskip " + Model.skippedVersion(checker.skippedVersions, appRow.app) + "  K"
-          : appRow.app ? "Skip " + appRow.app.latest + ": quiet until a newer version  K" : ""
+        tooltipText: Model.skipTooltip(root.tr, checker.skippedVersions, appRow.app)
         foreground: appRow.skipped ? root.foreground : root.dim
         fontFamily: root.fontFamily
         onHovered: function(on) { appRow.actionHovered = on }
@@ -1106,7 +1133,7 @@ Panel {
         Layout.alignment: Qt.AlignVCenter
         iconText: "󰖁"
         bordered: appRow.muted
-        tooltipText: appRow.muted ? "Unmute  m" : "Mute: no badge, no notification  m"
+        tooltipText: Model.muteTooltip(root.tr, checker.mutedApps, appRow.app)
         foreground: appRow.muted ? root.foreground : root.dim
         fontFamily: root.fontFamily
         onHovered: function(on) { appRow.actionHovered = on }
