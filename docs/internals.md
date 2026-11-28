@@ -13,6 +13,7 @@ How Omabump works inside: when it checks, what it reads, and what Update and Bui
 - [status.json](#statusjson)
 - [Mute and skip in detail](#mute-and-skip-in-detail)
 - [Notifications](#notifications)
+- [Languages](#languages)
 - [How CLI tools are found](#how-cli-tools-are-found)
 - [Update routes](#update-routes)
   - [Route facts](#route-facts)
@@ -73,7 +74,7 @@ Top level:
 | `checking` | true while a check runs; a killed run leaves it, and `startedAt` tells the panel the run is stale |
 | `inventoryAt` | when the installed versions were last read: a full check's start, or a local refresh |
 | `runError`, `retry`, `miseError` | why the check failed as a whole; whether it was the retry of a failed one (`--if-due` chose it, or `--retry` said so); why mise's inventory could not be read |
-| `omarchyPkgs` | `{commit, following, error, note}`: the omarchy-pkgs pin. `error` counts as a failed check only while a listed, unmuted row is `ahead` |
+| `omarchyPkgs` | `{commit, following, error, note, noteParts}`: the omarchy-pkgs pin. `error` counts as a failed check only while a listed, unmuted row is `ahead`; `noteParts` is `note` as parts (see [Languages](#languages)) |
 | `apps` | the rows, in the panel's order |
 
 A row:
@@ -91,7 +92,8 @@ A row:
 | `buildable` | Build now could run: `ahead`, the entry has `"build": true`, Update is not off, the app is not a self-updating copy, no recipe blocker or hold is known, and the build tools are there. It does not depend on `buildAhead`; with that off no recipe is read |
 | `buildNote`, `buildNoteFrom` | why not, while ahead and not buildable, and which reason that is: `entry`, `off`, `tools` or `recipe` |
 | `held`, `holdClause` | a repo row waiting for Omarchy's repo (`Not in Omarchy's repo yet`) while the repo has an older package; the clause leads `note`, and the local refresh takes exactly it off once the version is installed |
-| `note`, `error` | the row's exceptions (not "installed under another name": that is in `installedName`, `switchable` and `updateAvailable`) and its failure |
+| `note`, `error` | the row's exceptions (not "installed under another name": that is in `installedName`, `switchable` and `updateAvailable`) and its failure, in English |
+| `noteParts`, `buildNoteParts` | `note` and `buildNote` as parts, which the panel words in the user's language (see [Languages](#languages)); `null` for a note the local refresh carried over from an older checker's row |
 | `switchable` | installed under another name, at a version not newer than the repo's full version (repo rows) or the vendor's (vendor rows) |
 | `stale`, `unchecked`, `unread` | the version is the last known one; the newest version is not known; a local refresh wrote the row and no check has read it since |
 | `skipped`, `skipEnded` | the settings' skip applies to the row; whether a check found it over |
@@ -100,7 +102,7 @@ A row:
 | `selfUpdating` | the app updates itself (see [Self-updating apps](#self-updating-apps)); its `installedName` is the AppImage's or npm package's path as `apps.json` writes it |
 | `icon`, `iconLight` | the marks, from `apps.json` |
 
-0.2.0 added `vendorVersion`, `ahead`, `buildable`, `buildNote` and `buildNoteFrom`, and no longer writes `muted`, `request` and `recipe`, which nothing read. `schemaVersion` stays 1. A row the local refresh carries over from an older file lacks the new fields until a check reads it.
+0.2.0 added `vendorVersion`, `ahead`, `buildable`, `buildNote` and `buildNoteFrom`, and no longer writes `muted`, `request` and `recipe`, which nothing read. The release after it added `noteParts`, `buildNoteParts` and `omarchyPkgs.noteParts`. `schemaVersion` stays 1. A row the local refresh carries over from an older file lacks the new fields until a check reads it.
 
 Meanings that changed in 0.2.0: `latest` is the vendor's version while the row is ahead, else the repo's (by its upstream version when that equals the vendor's), and the repo's alone without a feed. Every packaged app's `source` is `repo` now, and `switchRoute` is true on those rows. `omarchyPkgs.error` fails the check only while an unmuted row is ahead; it used to fail it unless every omarchy row was muted.
 
@@ -122,6 +124,33 @@ A check announces what notified.json (in the state directory) has not recorded f
 | `ahead:<pkg>` | the row is ahead and buildable, `buildAhead` is on, once per vendor version | `<App> <version> released`, low urgency (`-u low`), body `Not in Omarchy's repo yet. Build now is available.` |
 
 A repo row's `<pkg>` entry holds the repo's full version, and its text names the repo's version when the row is also ahead. The `ahead:<pkg>` entry holds the vendor's version. When the repo later has that version and it is still not installed, the `<pkg>` notification follows. With `buildAhead` off an ahead row never notifies.
+
+A row without Update says why instead of "Open the Omabump panel to update" (its note: `Installed: <v>. Update off: <reason>.`), and a self-updating app says how it updates itself. The texts above are English; a notification is in the language Omarchy is set to ([Languages](#languages)).
+
+## Languages
+
+Every word the panel shows (rows, header, footer, tooltips, the settings view, the bar tooltip and the IPC `status` answer) and the notifications come from the catalogs in `i18n/`: flat JSON, one file per Omarchy language code (`en.json`, `uk.json`, `ru.json`), keyed `<area>.<name>` (`hint.update`, `note.updateOff`). `i18n/en.json` is English's one home. A value is a string with `%1`..`%n` holes, or, for a string that counts something, a plural entry: an object of CLDR categories (`one` and `other` in English; `one`, `few`, `many` and `other` in Ukrainian and Russian). `format.dateTime` is a Qt date format, how the language writes a moment in a note (the end of a recipe's release-age hold).
+
+**The panel.** `Translator.qml` builds the translator `tr` that every function of `Model.js` that returns text takes first: `t(key)`, `tn(key, count)`, `has(key)`, `num(n)` and `date(epochSeconds)`. It goes through Omarchy's `Commons.Translations` over `i18n/` (language, then its base language, then English, then the key), numbers through `Commons.I18n.formatNumber`, dates through `Qt.locale(Commons.I18n.formatLocale)`. Model.js picks the key and its arguments and fills the holes itself (`Model.fill`, one pass, so an argument that holds `%1` stays as it is); QML passes `tr` and binds. A language switch gives a new `tr`, and every binding that passed it words its text again, without a restart. Text that is kept between events (why the last Skip did nothing, what Build now does while it is off, why this shell's check failed) is kept as a key and arguments, or as an outcome, and worded where it shows. Keys are written out whole, never put together from pieces; `tests/model.test.mjs` finds them in `Model.js`, the QML and the scripts, and checks that each is in `en.json`, that `en.json` has no key nothing uses, that every catalog has exactly English's keys, the same holes, and the plural categories its language needs, and that no string of `en.json` is spelled out in `Model.js` or the QML.
+
+**A shell without `Commons.Translations`.** Omarchy added `Commons/Translations.qml`, `I18n.qml` and `Plural.js` in one change (omacom/omarchy#15326, 2026-10-14), first released in 4.5.0-rc1 (2026-10-20) and 4.5.0 (2026-11-05). `Translations.qml` is used only by `Strings.qml`, which `Translator.qml` loads with a `Loader`: on an older shell only that file fails to load, the panel words its text with `Model.catalogTranslator` over `en.json` (which `Panel.qml` reads with a `FileView`), English plural rules, numbers and dates as Qt writes them, and the rest of the panel works as before. `Commons.I18n` is read inside a `try`, so a shell without it changes nothing but the format of dates. `tests/tst_strings_new.qml` and `tests/tst_strings_old.qml` run `Translator.qml` offscreen against a stand-in `qs.Commons` of each kind (`tests/qs-new`, `tests/qs-old`).
+
+**Notes the checker writes.** A row's `note` and `buildNote`, and `omarchyPkgs.note`, stay English for an older panel, terminals and the tests. Beside each the checker writes its parts (`noteParts`, `buildNoteParts`, `omarchyPkgs.noteParts`): a list of clauses, each `{key, args}`, the key one of `en.json`'s and its string the clause in English, an argument a string or `{date: <epoch seconds>}`. The English field is the clauses joined with `; `. For example a vendor row with Update off and a tool missing:
+
+```json
+{"note": "Update off: broken in 2.1, see #12; Missing: sudo or curl; sudo pacman -S --needed base-devel curl",
+ "noteParts": [{"key": "note.updateOff", "args": ["broken in 2.1, see #12"]},
+               {"key": "note.missingSudoCurl", "args": []},
+               {"key": "note.installWith", "args": ["base-devel curl"]}]}
+```
+
+The parts are made where the English is (`part` in `bin/omabump-common`, at `mise_row`, `apply_blocked`, `repo_route_base`, `self_row`, `build_why` and `build_hold_parts`, `repo_derive`, the route case and `recipe_read` in `bin/omabump-check`, and `local_row`); free text from outside (a feed's or curl's error, `updateBlocked`, a vendor's `selfUpdate`) is an argument, through `clean_text` as the English field is. The panel words a note from its parts, and from the English field when there are none (a status.json from an older checker, or a note carried over from one) or when it names a key the panel does not know (a newer checker). It shortens a release-age hold (`build.hold`) on the row's second line by that key, never by its words. `tests/check.sh` keeps every row the test runs write and holds each note to its parts, in the scripts' words and in `Model.js`'s, and checks that the runs met every key the checker has a part for.
+
+**Notifications.** They are sent by `bin/omabump-check`, outside the shell, so `say` in `bin/omabump-common` words them: it reads the language code from `~/.config/omarchy/language` (`$OMARCHY_LANGUAGE_FILE` overrides where, as for the shell) as `Commons.I18n` reads it (trimmed, `^[a-z]{2,3}(-[A-Za-z]{2})?$`, anything else and no file are `en`), takes each key from `i18n/<code>.json`, then the base language's (`pt-BR` to `pt`), then `en.json`, then the key itself, and fills the holes as `Model.fill` does. A catalog is data: read with jq, never sourced, at most 256 KiB, and one that is not a JSON object, or a value that is not a non-empty string, reads as missing. `say_parts` words a note's parts the same way for a notification's body. No notification counts anything, so the scripts have no plural rules.
+
+Everything the scripts print to a terminal or stderr stays English, as pacman's own output does, and so do the errors a check reports (a row's `error`, `runError`, `miseError`, `omarchyPkgs.error`), which the panel shows after "Check failed:" as diagnostics. The settings in `manifest.json` are Omarchy's bar settings, which take their labels as written. Right-to-left languages: the panel is a `KeyboardPanel`, which Omarchy mirrors; the header tooltips, the one place it places by `x`, follow `LayoutMirroring.enabled`, and the `→` before a newer version turns to `←` with `Commons.I18n.rightToLeft`.
+
+**Adding a language** is one file, `i18n/<code>.json`, with every key of `en.json`; the tests read every catalog there, by Omarchy's plural rules (`tests/plural.js`, a copy of `Commons/Plural.js` they check against the installed one). **Adding a string** is its key in `en.json` and in every translation, and the one place that uses it.
 
 ## How CLI tools are found
 
@@ -421,4 +450,4 @@ pacman versions are compared with `vercmp`; mise versions are left to mise; a se
 
 ## Development and tests
 
-`bash tests/run.sh` runs every suite: the bash helpers, whole checks and installs against fake `pacman`, `pacman-conf`, `gpg`, `sudo`, `curl`, `git` and `mise` (no network, no root; Omarchy's repo database is a zstd tar the tests build with bsdtar), the widget's logic in `Model.js` through node (`tests/model.test.mjs`), the panel's cursor under the pointer (`tests/tst_pointer.qml`, offscreen through qmltestrunner), and the weekly pin report's script. It needs `vercmp` (pacman), `jq` and `python`; without `node` the `Model.js` tests and the runs of `bin/omabump-check` by the command lines `Model.js` builds (`tests/qml.sh`), and without `qt6-declarative` the pointer test, are reported as skipped, except on CI, where they fail. Run it in the foreground: the Ctrl-C tests need a shell that can trap INT. The suite comes in parts, which `tests/run.sh --list` names (`unit`, `model`, `qml`, `check`, `install`, `pin-watch`): `tests/run.sh check install` runs only those two, each from a clean scratch directory, and every part prints its time as it ends. After a change to one file, run the part that tests it (`unit` for `bin/omabump-common`, `model` and `qml` for `Model.js`, `qml` for the QML), then the whole suite before a commit. CI also runs `bash -n` and shellcheck on the scripts and checks that `manifest.json`, `apps.json` and `pins.json` parse.
+`bash tests/run.sh` runs every suite: the bash helpers, whole checks and installs against fake `pacman`, `pacman-conf`, `gpg`, `sudo`, `curl`, `git` and `mise` (no network, no root; Omarchy's repo database is a zstd tar the tests build with bsdtar), the widget's logic in `Model.js` through node (`tests/model.test.mjs`, in English, Ukrainian and Russian, and the catalogs in `i18n/`), the panel's cursor under the pointer and its translator on shells with and without `Commons.Translations` (`tests/tst_pointer.qml`, `tests/tst_strings_*.qml`, offscreen through qmltestrunner), and the weekly pin report's script. It needs `vercmp` (pacman), `jq` and `python`; without `node` the `Model.js` tests and the runs of `bin/omabump-check` by the command lines `Model.js` builds (`tests/qml.sh`), and without `qt6-declarative` the pointer test, are reported as skipped, except on CI, where they fail. Run it in the foreground: the Ctrl-C tests need a shell that can trap INT. The suite comes in parts, which `tests/run.sh --list` names (`unit`, `model`, `qml`, `check`, `install`, `pin-watch`): `tests/run.sh check install` runs only those two, each from a clean scratch directory, and every part prints its time as it ends. After a change to one file, run the part that tests it (`unit` for `bin/omabump-common`, `model` and `qml` for `Model.js`, `qml` for the QML), then the whole suite before a commit. CI also runs `bash -n` and shellcheck on the scripts and checks that `manifest.json`, `apps.json`, `pins.json` and the catalogs in `i18n/` parse.

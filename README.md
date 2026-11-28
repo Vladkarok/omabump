@@ -116,6 +116,14 @@ On a row with something newer, Skip (`K`, Shift+k since `k` moves the cursor, or
 
 Omarchy's settings schema has no array or object type, so `mutedApps` and `skippedVersions` appear only in the panel's own settings (one line, with Clear), not in the bar's widget settings.
 
+### Languages
+
+The panel, the bar tooltip, `status` over IPC and the notifications follow the language picked in Omarchy under Setup > Region > Language, and switch with it without a shell restart. Omabump ships English, Ukrainian and Russian (`i18n/en.json`, `uk.json`, `ru.json`); any other language reads English.
+
+To add a language, copy `i18n/en.json` to `i18n/<code>.json`, with the code Omarchy uses for it (`$OMARCHY_PATH/default/i18n/locales.json` lists them, `pt-BR` for example), and translate the values. Keep the `%1` holes. An entry with `one` and `other` counts something: give it the plural forms your language has (`one`, `few`, `many`, `other` in Ukrainian). A string your file lacks reads English, so a file can be partial. Nothing else needs changing; `tests/run.sh model` checks the file against English.
+
+What stays English on purpose: everything `bin/omabump-install` and `bin/omabump-check` print in a terminal, like pacman's own output; the English fields of status.json; the errors a check reports (after "Check failed:" on a row, or under the header), which are diagnostics; text from outside (a feed's or curl's error, a vendor's self-update hint, `updateBlocked` in apps.json); the settings labels in `manifest.json`, which Omarchy's bar settings show as written; and product and package names. On Omarchy before 4.5.0, which has no translation support for plugins, the panel is English.
+
 ## Supported apps
 
 | App | Package | Route |
