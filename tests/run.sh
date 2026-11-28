@@ -1749,7 +1749,7 @@ done
 { printf '{"notify.released": "%%1 %%2 lançado", "pad": "'; head -c "$i18n_max_bytes" /dev/zero | tr '\0' x; printf '"}\n'; } >"$i18n_dir/pt.json"
 same "say: a catalog over i18n_max_bytes is English" "Codex 2.0 released" "$(say_as pt notify.released Codex 2.0)"
 { printf '{"notify.released": "%%1 %%2 lançado", "pad": "'; head -c 200000 /dev/zero | tr '\0' x; printf '"}\n'; } >"$i18n_dir/pt.json"
-same "say: a catalog under it but larger than one argument may be reads" "Codex 2.0 lançado" "$(say_as pt notify.released Codex 2.0)"
+same "say: a catalog under it, though larger than one argument may be, is read" "Codex 2.0 lançado" "$(say_as pt notify.released Codex 2.0)"
 echo '{"notify.aheadBody": "Ainda não está no repo do Omarchy."}' >"$i18n_dir/pt.json"
 same "say: a key missing in the language is English" "Codex 2.0 released|Ainda não está no repo do Omarchy." \
   "$(say_as pt notify.released Codex 2.0)|$(say_as pt notify.aheadBody)"
