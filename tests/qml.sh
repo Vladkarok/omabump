@@ -241,10 +241,11 @@ qml_row() {
   local error="" stale=false omarchy_update=false blocked="" feed_error="" route_error=""
   local muted_json='[]' skipped_json='{"qml-app": "1.2"}' seen_file=$scratch/qml-seen.json
   local update switchable muted skipped skip_end quiet hold_clause unread=false build_reason build_from
-  local repo_new ahead buildable build_note build_note_from route_ok
+  local repo_new ahead buildable build_note build_note_from build_note_parts route_ok note_parts='[]'
   mkdir -p "$state_dir"
   rm -f "$seen_file"
-  build_why true "" "" "$(build_hold_clause "$pkg" "$vendor_version" "$3" "$now")"
+  build_why true "" "" "$(build_hold_clause "$pkg" "$vendor_version" "$3" "$now")" '[]' \
+    "$(build_hold_parts "$pkg" "$vendor_version" "$3" "$now")"
   row_derive
   row_json | jq -r "$4"
 }
@@ -255,12 +256,12 @@ refuse "Model.js compares no versions" grep -qiE 'vercmp\(|rpmvercmp' "$root/Mod
 check "Model.js drops a skip by the skipEnded field bin/omabump-check writes" grep -q 'app.skipEnded' "$root/Model.js"
 same "the rows a check writes (row_json) carry skipEnded" '1.2|' \
   "$(qml_row 1.0-1 1.3 0 .skipEnded)|$(qml_row 1.0-1 1.2 0 .skipEnded)"
-# A row shortens the release-age hold clause by its words (Model.holdNote).
-qml_hold_re=$(sed -n 's|^var holdNote = /\(.*\)/$|\1|p' "$root/Model.js")
-qml_held=$(qml_row 1.0-1 1.3 86400 .buildNote)
-# shellcheck disable=SC2016 # expanded by the child bash
-check "a check (build_hold_clause) words the hold clause as Model.holdNote reads it" \
-  bash -c '[[ -n $1 && $2 =~ $1 ]]' _ "$qml_hold_re" "$qml_held"
+# A row shortens the release-age hold clause by its key (Model.partText's
+# build.hold), never by its words, and writes its end from the date.
+same "a check (build_hold_parts) writes the hold as build.hold, its end a date" "build.hold|24|$(( 1767225600 + 86400 ))" \
+  "$(qml_row 1.0-1 1.3 86400 '.buildNoteParts[0] | "\(.key)|\(.args[0])|\(.args[1].date)"')"
+check "and Model.js shortens it by that key" grep -q 'part.key === "build.hold"' "$root/Model.js"
+refuse "Model.js reads no note by its words" grep -qE 'holdNote|Build now from |indexOf\("All current' "$root/Model.js"
 same "Model.js caps the quiet settings where load_quiet does" "$quiet_max" \
   "$(sed -n 's/^var quietMax = \([0-9]*\)$/\1/p' "$root/Model.js")"
 
@@ -304,16 +305,20 @@ refuse "the widget recognises no state by the checker's wording" \
 # Every Model.x the QML reads is a function or value Model.js defines: a
 # typo would show only as a binding error in the shell's log.
 model_missing=$(comm -23 \
-  <(grep -ho 'Model\.[A-Za-z]*' "$root/Main.qml" "$root/Panel.qml" | grep -vx 'Model\.js' | sed 's/^Model\.//' | sort -u) \
+  <(grep -ho 'Model\.[A-Za-z]*' "$root/Main.qml" "$root/Panel.qml" "$root/Translator.qml" | grep -vx 'Model\.js' \
+    | sed 's/^Model\.//' | sort -u) \
   <(sed -n 's/^function \([A-Za-z]*\)(.*/\1/p; s/^var \([A-Za-z]*\) = .*/\1/p' "$root/Model.js" | sort -u) | paste -sd' ')
-same "Main.qml and Panel.qml read only what Model.js defines" "" "$model_missing"
+same "Main.qml, Panel.qml and Translator.qml read only what Model.js defines" "" "$model_missing"
 check "and they read some" grep -q 'Model\.tooltipText(' "$root/Panel.qml"
 
 # --- the cursor under the pointer, in Qt ---------------------------------------
 
 # PointerGate.qml under Panel.qml's rows in miniature (tests/tst_pointer.qml),
-# offscreen through qmltestrunner (qt6-declarative), one line per test.
-# Qt 6's: /usr/bin/qmltestrunner is Qt 5's, when qt5-declarative is here.
+# and Translator.qml on a shell with Commons.Translations and on one
+# without (tests/tst_strings_new.qml and tests/tst_strings_old.qml, each
+# with its stand-in qs.Commons on the import path), offscreen through
+# qmltestrunner (qt6-declarative), one line per test. Qt 6's:
+# /usr/bin/qmltestrunner is Qt 5's, when qt5-declarative is here.
 qml_runner=$(command -v /usr/lib/qt6/bin/qmltestrunner || command -v qmltestrunner6 || true)
 if [[ -z $qml_runner ]]; then
   if [[ ${GITHUB_ACTIONS:-} == true ]]; then
@@ -324,16 +329,23 @@ if [[ -z $qml_runner ]]; then
 else
   mkdir -p "$scratch/qt-runtime"
   chmod 700 "$scratch/qt-runtime"
-  qml_out=$(env QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software QML_DISABLE_DISK_CACHE=1 \
-    XDG_RUNTIME_DIR="$scratch/qt-runtime" timeout 120 "$qml_runner" -input "$root/tests/tst_pointer.qml" </dev/null 2>&1)
-  qml_rc=$?
-  while IFS= read -r line; do
-    name=${line#*::*::}
-    case $line in
-      "PASS   : "*) [[ $name == initTestCase* || $name == cleanupTestCase* ]] || pass "QML: ${name%%()*}" ;;
-      "FAIL!  : "*) fail "QML: ${name%%()*}" "${name#*() }" ;;
-    esac
-  done <<<"$qml_out"
-  grep -q '^Totals: ' <<<"$qml_out" || fail "QML: tests/tst_pointer.qml ran to the end" "exit $qml_rc: $(head -c 400 <<<"$qml_out")"
+  # qml_test <file> [<qmltestrunner option>...]
+  qml_test() {
+    local qml_out qml_rc line name
+    qml_out=$(env QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software QML_DISABLE_DISK_CACHE=1 \
+      XDG_RUNTIME_DIR="$scratch/qt-runtime" timeout 120 "$qml_runner" "${@:2}" -input "$root/tests/$1" </dev/null 2>&1)
+    qml_rc=$?
+    while IFS= read -r line; do
+      name=${line#*::*::}
+      case $line in
+        "PASS   : "*) [[ $name == initTestCase* || $name == cleanupTestCase* ]] || pass "QML: ${name%%()*}" ;;
+        "FAIL!  : "*) fail "QML: ${name%%()*}" "${name#*() }" ;;
+      esac
+    done <<<"$qml_out"
+    grep -q '^Totals: ' <<<"$qml_out" || fail "QML: tests/$1 ran to the end" "exit $qml_rc: $(head -c 400 <<<"$qml_out")"
+  }
+  qml_test tst_pointer.qml
+  qml_test tst_strings_new.qml -import "$root/tests/qs-new"
+  qml_test tst_strings_old.qml -import "$root/tests/qs-old"
 fi
 

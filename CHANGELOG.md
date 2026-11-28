@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+Added
+
+- Omabump follows the language picked in Omarchy under Setup > Region > Language, and switches with it without a shell restart: the panel, the bar tooltip, `status` over IPC and the notifications. It ships English, Ukrainian and Russian in `i18n/`; another language reads English, and adding one is one file, `i18n/<code>.json`.
+- Status rows gain `noteParts` and `buildNoteParts`, and `omarchyPkgs` gains `noteParts`: the English `note`, `buildNote` and `omarchyPkgs.note` as a list of `{key, args}`, which the panel words in the user's language. The English fields stay as they were, and `schemaVersion` stays 1.
+
+Changed
+
+- The panel no longer reads a note by its English words: a recipe's release-age hold is shortened to "Build now from <date>" by its key, and its end is written in the language's own way. A status.json from an older checker shows its English notes as they are, unshortened, until the next check.
+- `bin/omabump-install` and `bin/omabump-check` print English to a terminal as before; only notifications are translated. On Omarchy before 4.5.0, which has no translation support for plugins, the panel stays English and works as before.
+- In a right-to-left language the header's tooltips open towards the card, and the arrow before a newer version points the other way.
+
 ## 0.2.0 (2026-11-28)
 
 Added

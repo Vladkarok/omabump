@@ -28,7 +28,7 @@ else
 
   # model_call <function>: Model.js's answer to each line of stdin, a JSON
   # array of arguments.
-  model_call() { node "$root/tests/model.mjs" "$1"; }
+  model_call() { node "$root/tests/model.mjs" "$@"; }
 
   # K stores only a version load_quiet keeps, by the script's own function.
   model_versions=(1.0 1.0.0-beta.1 v1 1.0~rc1 1+2_3 -1 .1 1..2 1:2 '1 0' '' é1 1é
@@ -185,7 +185,7 @@ EOF
   model_route_reads() {
     jq -c '[.]' "$1" | model_call rowSection | paste -sd' '
     jq -c '[.]' "$1" | model_call switchRoute | paste -sd' '
-    jq -c '[.]' "$1" | model_call switchClause | paste -sd'|'
+    jq -c '[.]' "$1" | model_call switchClause en | paste -sd'|'
     jq -sc '[.]' "$1" | model_call panelLayout | jq -c '.rows | map(.pkg)'
   }
   jq -c 'del(.section, .switchRoute)' "$scratch/route-rows" >"$scratch/route-rows-old"

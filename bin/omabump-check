@@ -399,15 +399,16 @@ local_pacman_busy() {
 # as it is.
 local_row() {
   local p_source p_name p_installed p_latest p_from p_installable p_unchecked p_self p_unread p_repo p_vendor
-  local p_vendor_known p_note p_ahead p_build_note p_build_from
-  local update held=false installable switchable=false past=false self=false blocked unchecked note unread=false repo_version="" hold_clause=""
+  local p_vendor_known p_note p_ahead p_build_note p_build_from p_note_parts p_build_note_parts
+  local update held=false installable switchable=false past=false self=false blocked unchecked note note_parts unread=false
+  local repo_version="" hold_clause=""
   row="" why=""
   self_updating_name "$name" && self=true
   if [[ $prev == '{}' ]]; then
     # Installed since the last check: what it is, not yet what is newer.
     local label installed_name=$name latest="" from="" error="" stale=false
     local omarchy_update=false self_updating=$self muted skipped skip_end quiet hold_clause=""
-    update=false installable=false unchecked=true note="Not checked yet" unread=true
+    update=false installable=false unchecked=true note="Not checked yet" note_parts=$parts_not_checked unread=true
     label=$(jq -r '.label // .pkg' <<<"$app")
     row_quiet "$pkg" "$source" false "" "$installed"
     # Any failure of update_blocked, an unread entry too, reads as not off
@@ -422,12 +423,15 @@ local_row() {
   # or moved between package and its own copy), its field unread
   # (row_unread). For a self-updating app, unchecked alone does not say so:
   # its unknown or pre-release version is unchecked too.
+  # The parts of its note and build note are null when an older checker
+  # wrote it: the English fields alone then (parts_cat).
   IFS=$'\x1f' read -r p_source p_name p_installed p_latest p_from p_installable p_unchecked p_self p_unread p_repo \
-    p_vendor p_vendor_known p_note p_ahead p_build_note p_build_from < <(jq -r "$jq_status"'
+    p_vendor p_vendor_known p_note p_ahead p_build_note p_build_from p_note_parts p_build_note_parts < <(jq -r "$jq_status"'
     [.source // "", .installedName // "", .installed // "", .latest // "", .versionFrom // "",
      .installable == true, .unchecked == true, .selfUpdating == true, row_unread, .repoVersion // "",
      (.vendorVersion // (if .versionFrom == "feed" then .latest else "" end)),
-     (has("vendorVersion") or .versionFrom != "repo"), .note // "", .ahead == true, .buildNote // "", .buildNoteFrom // ""]
+     (has("vendorVersion") or .versionFrom != "repo"), .note // "", .ahead == true, .buildNote // "", .buildNoteFrom // "",
+     (.noteParts | arrays // null | tojson), (.buildNoteParts | arrays // null | tojson)]
     | map(tostring) | join("\u001f")' <<<"$prev")
   if [[ $p_source != "$source" ]]; then
     why="$pkg has another source in the app table"
@@ -444,11 +448,12 @@ local_row() {
   if [[ $self != "$p_self" ]]; then
     # As for a new row above: an unread entry reads as not off, on purpose.
     blocked=$(update_blocked "$app" "$self") || blocked=""
-    row=$(jq -c --arg name "$name" --arg installed "$installed" --argjson self "$self" --arg blocked "$blocked" '
+    row=$(jq -c --arg name "$name" --arg installed "$installed" --argjson self "$self" --arg blocked "$blocked" \
+      --argjson unread_parts "$parts_not_checked" '
       . + {installedName: $name, installed: $installed, selfUpdating: $self, updateAvailable: false, installable: false,
-           switchable: false, held: false, skipped: false, unchecked: true, note: "Not checked yet",
+           switchable: false, held: false, skipped: false, unchecked: true, note: "Not checked yet", noteParts: $unread_parts,
            omarchyUpdate: false, blocked: ($blocked != ""), holdClause: "", unread: true,
-           ahead: false, buildable: false, buildNote: "", buildNoteFrom: ""}' <<<"$prev")
+           ahead: false, buildable: false, buildNote: "", buildNoteFrom: "", buildNoteParts: []}' <<<"$prev")
     why="$pkg is installed as $name now"
     return 0
   fi
@@ -467,13 +472,13 @@ local_row() {
     # a check can compare with the feed's newest. Unread until one does. A
     # copy has no pkgrel: its version as it is, as self_row compares it.
     if [[ $unchecked == false && -n $p_latest ]] && row_past "$installed" "$p_latest" ""; then
-      update=false unchecked=true note="Not checked yet" unread=true
+      update=false unchecked=true note="Not checked yet" note_parts=$parts_not_checked unread=true
       why="$pkg $installed is past the last known $p_latest"
     fi
     row=$(jq -c --arg name "$name" --arg installed "$installed" --argjson update "$update" --argjson unchecked "$unchecked" \
-      --arg note "$(clean_text "$note")" --argjson unread "$unread" '
+      --arg note "$(clean_text "$note")" --argjson noteParts "$note_parts" --argjson unread "$unread" '
       . + {installedName: $name, installed: $installed, updateAvailable: $update, unchecked: $unchecked, note: $note,
-           unread: $unread}
+           noteParts: $noteParts, unread: $unread}
       | if $update then . else .skipped = false end' <<<"$prev")
     [[ $name == "$p_name" ]] || why="$pkg is installed as $name now"
     return 0
@@ -487,9 +492,10 @@ local_row() {
       row=$(jq -c --arg installed "$installed" '. + {installed: $installed, updateAvailable: false, skipped: false}' <<<"$prev")
       why="$pkg reached $installed"
     else
-      row=$(jq -c --arg name "$name" --arg installed "$installed" --argjson keyed "$([[ $name == "$p_name" ]] && echo false || echo true)" '
+      row=$(jq -c --arg name "$name" --arg installed "$installed" --argjson keyed "$([[ $name == "$p_name" ]] && echo false || echo true)" \
+        --argjson unread_parts "$parts_not_checked" '
         . + {installedName: $name, installed: $installed, updateAvailable: false, skipped: false,
-             installable: false, unchecked: true, note: "Not checked yet", unread: true}
+             installable: false, unchecked: true, note: "Not checked yet", noteParts: $unread_parts, unread: true}
         | if $keyed then . + {latest: "", versionFrom: "", request: ""} else . end' <<<"$prev")
       why="$pkg is $name $installed now"
     fi
@@ -506,20 +512,21 @@ local_row() {
   # the repo when it had no package, and of the recipe while the vendor
   # was ahead, stays.
   if route "$source" newest repo; then
-    local repo_why="" repo_failed=false feed_error="" recipe_why="" build_reason build_from may_build=false
-    local repo_new ahead buildable build_note build_note_from route_ok latest from route_error="" vendor_version
+    local repo_why="" repo_why_parts='[]' repo_failed=false feed_error="" recipe_why="" recipe_why_parts='[]' may_build=false
+    local build_reason build_from build_reason_parts
+    local repo_new ahead buildable build_note build_note_from build_note_parts route_ok latest from route_error="" vendor_version
     repo_version=$p_repo vendor_version=$p_vendor
     blocked=$(update_blocked "$app" false) || blocked=""
     repo_route_base
     apply_blocked
     # No package in the repo: nothing Update could install, and the note's
     # reason (no repo, no package) is the last check's.
-    [[ -n $repo_version ]] || installable=false note=$p_note
+    [[ -n $repo_version ]] || installable=false note=$p_note note_parts=$p_note_parts
     # The recipe's word, which only a check reads, is the last check's
     # (buildNoteFrom recipe); build_why's other reasons are read here again.
-    [[ $p_build_from != recipe ]] || recipe_why=$p_build_note
+    [[ $p_build_from != recipe ]] || recipe_why=$p_build_note recipe_why_parts=$p_build_note_parts
     build_allowed "$app" && may_build=true
-    build_why "$may_build" "$blocked" "$(missing_tools_line)" "$recipe_why"
+    build_why "$may_build" "$blocked" "$(missing_tools_line)" "$recipe_why" "$(missing_tools_parts)" "$recipe_why_parts"
     repo_derive
     row_switchable "$source" "$name" "$pkg" "$route_ok" "$update" "$installable" "$repo_version" "$installed" && switchable=true
     if [[ -n $latest ]] && row_past "$installed" "$latest" "$from"; then past=true; fi
@@ -527,14 +534,15 @@ local_row() {
       --argjson installable "$installable" --argjson switchable "$switchable" --arg note "$(clean_text "$note")" \
       --arg clause "$hold_clause" --arg latest "$latest" --arg from "$from" --argjson ahead "$ahead" \
       --argjson buildable "$buildable" --arg buildNote "$(clean_text "$build_note")" --arg buildNoteFrom "$build_note_from" \
-      --argjson past "$past" '
+      --argjson noteParts "$note_parts" --argjson buildNoteParts "$build_note_parts" \
+      --argjson past "$past" --argjson unread_parts "$parts_not_checked" '
       . + {installedName: $name, installed: $installed, updateAvailable: $update, held: $held,
-           installable: $installable, switchable: $switchable, note: $note, holdClause: $clause,
+           installable: $installable, switchable: $switchable, note: $note, noteParts: $noteParts, holdClause: $clause,
            latest: $latest, versionFrom: $from, ahead: $ahead, buildable: $buildable, buildNote: $buildNote,
-           buildNoteFrom: $buildNoteFrom}
+           buildNoteFrom: $buildNoteFrom, buildNoteParts: $buildNoteParts}
       | if $update then . else .skipped = false end
       | if $past then . + {updateAvailable: false, switchable: false, skipped: false, ahead: false, buildable: false,
-          unchecked: true, note: "Not checked yet", unread: true} else . end' <<<"$prev")
+          unchecked: true, note: "Not checked yet", noteParts: $unread_parts, unread: true} else . end' <<<"$prev")
     if [[ $past == true ]]; then
       why="$pkg $installed is past the last known $p_latest"
     elif [[ $name != "$p_name" ]]; then
@@ -566,11 +574,11 @@ local_row() {
   # (installable, omarchy update's AUR route) stays.
   if [[ -n $p_latest ]] && row_past "$installed" "$p_latest" "$p_from"; then past=true; fi
   row=$(jq -c --arg name "$name" --arg installed "$installed" --argjson update "$update" \
-    --argjson switchable "$switchable" --argjson past "$past" '
+    --argjson switchable "$switchable" --argjson past "$past" --argjson unread_parts "$parts_not_checked" '
     . + {installedName: $name, installed: $installed, updateAvailable: $update, switchable: $switchable}
     | if $update then . else .skipped = false end
     | if $past then . + {updateAvailable: false, switchable: false, skipped: false, unchecked: true, note: "Not checked yet",
-        unread: true} else . end' <<<"$prev")
+        noteParts: $unread_parts, unread: true} else . end' <<<"$prev")
   if [[ $past == true ]]; then
     why="$pkg $installed is past the last known $p_latest"
   elif [[ $name != "$p_name" ]]; then
@@ -591,7 +599,7 @@ notified='{}'
 
 pkgs_state=""
 pkgs_commit=$(jq -r '.omarchyPkgs.commit // ""' <<<"$previous")
-pkgs_error="" pkgs_note="" mise_note=""
+pkgs_error="" pkgs_note="" pkgs_note_parts='[]' mise_note=""
 # An --if-due run starts when its attempt says, to the second, so a clock
 # stepped back since then cannot make the run look like one that wrote
 # nothing.
@@ -615,7 +623,7 @@ trap 'exit 129' HUP
 # write_status reads the previous run from a file (--slurpfile), so a large
 # status.json never becomes a command-line argument.
 printf '%s\n' "$previous" >"$tmp/previous.json"
-missing_line=$(missing_tools_line)
+missing_line=$(missing_tools_line) missing_parts=$(missing_tools_parts)
 
 # The clone is fetched on first need, and only for a row the vendor is
 # ahead on, of an entry Build now may build, while buildAhead is on: with
@@ -626,17 +634,19 @@ missing_line=$(missing_tools_line)
 # its whole build; a check that finds it taken reads no recipe this time,
 # and Build now finds out the rest when asked.
 pkgs_busy_note="The omarchy-pkgs clone is busy with an update; Build now reads its recipe when asked"
+pkgs_error_parts='[]'
 pkgs_ready() {
   if [[ -z $pkgs_state ]]; then
     if ! pkgs_take_lock 0; then
       pkgs_state=busy
-      pkgs_note=$pkgs_busy_note
+      pkgs_note=$pkgs_busy_note pkgs_note_parts=$(part note.pkgsBusy)
     else
       if pkgs_commit=$(pkgs_fetch 2>"$tmp/git.err"); then
         pkgs_state=ready pkgs_base=$pkgs_commit
       else
         pkgs_state=failed
         pkgs_error="Could not fetch omarchy-pkgs: $(tail -1 "$tmp/git.err")"
+        pkgs_error_parts=$(part build.pkgsFetchFailed "$(tail -1 "$tmp/git.err")")
       fi
       pkgs_drop_lock
     fi
@@ -648,22 +658,27 @@ pkgs_ready() {
 # now, for the vendor's release $2, into recipe_why: its blocker (no
 # recipe, no upstream watch), its release-age hold (build_hold_clause), or
 # why the clone or the recipe could not be read; "" when it could build,
-# or when the clone is busy (nothing is known then).
-recipe_why=""
+# or when the clone is busy (nothing is known then). recipe_why_parts: the
+# same as parts.
+recipe_why="" recipe_why_parts='[]'
 recipe_read() {
   local pkg=$1 blocker age
-  recipe_why=""
+  recipe_why="" recipe_why_parts='[]'
   if ! pkgs_ready; then
-    [[ $pkgs_state == busy ]] || recipe_why=$pkgs_error
+    [[ $pkgs_state == busy ]] || recipe_why=$pkgs_error recipe_why_parts=$pkgs_error_parts
     return 0
   fi
   if ! blocker=$(recipe_blocker "$pkgs_base" "$pkg" 2>"$tmp/err") \
     || { [[ -z $blocker ]] && ! age=$(recipe_release_age "$pkgs_base" "$pkg" 2>"$tmp/err"); }; then
     recipe_why="Could not read Omarchy's $pkg recipe: $(tail -1 "$tmp/err")"
+    recipe_why_parts=$(part build.recipeUnreadable "$pkg" "$(tail -1 "$tmp/err")")
     return 0
   fi
-  if [[ -n $blocker ]]; then recipe_why=$blocker; return 0; fi
-  recipe_why=$(build_hold_clause "$pkg" "$2" "$age" "$now")
+  if [[ -n $blocker ]]; then
+    recipe_why=$(recipe_blocker_text "$blocker" "$pkg") recipe_why_parts=$(recipe_blocker_parts "$blocker" "$pkg")
+    return 0
+  fi
+  recipe_why=$(build_hold_clause "$pkg" "$2" "$age" "$now") recipe_why_parts=$(build_hold_parts "$pkg" "$2" "$age" "$now")
 }
 
 # One table for the whole run: the merge happens once.
@@ -685,27 +700,55 @@ write_status() {
   printf '%s\n' "${rows[@]}" >"$tmp/rows" || return
   status_write_check "$final" "$at" "$started" "$retry" "$(clean_text "${2:-}")" \
     "$pkgs_commit" "$(clean_text "$pkgs_error")" "$(clean_text "$pkgs_note")" "$mise_note" "$tmp/previous.json" "$order" \
-    <"$tmp/rows"
+    "$pkgs_note_parts" <"$tmp/rows"
 }
 
 # Each announcement is saved as soon as it is sent, so a run that dies later
 # does not announce it again.
 save_notified() { save_json "$notified" "$notified_file"; }
 
+# The words of the row's notification $1, in the user's language (say):
+# "update", the release $2 an Update installs, or the one it cannot
+# install and why (the row's note); "ahead", the vendor's release $2 that
+# only Build now reaches. Sets notice_summary and notice_body.
+notice_summary="" notice_body=""
+notice_text() {
+  local why
+  # In this shell, so the says below, each in a subshell, share one read.
+  i18n_load
+  if [[ $1 == ahead ]]; then
+    notice_summary=$(say notify.released "$label" "$2") notice_body=$(say notify.aheadBody)
+    return 0
+  fi
+  notice_summary=$(say notify.available "$label" "$2")
+  if [[ $self_updating == true ]]; then
+    notice_body=$(say notify.bodyNote "$installed" "$(say_parts "$(self_update_parts "$app" "$label")")")
+  elif [[ $installable == true ]]; then
+    notice_body=$(say notify.bodyOpen "$installed")
+  else
+    # A note this check made always has its parts; the English one stands
+    # in were it ever without them.
+    if [[ $note_parts == null ]]; then why=$note; else why=$(say_parts "$note_parts"); fi
+    notice_body=$(say notify.bodyNote "$installed" "${why^}")
+  fi
+}
+
 # Announces once what notified.json has not recorded for the key $1 (the
 # row's pkg for an update Update installs, ahead:<pkg> for a release only
 # Build now reaches, so that neither hides the other), at the version $2,
-# with the summary $3, the body $4 and notify-send's options after them:
-# announce_action decides (send, record or nothing), from the row's update
-# $5, error and quiet.
+# the notification $3 at the version $4 (notice_text's) and notify-send's
+# options after them: announce_action decides (send, record or nothing),
+# from the row's update $5, error and quiet.
 announce() {
-  local key=$1 version=$2 summary=$3 body=$4 update=$5 announced action
+  local key=$1 version=$2 kind=$3 shown=$4 update=$5 announced action
   shift 5
   announced=$(jq -r --arg k "$key" '.[$k] // ""' <<<"$notified")
   action=$(announce_action "$source" "$update" "$error" "$quiet" "$version" "$announced")
   [[ -n $action ]] || return 0
   if [[ $action == send ]]; then
-    notify-send -a Omabump "$@" "$(clean_text "$summary")" "$(clean_text "$body")" 2>/dev/null || return 0
+    notice_text "$kind" "$shown"
+    # After --: a summary may start with a dash (a label, a translation).
+    notify-send -a Omabump "$@" -- "$(clean_text "$notice_summary")" "$(clean_text "$notice_body")" 2>/dev/null || return 0
   fi
   notified=$(jq -c --arg k "$key" --arg v "$version" '.[$k] = $v' <<<"$notified")
   save_notified
@@ -745,7 +788,7 @@ while IFS=$'\x1f' read -r pkg source app facts; do
     [.latest // "", .versionFrom // "", .installed // "", .updateAvailable == true,
      (.vendorVersion // (if .versionFrom == "feed" then .latest else "" end))]
     | map(tostring) | join("\u001f")')
-  latest="" from="" note="" installable=false stale=false
+  latest="" from="" note="" note_parts='[]' installable=false stale=false
   route_error="" feed_error="" mise_update=false request="" unchecked=false
   held=false omarchy_update=false self_updating=false unread=false repo_version="" vendor_version=""
 
@@ -761,10 +804,11 @@ while IFS=$'\x1f' read -r pkg source app facts; do
     vendor-pkg)
       if ! command -v sudo >/dev/null || ! command -v curl >/dev/null; then
         note="Missing: sudo or curl; sudo pacman -S --needed base-devel curl"
+        note_parts=$(parts_cat "$(part note.missingSudoCurl)" "$(part note.installWith "base-devel curl")")
       elif ! vendor_pkg_url "$app" x >/dev/null; then
-        note="No https vendor package for $(uname -m)"
+        note="No https vendor package for $(uname -m)" note_parts=$(part note.noVendorPkg "$(uname -m)")
       elif ! vendor_checksum_declared "$app"; then
-        note="No published checksum for the vendor package"
+        note="No published checksum for the vendor package" note_parts=$(part note.noChecksum)
       else
         installable=true
       fi ;;
@@ -777,20 +821,20 @@ while IFS=$'\x1f' read -r pkg source app facts; do
       # omarchy update does not update plugins; omarchy plugin update does,
       # for a git clone.
       if self_git_managed; then installable=true
-      else note="Local checkout, update it with git"; fi ;;
+      else note="Local checkout, update it with git" note_parts=$(part note.localCheckout); fi ;;
     indicator)
       # omarchy update runs pacman -Syu, then yay -Sua for every foreign
       # package. So a package one of pacman's repos has (voxtype-bin, from
       # [omarchy]) needs nothing from here, nor does an AUR row installed
       # from the AUR.
-      note="No supported install path"
+      note="No supported install path" note_parts=$(part note.noInstallPath)
       if pacman -Qqn -- "$installed_name" >/dev/null 2>&1; then
-        omarchy_update=true note="Updates with omarchy update"
+        omarchy_update=true note="Updates with omarchy update" note_parts=$(part note.omarchyUpdate)
       elif [[ $(jq -r '.feed.type // ""' <<<"$app") == aur-rpc ]]; then
         if pacman -Qqm -- "$installed_name" >/dev/null 2>&1; then
-          omarchy_update=true note="Updates with omarchy update (AUR)"
+          omarchy_update=true note="Updates with omarchy update (AUR)" note_parts=$(part note.omarchyUpdateAur)
         else
-          note+=", version from AUR"
+          note+=", version from AUR" note_parts=$(part note.noInstallPathAur)
         fi
       fi ;;
     *)
@@ -839,19 +883,19 @@ while IFS=$'\x1f' read -r pkg source app facts; do
     [[ -z $feed_error ]] || vendor_version=$p_vendor
     [[ -n $repo_state ]] || repo_load || true
     repo_lookup "$pkg" || true
-    repo_why="" repo_failed=false
+    repo_why="" repo_why_parts='[]' repo_failed=false
     case $repo_state in
-      none) repo_why=$repo_error ;;
-      ready) [[ -n $repo_version ]] || repo_why="Omarchy's repo has no $pkg" ;;
+      none) repo_why=$repo_error repo_why_parts=$repo_error_parts ;;
+      ready) [[ -n $repo_version ]] || repo_why="Omarchy's repo has no $pkg" repo_why_parts=$(part note.repoHasNo "$pkg") ;;
       *) repo_failed=true ;;
     esac
-    may_build=false recipe_why=""
+    may_build=false recipe_why="" recipe_why_parts='[]'
     build_allowed "$app" && may_build=true
     if (( build_ahead )) && [[ $may_build == true && -z $blocked && -z $missing_line ]] \
       && vendor_ahead "$installed" "$repo_version" "$vendor_version"; then
       recipe_read "$pkg" "$vendor_version"
     fi
-    build_why "$may_build" "$blocked" "$missing_line" "$recipe_why"
+    build_why "$may_build" "$blocked" "$missing_line" "$recipe_why" "$missing_parts" "$recipe_why_parts"
   fi
 
   # The update, the switch and the settings' mute and skip, by the rules
@@ -882,15 +926,11 @@ while IFS=$'\x1f' read -r pkg source app facts; do
       announces=$repo_new announce_version=$repo_version
       [[ $ahead == false ]] || shown=$repo_version
     fi
-    body="Installed: $installed. Open the Omabump panel to update."
-    [[ $installable == true ]] || body="Installed: $installed. ${note^}."
-    [[ $self_updating == false ]] || body="Installed: $installed. Updates itself: $(self_update_text "$app" "$label")."
-    [[ $announces == false ]] || announce "$announce_key" "$announce_version" "$label $shown available" "$body" "$update"
+    [[ $announces == false ]] || announce "$announce_key" "$announce_version" update "$shown" "$update"
   fi
   # Not beside the notice of a package Update can install now: one a check.
   if (( notify && build_ahead )) && [[ $buildable == true && $repo_new == false ]]; then
-    announce "ahead:$pkg" "$vendor_version" "$label $vendor_version released" \
-      "Not in Omarchy's repo yet. Build now is available." true -u low
+    announce "ahead:$pkg" "$vendor_version" ahead "$vendor_version" true -u low
   fi
 
   rows+=("$(row_json)")

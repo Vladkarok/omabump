@@ -927,7 +927,7 @@ build_recipe() {
   fi
 
   blocker=$(recipe_blocker "$pkgs_base" "$pkg") || die "could not read the $pkg recipe at ${pkgs_base:0:12}"
-  [[ -z $blocker ]] || refuse "$blocker; wait for the [omarchy] repo"
+  [[ -z $blocker ]] || refuse "$(recipe_blocker_text "$blocker" "$pkg"); wait for the [omarchy] repo"
   # The keys the recipe verifies its sources with, from the pinned commit,
   # before any of its code runs (pgp_keyring).
   text=$(recipe_file "$pkgs_base" "$pkg" PKGBUILD) || die "could not read the $pkg recipe at ${pkgs_base:0:12}"

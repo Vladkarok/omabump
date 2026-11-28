@@ -13,6 +13,9 @@ Item {
   visible: false
 
   property var settings: ({})
+  // The translator the panel words its text with (Panel.qml's tr): this
+  // file words only checkError with it.
+  property var tr: null
   // A check started at creation would run with the defaults (mise rows
   // listed, notifications on): the bar injects the real settings later. The
   // owner sets this once they have arrived; checks wait for it.
@@ -77,11 +80,19 @@ Item {
   property bool pkgsFollowing: false
   property string pkgsError: ""
   property string pkgsNote: ""
-  // This shell's own check failed, or gave up waiting for the lock. One that
-  // left on the lock (Model.checkOutcome's "left") neither sets nor clears
-  // it. Kept until a run that started after checkErrorAfterMs completes,
-  // from here or anywhere else (Model.answersError).
-  property string checkError: ""
+  property var pkgsNoteParts: null
+  // This shell's own check failed, or gave up waiting for the lock: the
+  // outcome (Model.checkOutcome's) and the exit of the check that did, ""
+  // for none, worded in a binding (checkError) so that a change of
+  // language words it again. One that left on the lock ("left") neither
+  // sets nor clears it. Kept until a run that started after
+  // checkErrorAfterMs completes, from here or anywhere else
+  // (Model.answersError).
+  property string checkErrorOutcome: ""
+  property int checkErrorExit: 0
+  // Panel.qml always hands tr over; were it missing, the outcome word
+  // still marks the check as failed (checkFailed).
+  readonly property string checkError: tr ? Model.checkErrorText(tr, checkErrorOutcome, checkErrorExit, Model.lockWaitSec) : checkErrorOutcome
   // When the failed check ended, or when the run that could not start was
   // asked for: the check that held the lock then started before it, and
   // its answer is not the one asked for.
@@ -307,11 +318,12 @@ Item {
       pkgsFollowing = status.pkgsFollowing
       pkgsError = status.pkgsError
       pkgsNote = status.pkgsNote
+      pkgsNoteParts = status.pkgsNoteParts
       miseError = status.miseError
       runError = status.runError
       // A run that started after this shell's failed one, and completed,
       // has the answer that one could not give.
-      if (checkError !== "" && Model.answersError(status, checkErrorAfterMs)) checkError = ""
+      if (checkErrorOutcome !== "" && Model.answersError(status, checkErrorAfterMs)) checkErrorOutcome = ""
     } catch (e) {
       console.warn("omabump", "Ignoring bad status file", statusPath, e)
     }
@@ -347,10 +359,13 @@ Item {
         // the Refresh says it was not done rather than pass for one that
         // was. The check that held the lock started before it was asked
         // for, so only a later one clears that.
-        root.checkError = Model.checkErrorText(outcome, exitCode, Model.lockWaitSec)
+        root.checkErrorOutcome = outcome
+        root.checkErrorExit = exitCode
         root.checkErrorAfterMs = root.runAskedMs
       } else if (outcome !== "left" && outcome !== "notDue") {
-        root.checkError = Model.checkErrorText(outcome, exitCode, Model.lockWaitSec)
+        // A check that completed clears it ("ok" words as none).
+        root.checkErrorOutcome = outcome === "ok" ? "" : outcome
+        root.checkErrorExit = exitCode
         root.lastCheckEndMs = Date.now()
         root.checkErrorAfterMs = root.lastCheckEndMs
       }

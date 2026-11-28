@@ -250,8 +250,10 @@ same "recipe_file: a blob that cannot be fetched is a failed read, not a missing
 same "recipe_blocker: then a failed check, not 'no upstream watch'" "1||could not read pkgbuilds/foo/.omarchy/package.json at ${rev:0:12}" \
   "$(out=$(recipe_blocker "$rev" foo 2>"$scratch/rb.err"); echo "$?|$out|$(grep -o "^could not read pkgbuilds/foo/.omarchy/package.json at ${rev:0:12}" "$scratch/rb.err")")"
 same "recipe_release_age: an unreadable package.json fails" 1 "$(rc_of recipe_release_age "$rev" foo)"
-same "recipe_blocker: a package without a recipe still says so" 'No baz recipe in omarchy-pkgs' "$(recipe_blocker "$rev" baz)"
-same "recipe_blocker: a recipe without package.json needs no blob" 'Repo recipe has no upstream watch yet' "$(recipe_blocker "$rev" bar)"
+same "recipe_blocker: a package without a recipe still says so" 'build.noRecipe|No baz recipe in omarchy-pkgs' \
+  "$(b=$(recipe_blocker "$rev" baz); echo "$b|$(recipe_blocker_text "$b" baz)")"
+same "recipe_blocker: a recipe without package.json needs no blob" 'build.noWatch|Repo recipe has no upstream watch yet' \
+  "$(b=$(recipe_blocker "$rev" bar); echo "$b|$(recipe_blocker_text "$b" bar)")"
 # The blobs fetched as the real clone would, from its (here local) origin.
 tgit -C "$pkgs_dir" -c protocol.file.allow=always cat-file -e "$rev:pkgbuilds/foo/.omarchy/package.json"
 tgit -C "$pkgs_dir" -c protocol.file.allow=always cat-file -e "$rev:pkgbuilds/foo/PKGBUILD"
@@ -295,7 +297,8 @@ refuse "run_killable: and the command it ran is stopped" kill -0 "${slept:-0}"
 # Fake pacman (only claude-desktop and foo-old installed, or with
 # $OMABUMP_TEST_PKGS set the "<name> <version>" lines of that file; with
 # $OMABUMP_TEST_Q_HOOK set, each -Q runs that shell command first; -Qqn
-# knows the names in the file $OMABUMP_TEST_NATIVE as a repo's packages),
+# knows the names in the file $OMABUMP_TEST_NATIVE as a repo's packages,
+# -Qqm those in $OMABUMP_TEST_FOREIGN as foreign ones),
 # pacman-conf (the database in $run_dir/pacman-db; for `--repo omarchy
 # Server` the lines of $OMABUMP_TEST_SERVERS, no such repo when that is
 # empty), curl (every fetch fails, but a file of $OMABUMP_TEST_SERVED named
@@ -314,6 +317,7 @@ mkdir -p "$run_dir/bin" "$run_dir/home/.config/omarchy" "$run_dir/pacman-db"
 cat >"$run_dir/bin/pacman" <<'EOF'
 #!/bin/sh
 if [ "$1" = -Qqn ]; then grep -qxF -- "$3" "${OMABUMP_TEST_NATIVE:-/dev/null}"; exit; fi
+if [ "$1" = -Qqm ]; then grep -qxF -- "$3" "${OMABUMP_TEST_FOREIGN:-/dev/null}"; exit; fi
 [ "$1" = -Q ] || exit 1
 [ -z "${OMABUMP_TEST_Q_HOOK:-}" ] || sh -c "$OMABUMP_TEST_Q_HOOK"
 if [ -n "${OMABUMP_TEST_PKGS:-}" ]; then
@@ -377,7 +381,7 @@ chmod +x "$run_dir/bin/"*
 run_state=$run_dir/state/omarchy/plugins/io.github.vladkarok.omabump
 run_settings() { printf '{"plugins": [{"id": "io.github.vladkarok.omabump"%s}]}' "$1" >"$run_dir/home/.config/omarchy/shell.json"; }
 run_env=(HOME="$run_dir/home" XDG_CONFIG_HOME="$run_dir/config" XDG_STATE_HOME="$run_dir/state"
-  XDG_CACHE_HOME="$run_dir/cache" OMARCHY_PATH="$run_dir/omarchy" PATH="$run_dir/bin:$PATH"
+  XDG_CACHE_HOME="$run_dir/cache" OMARCHY_PATH="$run_dir/omarchy" PATH="$run_dir/bin:$PATH" OMARCHY_LANGUAGE_FILE=
   OMABUMP_TEST_MISE="$run_dir/mise.log" OMABUMP_TEST_NET="$run_dir/net.log")
 # The check under `timeout -k 5 120`, as Main.qml runs it, in the background:
 # $! is the timeout's pid (env execs it).
@@ -387,7 +391,12 @@ check_bg() {
   env "${run_env[@]}" timeout -k 5 120 "$root/bin/omabump-check" --no-notify "$@" >/dev/null 2>&1 &
 }
 check_run() { check_bg "$@"; wait "$!"; }
-run_status() { jq -r "$1" "$run_state/status.json" 2>&1; }
+# Each read of a run's status.json also keeps its rows and its omarchyPkgs
+# in $scratch/rows-seen, for the notes' differential test at the end.
+run_status() {
+  jq -c '(.apps[]?), {omarchyPkgs: .omarchyPkgs}' "$run_state/status.json" >>"$scratch/rows-seen" 2>/dev/null
+  jq -r "$1" "$run_state/status.json" 2>&1
+}
 # Scratch files a run left: dot files in the state and cache directories
 # but the lock files.
 leftovers() {
@@ -758,7 +767,7 @@ same "--local: the new row in table order" 'loc-a loc-b loc-held loc-gone loc-ne
 # switchRoute, and without repoVersion and 0.2.0's fields; a row this
 # release writes has them too.
 same "--local: the new row has every field a check writes" \
-  "$(jq -c '.apps[0] | keys + ["section", "switchRoute", "repoVersion", "vendorVersion", "ahead", "buildable", "buildNote", "buildNoteFrom"] | sort' \
+  "$(jq -c '.apps[0] | keys + ["section", "switchRoute", "repoVersion", "vendorVersion", "ahead", "buildable", "buildNote", "buildNoteFrom", "noteParts", "buildNoteParts"] | sort' \
     "$run_dir/fixture.json")" "$(loc_row loc-new 'keys | tojson')"
 same "--local: and its route's section and switch (indicator)" "desktop false" "$(loc_row loc-new '"\(.section) \(.switchRoute)"')"
 
@@ -1160,7 +1169,10 @@ printf '#!/bin/sh\necho "$OMABUMP_TEST_STAT"\n' >"$run_dir/statbin/stat"
 cat >"$run_dir/notifybin/notify-send" <<'EOF'
 #!/bin/sh
 [ "$1 $2" = "-a Omabump" ] || exit 7
-printf '%s|%s\n' "$3" "$4" >>"$OMABUMP_TEST_NOTIFY"
+shift 2
+while [ "$1" = -u ]; do shift 2; done
+[ "$1" = -- ] || exit 8
+printf '%s|%s\n' "$2" "$3" >>"$OMABUMP_TEST_NOTIFY"
 EOF
 chmod +x "$run_dir/7zbin/7z" "$run_dir/statbin/stat" "$run_dir/notifybin/notify-send"
 IFS=: read -ra ai_dirs <<<"$PATH"
@@ -1390,6 +1402,15 @@ ai_feed 0.1.2
 ai_notify
 same "AppImage: again for a newer one" "T3 Code 0.1.2 available|Installed: 0.1.0. Updates itself: open T3 Code to update." \
   "$(cat "$run_dir/notify.log")"
+# In the language picked under Setup > Region > Language; status.json's
+# note stays English.
+echo uk >"$run_dir/config/omarchy/language"
+ai_feed 0.1.25
+ai_notify
+same "AppImage: Omarchy in Ukrainian, the notification in Ukrainian" \
+  "Доступно: T3 Code 0.1.25|Встановлено: 0.1.0. Оновлюється сама: відкрийте T3 Code, щоб оновити.|$ai_note" \
+  "$(cat "$run_dir/notify.log")|$(ai_row .note)"
+rm -f "$run_dir/config/omarchy/language"
 ai_feed 0.1.3
 ai_put 0.1.2-nightly.20261019.1
 ai_notify
@@ -1422,7 +1443,10 @@ printf '#!/bin/sh\n: >"%s/openclaw-ran"\n' "$run_dir" >"$np_dir/openclaw.mjs"
 cat >"$run_dir/notifybin/notify-send" <<'EOF'
 #!/bin/sh
 [ "$1 $2" = "-a Omabump" ] || exit 7
-printf '%s|%s\n' "$3" "$4" >>"$OMABUMP_TEST_NOTIFY"
+shift 2
+while [ "$1" = -u ]; do shift 2; done
+[ "$1" = -- ] || exit 8
+printf '%s|%s\n' "$2" "$3" >>"$OMABUMP_TEST_NOTIFY"
 EOF
 chmod +x "$np_dir/openclaw.mjs" "$run_dir/notifybin/notify-send"
 np_feed() {
@@ -1515,7 +1539,10 @@ mkdir -p "$rp_served" "$run_dir/rpnotify"
 cat >"$run_dir/rpnotify/notify-send" <<'EOF'
 #!/bin/sh
 [ "$1 $2" = "-a Omabump" ] || exit 7
-printf '%s|%s\n' "$3" "$4" >>"$OMABUMP_TEST_NOTIFY"
+shift 2
+while [ "$1" = -u ]; do shift 2; done
+[ "$1" = -- ] || exit 8
+printf '%s|%s\n' "$2" "$3" >>"$OMABUMP_TEST_NOTIFY"
 EOF
 chmod +x "$run_dir/rpnotify/notify-send"
 jq -n '[{pkg: "rp-a", label: "Rp A", feed: "1.2"}, {pkg: "rp-b", label: "Rp B", feed: "2.0"}, {pkg: "rp-c", label: "Rp C", feed: "3.0"},
@@ -1574,6 +1601,23 @@ same "repo: once the repo has it, the update notifies, and the row has Update" \
   'Rp B 2.0 available|Installed: 1.0-1. Open the Omabump panel to update.|true|false' \
   "$(grep '^Rp ' "$run_dir/notify.log")|$(rp_row rp-b '"\(.installable)|\(.held)"')"
 repo_db "$rp_served/omarchy.db" 'rp-a 1.2-1' 'rp-b 1.0-1' 'rp-c 3.0-2' 'rp-x 1.0-1' 'rp-x-debug 9.0-1' 'om-a 1.2-1'
+# A row without Update says why in its notification (its note), in the
+# language Omarchy is set to.
+cp "$run_dir/config/omarchy/omabump/apps.json" "$run_dir/apps-unblocked.json"
+jq '(.[] | select(.pkg == "rp-c")).updateBlocked = "a known problem"' "$run_dir/apps-unblocked.json" \
+  >"$run_dir/config/omarchy/omabump/apps.json"
+rm -f "$run_state/notified.json"
+rp_notify
+same "repo: a row without Update notifies why" 'Rp C 3.0-2 available|Installed: 3.0-1. Update off: a known problem.' \
+  "$(grep '^Rp C' "$run_dir/notify.log")"
+rm -f "$run_state/notified.json"
+echo ru >"$run_dir/config/omarchy/language"
+rp_notify
+same "repo: and in Russian with Omarchy in Russian" 'Доступно: Rp C 3.0-2|Установлено: 3.0-1. Обновление выключено: a known problem.' \
+  "$(grep 'Rp C' "$run_dir/notify.log")"
+rm -f "$run_dir/config/omarchy/language"
+mv "$run_dir/apps-unblocked.json" "$run_dir/config/omarchy/omabump/apps.json"
+rp_notify
 
 # --local: omarchy update installed a package from the repo; the row clears
 # without a check. Below the repo's version Update stays; past it, a row the
@@ -1709,6 +1753,8 @@ cat >"$run_dir/rpnotify/notify-send" <<'EOF'
 shift 2
 opts=""
 while [ "$1" = -u ]; do opts="$opts$1 $2 "; shift 2; done
+[ "$1" = -- ] || exit 8
+shift
 printf '%s%s|%s\n' "$opts" "$1" "$2" >>"$OMABUMP_TEST_NOTIFY"
 EOF
 rm -f "$run_state/status.json" "$run_state/notified.json"
@@ -1746,6 +1792,36 @@ OMABUMP_TEST_GIT=$(command -v git) rp_notify
 same "Build now on: the recipe's release-age hold: not buildable, from when, not announced" \
   "true|false|omarchy-pkgs holds new releases for 24 h, Build now from|" \
   "$(rp_row bn-a '"\(.ahead)|\(.buildable)|\(.buildNote | sub(" [A-Z][a-z]+ [0-9]+ [0-9:]+$"; ""))"')|$(cat "$run_dir/notify.log")"
+# What else the recipe can say: no upstream watch (sync false), no recipe
+# at all, a tree the clone cannot read; and a clone busy with an update.
+bn_pin_head() { jq -n --arg c "$(git -C "$bn_clone" rev-parse HEAD)" '{omarchyPkgs: {commit: $c}}' >"$run_dir/config/omarchy/omabump/pins.json"; }
+echo '{"sync": false}' >"$bn_clone/pkgbuilds/bn-a/.omarchy/package.json"
+tgit -C "$bn_clone" commit -qam nosync
+bn_pin_head
+OMABUMP_TEST_GIT=$(command -v git) rp_run
+same "Build now on: a recipe with sync false: not buildable, and why" 'false|Repo recipe has no upstream watch yet (sync: false)' \
+  "$(rp_row bn-a '"\(.buildable)|\(.buildNote)"')"
+printf '#!/bin/sh\nfor a; do [ "$a" = ls-tree ] && exit 1; done\nexec %s "$@"\n' "$(command -v git)" >"$run_dir/git-no-tree"
+chmod +x "$run_dir/git-no-tree"
+OMABUMP_TEST_GIT=$run_dir/git-no-tree rp_run
+same "Build now on: a tree the clone cannot read: not buildable, and why" \
+  "false|Could not read Omarchy's bn-a recipe: could not read the omarchy-pkgs tree at $(git -C "$bn_clone" rev-parse HEAD | cut -c1-12)" \
+  "$(rp_row bn-a '"\(.buildable)|\(.buildNote)"')"
+rm -f "$run_dir/git-no-tree"
+tgit -C "$bn_clone" rm -rq pkgbuilds/bn-a
+tgit -C "$bn_clone" commit -qm gone
+bn_pin_head
+OMABUMP_TEST_GIT=$(command -v git) rp_run
+same "Build now on: no recipe: not buildable, and why" 'false|No bn-a recipe in omarchy-pkgs' "$(rp_row bn-a '"\(.buildable)|\(.buildNote)"')"
+( exec 8>"$run_dir/cache/omabump/omarchy-pkgs.lock"; flock -n 8 && exec sleep 60 ) &
+bn_holder=$!
+for _ in $(seq 50); do flock -n "$run_dir/cache/omabump/omarchy-pkgs.lock" true || break; sleep 0.1; done
+OMABUMP_TEST_GIT=$(command -v git) rp_run
+same "Build now on: the clone busy: the panel's note says so, and Build now reads the recipe when asked" \
+  "The omarchy-pkgs clone is busy with an update; Build now reads its recipe when asked|true|" \
+  "$(run_status .omarchyPkgs.note)|$(rp_row bn-a '"\(.buildable)|\(.buildNote)"')"
+kill "$bn_holder" 2>/dev/null
+wait "$bn_holder" 2>/dev/null
 # A clone that cannot be read (no such commit, no network): Build now
 # says why, and the check reports it while an ahead row is not muted.
 jq -n '{omarchyPkgs: {commit: ("0" * 40)}}' >"$run_dir/config/omarchy/omabump/pins.json"
@@ -1765,12 +1841,14 @@ same "--local: back below it: ahead again, buildable as apps.json says, and a ch
   "$rc|$(rp_row bn-a '"\(.ahead)|\(.buildable)|\(.buildNote)"')"
 # A buildNote the refresh reads again itself (Update off, here lifted in
 # apps.json since) is not carried over; a recipe's is.
-jq '.apps |= map(if .pkg == "bn-a" then .buildable = false | .buildNote = "Update off: old" | .buildNoteFrom = "off" else . end)' "$run_state/status.json" \
+jq '.apps |= map(if .pkg == "bn-a" then .buildable = false | .buildNote = "Update off: old" | .buildNoteFrom = "off"
+  | .buildNoteParts = [{key: "note.updateOff", args: ["old"]}] else . end)' "$run_state/status.json" \
   >"$run_dir/edited.json" && mv "$run_dir/edited.json" "$run_state/status.json"
 loc_pkgs 'bn-a 1.1-1' 'bn-n 1.0-1'
 rp_run --local
 same "--local: an Update-off buildNote is read again, not kept" 'true|true|' "$(rp_row bn-a '"\(.ahead)|\(.buildable)|\(.buildNote)"')"
-jq '.apps |= map(if .pkg == "bn-a" then .buildable = false | .buildNote = "Repo recipe has no upstream watch yet" | .buildNoteFrom = "recipe" else . end)' \
+jq '.apps |= map(if .pkg == "bn-a" then .buildable = false | .buildNote = "Repo recipe has no upstream watch yet" | .buildNoteFrom = "recipe"
+  | .buildNoteParts = [{key: "build.noWatch", args: []}] else . end)' \
   "$run_state/status.json" >"$run_dir/edited.json" && mv "$run_dir/edited.json" "$run_state/status.json"
 loc_pkgs 'bn-a 1.2-1' 'bn-n 1.0-1'
 rp_run --local
@@ -1781,3 +1859,92 @@ run_settings ', "showMise": "false"'
 same "repo: the runs leave no scratch files" '' "$(leftovers)"
 rm -rf "$rp_served" "$run_dir/rpnotify" "$run_dir/notify.log" "$run_dir/rp.err" "$run_dir/pkgs" "$run_state/notified.json"
 rm -f "$run_dir/config/omarchy/omabump/apps.json" "$run_state/status.json"
+
+# --- the notes' parts ------------------------------------------------------------
+
+# The reasons of a row's note no run above meets: a vendor row with no
+# https package for this machine or no checksum, AUR indicators (from the
+# AUR, and not), a repo row and a vendor row without sudo.
+jq -n '[{pkg: "n-nopkg", label: "N", source: "vendor-pkg"},
+  {pkg: "n-nosum", label: "N", source: "vendor-pkg", vendorPkg: "https://example.invalid/n-{version}.pkg.tar.zst"},
+  {pkg: "n-aur", label: "N", source: "indicator", feed: {type: "aur-rpc", package: "n-aur"}},
+  {pkg: "n-aurm", label: "N", source: "indicator", feed: {type: "aur-rpc", package: "n-aurm"}},
+  {pkg: "n-repo", label: "N", source: "repo"}]
+  | map(.feed //= {type: "command", command: "echo 2.0"})' >"$run_dir/config/omarchy/omabump/apps.json"
+loc_pkgs 'n-nopkg 1.0-1' 'n-nosum 1.0-1' 'n-aur 1.0-1' 'n-aurm 1.0-1' 'n-repo 1.0-1'
+echo n-aurm >"$run_dir/foreign"
+rm -f "$run_state/status.json"
+OMABUMP_TEST_FOREIGN=$run_dir/foreign rp_run
+same "reasons: no https vendor package, no checksum, AUR versions, from the AUR" \
+  "No https vendor package for $(uname -m)|No published checksum for the vendor package|No supported install path, version from AUR|Updates with omarchy update (AUR)" \
+  "$(run_status '[.apps[] | select(.pkg | IN("n-nopkg", "n-nosum", "n-aur", "n-aurm")) | .note] | join("|")')"
+# Without sudo: every PATH tool but it, the fakes first.
+mkdir -p "$run_dir/nosudo"
+IFS=: read -ra nosudo_dirs <<<"$run_dir/bin:$PATH"
+for d in "${nosudo_dirs[@]}"; do
+  [[ -d $d ]] || continue
+  find "$d" -maxdepth 1 \( -type f -o -type l \) ! -name sudo -exec ln -s -t "$run_dir/nosudo" -- {} + 2>/dev/null
+done
+env "${run_env[@]}" PATH="$run_dir/nosudo" OMABUMP_TEST_PKGS="$run_dir/pkgs" timeout -k 5 120 "$root/bin/omabump-check" --no-notify \
+  >/dev/null 2>&1
+same "reasons: without sudo, the vendor row and the repo row say what is missing" \
+  "Missing: sudo or curl; sudo pacman -S --needed base-devel curl|Missing: sudo; sudo pacman -S --needed base-devel; No [omarchy] repo in pacman.conf" \
+  "$(run_status '[.apps[] | select(.pkg | IN("n-nosum", "n-repo")) | .note] | join("|")')"
+rm -rf "$run_dir/nosudo" "$run_dir/foreign" "$run_state/status.json" "$run_dir/config/omarchy/omabump/apps.json"
+# And those of mise's rows and of the repo's server, as the check's
+# functions word them: kept as rows for the test below.
+notes_keep() {
+  jq -cn --arg note "$1" --argjson parts "$2" '{pkg: "unit", note: $note, noteParts: $parts, buildNote: "", buildNoteParts: []}' \
+    >>"$scratch/rows-seen"
+}
+(
+  mise_safe_json='{"t": true}' mise_error="" mise_bump_error="" mise_backend_error="" mise_outdated_json='{}' mise_fetch_failed=()
+  for bump in '{"t": {"bump": "2.0", "latest": "2.0", "requested": "latest"}}' '{"t": {"bump": "1.5", "latest": "2.0", "requested": "1.0"}}'; do
+    mise_bump_json=$bump
+    mise_row t 1.0
+    notes_keep "$note" "$note_parts"
+  done
+  mise_safe_json='{}'
+  for key in asdf:t t; do mise_row "$key" 1.0; notes_keep "$note" "$note_parts"; done
+  mise_backend_error="mise ls --backend failed"
+  mise_row t 1.0
+  notes_keep "$note" "$note_parts"
+  export OMABUMP_TEST_SERVERS=http://mirror.example/x86_64
+  PATH=$run_dir/bin:$PATH repo_server_find || notes_keep "$repo_error" "$repo_error_parts"
+)
+same "reasons: mise's and the repo server's, worded" \
+  "Held back by your mise settings, 2.0 exists|Pinned to 1.0, 2.0 exists|Update check skipped: asdf backend|Update check skipped: not on a backend Omabump queries|Update check skipped: mise ls --backend failed|No https Server for [omarchy] in pacman.conf" \
+  "$(jq -r 'select(.pkg == "unit") | .note' "$scratch/rows-seen" | paste -sd'|')"
+
+# Every row the runs above wrote, as run_status kept them, and every
+# omarchyPkgs: where a note has parts (a row of a fixture from an older
+# checker has none), they say its English field word for word, in the
+# scripts' words (say_parts) and in the panel's (Model.js under node), so
+# the English fields and i18n/en.json cannot drift apart. Between them,
+# the runs wrote every key the checker has a part for.
+sort -u "$scratch/rows-seen" >"$scratch/rows"
+jq -c 'select(.pkg) | select(.noteParts | type == "array")' "$scratch/rows" >"$scratch/rows-parts"
+check "notes: the runs wrote rows with parts" test "$(wc -l <"$scratch/rows-parts")" -gt 50
+notes_en() (
+  OMARCHY_LANGUAGE_FILE=$scratch/no-language i18n_strings=""
+  while IFS= read -r parts; do say_parts "$parts"; done
+)
+same "notes: say_parts words each row's note as its English field" \
+  "$(jq -r '.note' "$scratch/rows-parts")" "$(jq -c '.noteParts' "$scratch/rows-parts" | notes_en)"
+same "notes: say_parts words its build note as its English field" \
+  "$(jq -r '.buildNote // ""' "$scratch/rows-parts")" "$(jq -c '.buildNoteParts // null' "$scratch/rows-parts" | notes_en)"
+same "notes: Model.js words each row's note as its English field" \
+  "$(jq -c '.note' "$scratch/rows-parts")" "$(jq -c '[.]' "$scratch/rows-parts" | node "$root/tests/model.mjs" checkerNote en)"
+same "notes: Model.js words its build note as its English field" \
+  "$(jq -c '.buildNote // ""' "$scratch/rows-parts")" "$(jq -c '[., false]' "$scratch/rows-parts" | node "$root/tests/model.mjs" buildNoteText en)"
+jq -c 'select(.omarchyPkgs.noteParts | type == "array") | .omarchyPkgs' "$scratch/rows" >"$scratch/pkgs-parts"
+same "notes: say_parts words omarchyPkgs' note as its English field" \
+  "$(jq -r '.note' "$scratch/pkgs-parts")" "$(jq -c '.noteParts' "$scratch/pkgs-parts" | notes_en)"
+same "notes: Model.js words omarchyPkgs' note as its English field" \
+  "$(jq -c '.note' "$scratch/pkgs-parts")" "$(jq -c '[.]' "$scratch/pkgs-parts" | node "$root/tests/model.mjs" pkgsNoteText en)"
+# The keys the scripts write parts with, against those the runs wrote.
+notes_keys=$(grep -ohE '\bpart (note|build)\.[A-Za-z]+|"key":"note\.[A-Za-z]+"|key: "build\.[A-Za-z]+"' \
+  "$root/bin/omabump-common" "$root/bin/omabump-check" | grep -oE '(note|build)\.[A-Za-z]+' | sort -u)
+notes_seen=$(jq -r '(.noteParts, .buildNoteParts, .omarchyPkgs.noteParts) | arrays | .[].key' "$scratch/rows" | sort -u)
+same "notes: the runs above wrote a part of every key the checker has" "" "$(comm -23 <(echo "$notes_keys") <(echo "$notes_seen") | paste -sd' ')"
+rm -f "$scratch/rows-seen" "$scratch/rows" "$scratch/rows-parts" "$scratch/pkgs-parts"
