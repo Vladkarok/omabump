@@ -1169,7 +1169,10 @@ printf '#!/bin/sh\necho "$OMABUMP_TEST_STAT"\n' >"$run_dir/statbin/stat"
 cat >"$run_dir/notifybin/notify-send" <<'EOF'
 #!/bin/sh
 [ "$1 $2" = "-a Omabump" ] || exit 7
-printf '%s|%s\n' "$3" "$4" >>"$OMABUMP_TEST_NOTIFY"
+shift 2
+while [ "$1" = -u ]; do shift 2; done
+[ "$1" = -- ] || exit 8
+printf '%s|%s\n' "$2" "$3" >>"$OMABUMP_TEST_NOTIFY"
 EOF
 chmod +x "$run_dir/7zbin/7z" "$run_dir/statbin/stat" "$run_dir/notifybin/notify-send"
 IFS=: read -ra ai_dirs <<<"$PATH"
@@ -1440,7 +1443,10 @@ printf '#!/bin/sh\n: >"%s/openclaw-ran"\n' "$run_dir" >"$np_dir/openclaw.mjs"
 cat >"$run_dir/notifybin/notify-send" <<'EOF'
 #!/bin/sh
 [ "$1 $2" = "-a Omabump" ] || exit 7
-printf '%s|%s\n' "$3" "$4" >>"$OMABUMP_TEST_NOTIFY"
+shift 2
+while [ "$1" = -u ]; do shift 2; done
+[ "$1" = -- ] || exit 8
+printf '%s|%s\n' "$2" "$3" >>"$OMABUMP_TEST_NOTIFY"
 EOF
 chmod +x "$np_dir/openclaw.mjs" "$run_dir/notifybin/notify-send"
 np_feed() {
@@ -1533,7 +1539,10 @@ mkdir -p "$rp_served" "$run_dir/rpnotify"
 cat >"$run_dir/rpnotify/notify-send" <<'EOF'
 #!/bin/sh
 [ "$1 $2" = "-a Omabump" ] || exit 7
-printf '%s|%s\n' "$3" "$4" >>"$OMABUMP_TEST_NOTIFY"
+shift 2
+while [ "$1" = -u ]; do shift 2; done
+[ "$1" = -- ] || exit 8
+printf '%s|%s\n' "$2" "$3" >>"$OMABUMP_TEST_NOTIFY"
 EOF
 chmod +x "$run_dir/rpnotify/notify-send"
 jq -n '[{pkg: "rp-a", label: "Rp A", feed: "1.2"}, {pkg: "rp-b", label: "Rp B", feed: "2.0"}, {pkg: "rp-c", label: "Rp C", feed: "3.0"},
@@ -1744,6 +1753,8 @@ cat >"$run_dir/rpnotify/notify-send" <<'EOF'
 shift 2
 opts=""
 while [ "$1" = -u ]; do opts="$opts$1 $2 "; shift 2; done
+[ "$1" = -- ] || exit 8
+shift
 printf '%s%s|%s\n' "$opts" "$1" "$2" >>"$OMABUMP_TEST_NOTIFY"
 EOF
 rm -f "$run_state/status.json" "$run_state/notified.json"

@@ -109,7 +109,9 @@ i18n_max_bytes=262144
 # that is missing too.
 i18n_language() {
   local file=${OMARCHY_LANGUAGE_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/language} code=""
-  [[ -f $file ]] && code=$(head -c 256 -- "$file" 2>/dev/null | tr -d '\0')
+  # A plain file of a few bytes, as omarchy-language writes it; anything
+  # else is English here, as it is to the shell's I18n.
+  [[ -f $file && ! -L $file && $(stat -c %s -- "$file" 2>/dev/null) -le 64 ]] && code=$(head -c 64 -- "$file" 2>/dev/null | tr -d '\0')
   code="${code#"${code%%[![:space:]]*}"}"
   code="${code%"${code##*[![:space:]]}"}"
   [[ $code =~ ^[a-z]{2,3}(-[A-Za-z]{2})?$ ]] || code=en
@@ -123,10 +125,17 @@ i18n_language() {
 # notification counts anything.
 i18n_catalog() {
   local file=$i18n_dir/$1.json size
-  size=$(stat -c %s -- "$file" 2>/dev/null) || size=""
-  if [[ -n $size ]] && (( size <= i18n_max_bytes )); then
-    jq -c 'if type == "object" then with_entries(select(.value | type == "string" and . != "")) else {} end' -- "$file" \
-      2>/dev/null && return 0
+  local out
+  # A plain file, not a link, a pipe or a device, and one whole JSON object
+  # and nothing after it: jq prints a first value before it fails on what
+  # follows, so the file is read as a list of its values.
+  size=""
+  [[ -f $file && ! -L $file ]] && size=$(stat -c %s -- "$file" 2>/dev/null)
+  if [[ -n $size ]] && (( size <= i18n_max_bytes )) && out=$(head -c "$i18n_max_bytes" -- "$file" | jq -cs '
+      if length == 1 and (.[0] | type == "object")
+      then .[0] | with_entries(select(.value | type == "string" and . != "")) else error("not one object") end' 2>/dev/null); then
+    printf '%s\n' "$out"
+    return 0
   fi
   echo '{}'
 }
@@ -161,7 +170,7 @@ jq_i18n='
 # with the args; a key no catalog has is itself.
 say() {
   i18n_load
-  jq -r --arg k "$1" "$jq_i18n"' (.[$k] // $k) | i18n_fill($ARGS.positional)' --args -- "${@:2}" <<<"$i18n_strings"
+  jq -r --arg k "$1" "$jq_i18n"' (.[$k] // $k) | i18n_fill($ARGS.positional) | .[0:1000]' --args -- "${@:2}" <<<"$i18n_strings"
 }
 
 # part <key> [<arg>...]: one clause of a note as parts, a JSON list of one
@@ -1261,7 +1270,7 @@ self_updating_name() { [[ $1 == "~/"* ]]; }
 self_update_text() {
   local text
   text=$(jq -r '.selfUpdate // "" | strings' <<<"$1")
-  echo "${text:-open $2 to update}"
+  printf '%s\n' "${text:-open $2 to update}"
 }
 
 # The same as the clause of a note, "Updates itself: <that>", as parts.

@@ -986,7 +986,11 @@ test("catalogs: every file in i18n/ is a flat JSON object of strings and plural 
 // or say (bin/omabump-common).
 test("catalogs: every key the code uses is in en.json", () => {
   const key = `((?:${namespaces.join("|")})\\.[a-z][A-Za-z0-9]*)`
-  const used = [new RegExp(`"${key}"`, "g"), new RegExp(`\\b(?:part|say) ${key}(?![A-Za-z0-9_.-])`, "g")]
+  // And by the shape of the call, whatever the namespace: a key of a new
+  // one, which en.json does not have yet, is a key in use all the same.
+  const anyKey = "([a-z]+\\.[a-z][A-Za-z0-9]*)"
+  const used = [new RegExp(`"${key}"`, "g"), new RegExp(`\\b(?:part|say) ${key}(?![A-Za-z0-9_.-])`, "g"),
+    new RegExp(`\\b(?:t|tn|say|sayCount)\\((?:tr, )?"${anyKey}"`, "g"), new RegExp(`^\\s*[^#\\n]*\\b(?:part|say) ${anyKey}(?= |\\)|"|$)`, "gm")]
   const unknown = [], seen = new Set()
   for (const [file, text] of keySources)
     for (const re of used)
@@ -1093,6 +1097,19 @@ test("a language Omabump has no catalog for, or a key its catalog lacks, reads E
     { strings: english, plural: m.englishPlural }], String)
   // The form the translation lacks is its other form, as Plural.pick has it.
   same([m.heroState(partial, summary({ updateCount: 1 }), "").text, m.heroMeta(partial, summary({}), true, "")], ["1 x", "Settings"])
+})
+
+test("parts a panel cannot word leave the English field", () => {
+  const row = (parts, english) => m.clauses(tr, parts, english, false, false)
+  // Fewer arguments than the string has holes (a hold without its date).
+  same(row([{ key: "build.hold", args: ["24"] }], "the English hold"), ["the English hold"])
+  same(row([{ key: "note.updateOff", args: ["why"] }], "x"), ["Update off: why"])
+  // A list-like object is no list of parts.
+  same(row({ length: 0 }, "the English note"), ["the English note"])
+  // A translation that holds no usable value for the key does not hide it.
+  const broken = m.catalogTranslator([{ strings: { "note.notInRepo": { few: "x" } }, plural: () => "one" }], String)
+  same(broken.has("note.notInRepo"), false)
+  same(m.clauses(broken, [{ key: "note.notInRepo", args: [] }], "Not in Omarchy's repo yet", false, false), ["Not in Omarchy's repo yet"])
 })
 
 console.log(`done\t${total}`)

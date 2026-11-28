@@ -49,7 +49,7 @@ Item {
     return {
       t: function(key) { return c.t(key) },
       tn: function(key, n) { return c.tn(key, n) },
-      has: function(key) { return merged[key] !== undefined },
+      has: function(key) { return Model.usable(merged[key]) },
       num: function(n) {
         try {
           return Commons.I18n.formatNumber(n)

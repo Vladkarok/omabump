@@ -1750,6 +1750,17 @@ done
 same "say: a catalog over i18n_max_bytes is English" "Codex 2.0 released" "$(say_as pt notify.released Codex 2.0)"
 { printf '{"notify.released": "%%1 %%2 lançado", "pad": "'; head -c 200000 /dev/zero | tr '\0' x; printf '"}\n'; } >"$i18n_dir/pt.json"
 same "say: a catalog under it, though larger than one argument may be, is read" "Codex 2.0 lançado" "$(say_as pt notify.released Codex 2.0)"
+# One whole object and nothing after it; a plain file, not a link.
+printf '{"notify.released": "%%1 %%2 lançado"}\n{broken' >"$i18n_dir/pt.json"
+same "say: a catalog with anything after its object is English" "Codex 2.0 released" "$(say_as pt notify.released Codex 2.0)"
+echo '{"notify.released": "%1 %2 lançado"}' >"$scratch/pt-elsewhere.json"
+rm -f "$i18n_dir/pt.json"; ln -s "$scratch/pt-elsewhere.json" "$i18n_dir/pt.json"
+same "say: a catalog that is a link is English" "Codex 2.0 released" "$(say_as pt notify.released Codex 2.0)"
+rm -f "$i18n_dir/pt.json" "$scratch/pt-elsewhere.json"
+{ printf '{"notify.released": "'; for _ in {1..40}; do printf '%%1'; done; printf '"}\n'; } >"$i18n_dir/pt.json"
+same "say: what a string grows to is cut at 1000 characters" 1000 "$(say_as pt notify.released "$(head -c 200 /dev/zero | tr '\0' y)" | tr -d '\n' | wc -c)"
+same "say: a language file longer than a code is English" "Codex 2.0 released" \
+  "$(say_as "pt$(printf '%*s' 300 '')" notify.released Codex 2.0)"
 echo '{"notify.aheadBody": "Ainda não está no repo do Omarchy."}' >"$i18n_dir/pt.json"
 same "say: a key missing in the language is English" "Codex 2.0 released|Ainda não está no repo do Omarchy." \
   "$(say_as pt notify.released Codex 2.0)|$(say_as pt notify.aheadBody)"

@@ -747,7 +747,8 @@ announce() {
   [[ -n $action ]] || return 0
   if [[ $action == send ]]; then
     notice_text "$kind" "$shown"
-    notify-send -a Omabump "$@" "$(clean_text "$notice_summary")" "$(clean_text "$notice_body")" 2>/dev/null || return 0
+    # After --: a summary may start with a dash (a label, a translation).
+    notify-send -a Omabump "$@" -- "$(clean_text "$notice_summary")" "$(clean_text "$notice_body")" 2>/dev/null || return 0
   fi
   notified=$(jq -c --arg k "$key" --arg v "$version" '.[$k] = $v' <<<"$notified")
   save_notified

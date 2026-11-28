@@ -67,6 +67,19 @@ function englishPlural(n) { return Math.abs(Math.trunc(Number(n) || 0)) === 1 ? 
 // shell without Commons.Translations (Omarchy before 4.5.0): en.json alone,
 // by englishPlural, numbers as JavaScript writes them; date is the
 // panel's. tests/model.test.mjs builds its translators with it too.
+// A catalog value the translator can word: a string, or plural forms with
+// an "other".
+function usable(v) {
+  return typeof v === "string" && v.length > 0 || !!v && typeof v === "object" && typeof v.other === "string" && v.other.length > 0
+}
+
+// The highest %n hole of a string: how many arguments it needs.
+function holesOf(text) {
+  var max = 0, re = /%([0-9]+)/g, found
+  while ((found = re.exec(String(text))) !== null) max = Math.max(max, Number(found[1]))
+  return max
+}
+
 function catalogTranslator(layers, date) {
   function value(layer, key) {
     var v = layer.strings ? layer.strings[key] : undefined
@@ -96,7 +109,7 @@ function catalogTranslator(layers, date) {
       }
       return key
     },
-    has: function(key) { return first(key) !== undefined },
+    has: function(key) { return usable(first(key)) },
     num: function(n) { return String(n) },
     date: date
   }
@@ -830,10 +843,14 @@ var clauseJoin = "; "
 // 0.3.0 has no parts, and one from a newer checker may name a key this
 // panel does not know: the English field stands in for those.
 function partsKnown(tr, parts) {
-  if (!isList(parts)) return false
+  // Parsed JSON: a real array, not anything that only has a length.
+  if (!Array.isArray(parts)) return false
   for (var i = 0; i < parts.length; i++) {
     var part = parts[i]
-    if (!part || typeof part !== "object" || typeof part.key !== "string" || !tr.has(part.key) || !isList(part.args)) return false
+    if (!part || typeof part !== "object" || typeof part.key !== "string" || !tr.has(part.key) || !Array.isArray(part.args)) return false
+    // Fewer arguments than the string has holes: a checker that words the
+    // part otherwise. The English field then.
+    if (part.args.length < holesOf(tr.t(part.key))) return false
     for (var j = 0; j < part.args.length; j++) {
       var arg = part.args[j]
       if (typeof arg !== "string" && !(arg && typeof arg === "object" && typeof arg.date === "number" && isFinite(arg.date))) return false
