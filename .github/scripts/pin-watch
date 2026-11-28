@@ -1,9 +1,9 @@
 #!/bin/bash
 # shellcheck disable=SC2016 # the report is Markdown: backticks in it are text, not commands
 # Compares the omarchy-pkgs commit pins.json pins with master and prints, as
-# Markdown, what an Update would run differently after a pin bump:
+# Markdown, what Build now would run differently after a pin bump:
 #
-#   - the code Update runs from that repo: bin/sync-upstream and the files
+#   - the code Build now runs from that repo: bin/sync-upstream and the files
 #     under bin/ and helpers/ that it or a shipped app's hook names
 #     (update_code); the rest of helpers/ is omarchy-pkgs' own build and
 #     publish tooling, so its changes are listed but are not news;
@@ -209,7 +209,7 @@ recipe_diff() {
 # shellcheck disable=SC2001 # one bracket expression for every metacharacter
 ere_quote() { sed 's/[][\.*^$()+?{}|]/\\&/g' <<<"$1"; }
 
-# The files under bin/ and helpers/ an Update runs, one per line:
+# The files under bin/ and helpers/ a Build now runs, one per line:
 # bin/sync-upstream and what it or a shipped app's hook names, followed
 # through the files named, at the pin and at $tip. Only code names a file;
 # comment lines are left out, as they name other tools to describe them
@@ -314,15 +314,15 @@ if (( ${#hooked[@]} )); then printf ', and what the recipe'"'"'s own hook or ups
 printf '.\n'
 if [[ -n $unrun ]]; then
   # shellcheck disable=SC2086 # one path per line, none with blanks
-  printf '\nSo are changes to files in `helpers/` that nothing Update runs names, omarchy-pkgs'"'"' own build and publish tooling: %s.\n' \
+  printf '\nSo are changes to files in `helpers/` that nothing Build now runs names, omarchy-pkgs'"'"' own build and publish tooling: %s.\n' \
     "$(printf '`%s`, ' $unrun | sed 's/, $//')"
 fi
 
 if [[ -n $runner ]]; then
-  printf '\n### Code Update runs\n\n'
+  printf '\n### Code Build now runs\n\n'
   named=()
   for f in "${code[@]}"; do [[ $f == bin/sync-upstream ]] || named+=("$f"); done
-  printf 'Update runs `bin/sync-upstream` from the pinned commit'
+  printf 'Build now runs `bin/sync-upstream` from the pinned commit'
   if (( ${#named[@]} )); then
     printf ', with what it and the shipped apps'"'"' hooks name there or on %s: %s' "$branch" "$(printf '`%s`, ' "${named[@]}" | sed 's/, $//')"
   fi
@@ -354,6 +354,6 @@ else
   printf '1. pins.json: the new commit and its date.\n'
 fi
 printf '2. CHANGELOG: one line saying the pin moved and why.\n'
-printf '3. Release, as any change to the code Update runs is a plugin release.\n\n'
+printf '3. Release, as any change to the code Build now runs is a plugin release.\n\n'
 printf 'The next run updates this issue, and closes it once nothing worth a look is left between the pin and %s.\n' "$branch"
 exit 3

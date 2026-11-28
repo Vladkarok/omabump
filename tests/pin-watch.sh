@@ -93,7 +93,7 @@ sed -i 's/^pkgver=1$/pkgver=2/; s/^_build=b1/_build=b2/; s/^_hash=h1/_hash=h2/' 
 printf 'pkgname=nobuild\ndepends=(b)\n' >"$pw/up/pkgbuilds/nobuild/PKGBUILD"
 pw_commit 8 "chore: sync upstream releases"
 pw_run
-same "pin-watch: a routine sync, a hook's or a watch's own rewrite, a recipe Build now may not build and code nothing Update runs names are no news" \
+same "pin-watch: a routine sync, a hook's or a watch's own rewrite, a recipe Build now may not build and code nothing Build now runs names are no news" \
   '0|' "$pw_rc|$pw_out"
 
 sed -i "s/^depends=('glibc')/depends=('glibc' 'gtk3')/" "$pw/up/pkgbuilds/app/PKGBUILD"
@@ -106,7 +106,7 @@ refuse "pin-watch: and the code Update never runs" grep -q 'auto-release' <<<"$p
 check "pin-watch: and names what a hook or a watch rewrites" \
   grep -qF 'what the recipe'"'"'s own hook or upstream watch rewrites (`_commit` of hooked, `_build` `_hash` of watched)' <<<"$pw_out"
 refuse "pin-watch: the recipe of an entry Build now may not build is left out" grep -q 'nobuild' <<<"$pw_out"
-check "pin-watch: and the helpers left out" grep -qF "that nothing Update runs names, omarchy-pkgs' own build and publish tooling: \`helpers/ci.sh\`." <<<"$pw_out"
+check "pin-watch: and the helpers left out" grep -qF "that nothing Build now runs names, omarchy-pkgs' own build and publish tooling: \`helpers/ci.sh\`." <<<"$pw_out"
 refuse "pin-watch: without their diff" grep -q '^+publish' <<<"$pw_out"
 check "pin-watch: the report suggests a commit at least 3 days old" grep -q "\"commit\": \"$(git -C "$pw/up" rev-parse HEAD)\"" <<<"$pw_out"
 
@@ -148,16 +148,16 @@ pw_commit 5 "chore: sync upstream releases"
 pw_run
 refuse "pin-watch: a watch's rewrite alone is no news of its recipe" grep -q 'watched' <<<"$(sed -n '/### Recipes of the shipped apps/,$p' <<<"$pw_out")"
 
-# Code Update runs: what sync-upstream names, through the files named (a.sh,
+# Code Build now runs: what sync-upstream names, through the files named (a.sh,
 # then watch.py, then the util.py it imports), and what a hook names.
 pw_code() {  # <file> <text>: news, and the file's diff in the report
   printf '%s\n' "$2" >"$pw/up/$1"
   pw_commit 4 "change $1"
   pw_run
   same "pin-watch: a change to $1 is news" 3 "$pw_rc"
-  check "pin-watch: a change to $1 is shown under Code Update runs" \
-    grep -qF "diff --git a/$1 b/$1" <<<"$(sed -n '/^### Code Update runs/,/^### /p' <<<"$pw_out")"
-  refuse "pin-watch: $1 is not among the helpers left out" grep -qF "that nothing Update runs names" <<<"$pw_out"
+  check "pin-watch: a change to $1 is shown under Code Build now runs" \
+    grep -qF "diff --git a/$1 b/$1" <<<"$(sed -n '/^### Code Build now runs/,/^### /p' <<<"$pw_out")"
+  refuse "pin-watch: $1 is not among the helpers left out" grep -qF "that nothing Build now runs names" <<<"$pw_out"
 }
 printf '{"omarchyPkgs": {"commit": "%s", "ref": "refs/heads/master"}}\n' "$(git -C "$pw/up" rev-parse HEAD)" >"$pw/plugin/pins.json"
 pw_code helpers/util.py 'X = 2'
@@ -193,7 +193,7 @@ pw_run
 same "pin-watch: a bin/ file only a comment names is no news" '0|' "$pw_rc|$pw_out"
 pw_bump
 
-# A Python package helpers/ holds, imported by a helper Update runs: all of
+# A Python package helpers/ holds, imported by a helper Build now runs: all of
 # its files count.
 mkdir -p "$pw/up/helpers/providers"
 printf '' >"$pw/up/helpers/providers/__init__.py"
@@ -268,8 +268,8 @@ printf 'helper() { python3 "${BASH_SOURCE[0]%%/*}/watch.py"; echo changed; }\n' 
 printf '{"upstream": {"github": "o/pinned"}}\n' >"$pw/up/pkgbuilds/pinned/.omarchy/package.json"
 pw_commit 1 "helpers and a watch for pinned"
 pw_run
-check "pin-watch: a change to a helper sync-upstream sources is news" grep -q '^### Code Update runs' <<<"$pw_out"
-check "pin-watch: the report lists what Update runs" grep -qF 'name there or on master: `bin/sync-lib`, `helpers/a.sh`, `helpers/hook.sh`, `helpers/new.sh`, `helpers/providers/__init__.py`, `helpers/providers/github.py`, `helpers/util.py`, `helpers/watch.py`.' <<<"$pw_out"
+check "pin-watch: a change to a helper sync-upstream sources is news" grep -q '^### Code Build now runs' <<<"$pw_out"
+check "pin-watch: the report lists what Build now runs" grep -qF 'name there or on master: `bin/sync-lib`, `helpers/a.sh`, `helpers/hook.sh`, `helpers/new.sh`, `helpers/providers/__init__.py`, `helpers/providers/github.py`, `helpers/util.py`, `helpers/watch.py`.' <<<"$pw_out"
 refuse "pin-watch: the suggestion skips a commit younger than 3 days" grep -q "\"commit\": \"$(git -C "$pw/up" rev-parse HEAD)\"" <<<"$pw_out"
 
 printf '{"omarchyPkgs": {"commit": "%s", "ref": "refs/heads/master"}}\n' "$(git -C "$pw/up" rev-parse HEAD)" >"$pw/plugin/pins.json"
