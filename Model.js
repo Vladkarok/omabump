@@ -843,11 +843,12 @@ var clauseJoin = "; "
 // 0.3.0 has no parts, and one from a newer checker may name a key this
 // panel does not know: the English field stands in for those.
 function partsKnown(tr, parts) {
-  // Parsed JSON: a real array, not anything that only has a length.
-  if (!Array.isArray(parts)) return false
+  // isList, not Array.isArray: a list read from status.json reaches the
+  // panel as a QML sequence, which is no JS array.
+  if (!isList(parts)) return false
   for (var i = 0; i < parts.length; i++) {
     var part = parts[i]
-    if (!part || typeof part !== "object" || typeof part.key !== "string" || !tr.has(part.key) || !Array.isArray(part.args)) return false
+    if (!part || typeof part !== "object" || typeof part.key !== "string" || !tr.has(part.key) || !isList(part.args)) return false
     // Fewer arguments than the string has holes: a checker that words the
     // part otherwise. The English field then.
     if (part.args.length < holesOf(tr.t(part.key))) return false
@@ -877,11 +878,13 @@ function partText(tr, part, short) {
 // checker joins them. first: only the first clause. short: as partText.
 function clauses(tr, parts, english, first, short) {
   var out = []
-  if (partsKnown(tr, parts)) {
+  var text = String(english || "")
+  // Parts that word nothing beside an English field that says something
+  // are not that field's twin (a checker's slip, a damaged file).
+  if (partsKnown(tr, parts) && (parts.length > 0 || text === "")) {
     for (var i = 0; i < parts.length && (!first || i < 1); i++) out.push(partText(tr, parts[i], short))
     return out
   }
-  var text = String(english || "")
   if (text === "") return out
   return first ? [text.split(clauseJoin)[0]] : [text]
 }
